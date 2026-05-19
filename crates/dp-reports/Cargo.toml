@@ -12,4 +12,13 @@ publish = false
 path = "src/lib.rs"
 
 [dependencies]
-dp-domain = { workspace = true }
+dp-domain  = { workspace = true }
+chrono     = { workspace = true }
+chrono-tz  = { workspace = true }
+serde      = { workspace = true }
+serde_json = { workspace = true }
+thiserror  = { workspace = true }
+uuid       = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
