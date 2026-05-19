@@ -21,3 +21,26 @@ thiserror              = { workspace = true }
 tracing                = { workspace = true }
 uuid                   = { workspace = true }
 sqlx = { workspace = true, features = ["postgres", "macros", "migrate", "uuid", "chrono", "json"] }
+
+# Integration tests live under `tests/`. They exercise the full
+# `Store` trait against a real Postgres — either an external one via
+# `DP_TEST_DATABASE_URL`, or an ephemeral container spun up through
+# `starter_store_postgres::testing::with_database()` (the `testing`
+# feature pulls testcontainers + tokio in as transitive dev-deps).
+#
+# Each integration test is marked `#[ignore]` so plain
+# `cargo test --workspace` stays Docker-free and green. CI runs the
+# integration job with `cargo test -p dp-store-pg -- --ignored`.
+[dev-dependencies]
+# `starter-store-postgres/testing` is pulled in for the `Pool` and
+# `migrate` surfaces, but we DON'T use its `with_database()` helper —
+# that hard-codes `postgres:11-alpine` (the default tag in
+# testcontainers-modules 0.11), which predates PG15 and therefore
+# rejects the `UNIQUE NULLS NOT DISTINCT` constraint in
+# `migrations/dp/0001_init.sql`. The integration tests build their
+# own container with a PG15+ image tag instead. Versions stay pinned
+# to the same majors the starter crate uses so we can't drift.
+starter-store-postgres = { workspace = true, features = ["testing"] }
+tokio                  = { workspace = true, features = ["macros", "rt-multi-thread"] }
+testcontainers         = "0.23"
+testcontainers-modules = { version = "0.11", features = ["postgres"] }

@@ -1,0 +1,752 @@
+//! End-to-end exercises for [`dp_store_pg::PgStore`] against a real
+//! Postgres.
+//!
+//! These tests are the only thing in the workspace that proves the
+//! SQL in `migrations/dp/0001_init.sql` and the query bodies in
+//! `src/store.rs` actually agree with each other and with the
+//! `dp_domain::Store` contract. Unit tests in `src/store.rs` only get
+//! us object-safety; everything below depends on a live database.
+//!
+//! ## How a test gets a database
+//!
+//! Two paths, picked at runtime:
+//!
+//! 1. `DP_TEST_DATABASE_URL` — if set, every test connects to that
+//!    URL. The caller is responsible for it being empty (the
+//!    migrator will refuse to re-apply an already-applied schema
+//!    with different checksums). Useful for `psql` debugging or
+//!    when Docker is unavailable.
+//! 2. Otherwise, an ephemeral Postgres container is started directly
+//!    via `testcontainers-modules`, pinned to PG15+
+//!    (`DP_TEST_PG_TAG`, default `16-alpine`). We deliberately do
+//!    NOT call `starter_store_postgres::testing::with_database()`
+//!    because that helper hard-codes `postgres:11-alpine` and PG11
+//!    pre-dates `UNIQUE NULLS NOT DISTINCT` — the schema would fail
+//!    to apply.
+//!
+//! Each test calls [`fixture`] which: connects, runs every
+//! `dp_store_pg::sources()` migration, and hands back a [`PgStore`].
+//!
+//! ## Why `#[ignore]`
+//!
+//! Plain `cargo test --workspace` must stay Docker-free (job goal
+//! "cargo test --workspace green"). Integration runs in its own CI
+//! job with `cargo test -p dp-store-pg -- --ignored` where Docker is
+//! guaranteed.
+//!
+//! ## Coverage
+//!
+//! Every Store-trait method that has non-trivial SQL behaviour is
+//! exercised:
+//!
+//! * upsert paths (user / org / team / repo / membership) and the
+//!   `home_org` preservation invariant on `upsert_membership`
+//!   (TODO §0.5 / SCOPE §3 — only `set_home_org` writes it);
+//! * cursor put/get with both a concrete `repo_id` and a NULL
+//!   `repo_id`, relying on PG15 `NULLS NOT DISTINCT` on the unique
+//!   constraint;
+//! * webhook inbox: enqueue → conflict on duplicate `delivery_id`
+//!   (idempotent replay path), `claim_webhooks` FIFO drain, then
+//!   `mark_webhook_processed` / `mark_webhook_failed`;
+//! * `record_event` + `add_event_actors` + the windowed report read
+//!   `list_event_actor_rows_in_window` with org / repo / user /
+//!   role filter combinations;
+//! * `pseudonymise_user` rewrites login + clears email/name + stamps
+//!   `deleted_at` and hides the row from `list_users`, but the row
+//!   itself stays referenced by historical events (FK integrity per
+//!   TODO §0.5).
+
+#![allow(clippy::unwrap_used)]
+
+use std::sync::Arc;
+
+use chrono::{DateTime, Duration, TimeZone, Utc};
+use dp_domain::event::{ActivityEvent, ActorRole, EventActor, EventKind};
+use dp_domain::fetch::{FetchCursor, FetchRunKind, ResourceKind};
+use dp_domain::membership::{Membership, MembershipRole};
+use dp_domain::org::Org;
+use dp_domain::repo::Repo;
+use dp_domain::store::{Store, StoreError};
+use dp_domain::team::Team;
+use dp_domain::user::User;
+use dp_domain::webhook::WebhookDelivery;
+use dp_domain::window::{Window, WindowAnchor};
+use dp_store_pg::PgStore;
+use serde_json::json;
+use starter_store_postgres::migrate;
+use starter_store_postgres::pool::connect;
+use testcontainers::runners::AsyncRunner;
+use testcontainers::ImageExt;
+use testcontainers_modules::postgres::Postgres as PostgresImage;
+use uuid::Uuid;
+
+// ---------- fixture --------------------------------------------------
+
+/// Holds whatever needs to outlive the [`PgStore`]. Drop order
+/// matters: `_guard` (if present) tears down the container, and the
+/// pool inside `store` must already be done by then. The guard's
+/// concrete type isn't re-exported from `starter_store_postgres`, so
+/// we store it type-erased — we only ever drop it, never inspect it.
+struct Fixture {
+    store: Arc<PgStore>,
+    _guard: Option<Box<dyn std::any::Any + Send>>,
+}
+
+impl Fixture {
+    fn store(&self) -> &PgStore {
+        &self.store
+    }
+}
+
+/// Image tag that ships PG15+ semantics — the `UNIQUE NULLS NOT
+/// DISTINCT` constraint on `dp_fetch_cursors` and the partial-index
+/// predicate features both need it. Override with `DP_TEST_PG_TAG`
+/// (CI may want to pin to a specific patch tag).
+const DEFAULT_PG_TAG: &str = "16-alpine";
+
+/// Acquire a migrated [`PgStore`]. Two paths:
+///
+/// * `DP_TEST_DATABASE_URL` → connect to that URL (caller manages a
+///   clean schema). Useful for `psql` debugging against a local DB.
+/// * otherwise → start an ephemeral PG container at `DP_TEST_PG_TAG`
+///   (default `DEFAULT_PG_TAG`). We do **not** use
+///   `starter_store_postgres::testing::with_database()` because it
+///   hard-codes `postgres:11-alpine` and PG11 rejects
+///   `UNIQUE NULLS NOT DISTINCT`.
+async fn fixture() -> Fixture {
+    let (pool, guard): (_, Option<Box<dyn std::any::Any + Send>>) =
+        if let Ok(url) = std::env::var("DP_TEST_DATABASE_URL") {
+            let pool = connect(&url)
+                .await
+                .expect("connect DP_TEST_DATABASE_URL");
+            (pool, None)
+        } else {
+            let tag = std::env::var("DP_TEST_PG_TAG")
+                .unwrap_or_else(|_| DEFAULT_PG_TAG.to_string());
+            let container = PostgresImage::default()
+                .with_tag(tag)
+                .start()
+                .await
+                .expect("start postgres container");
+            let port = container
+                .get_host_port_ipv4(5432)
+                .await
+                .expect("container port");
+            let url =
+                format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
+            let pool = connect(&url).await.expect("connect to test postgres");
+            (pool, Some(Box::new(container)))
+        };
+
+    // Apply every migration source this crate publishes. There is
+    // exactly one today (`dp`); using the published API keeps the
+    // test honest about how the host binary will run it.
+    let mut m = migrate(&pool);
+    for source in dp_store_pg::sources() {
+        m = m.with_source(source);
+    }
+    m.run().await.expect("apply dp migrations");
+
+    Fixture {
+        store: Arc::new(PgStore::new(pool)),
+        _guard: guard,
+    }
+}
+
+// ---------- seed helpers --------------------------------------------
+//
+// Every test that touches events needs at least one org + repo; most
+// also need users. Inline-seed locally rather than reach for fixtures
+// — the rows are small and being able to read the test top-to-bottom
+// matters more than DRY here.
+
+async fn seed_org(s: &PgStore, github_id: i64, login: &str) -> Org {
+    s.upsert_org(&Org {
+        id: Uuid::new_v4(),
+        github_id,
+        login: login.into(),
+        name: Some(login.to_string()),
+    })
+    .await
+    .unwrap()
+}
+
+async fn seed_repo(s: &PgStore, org: &Org, github_id: i64, name: &str) -> Repo {
+    s.upsert_repo(&Repo {
+        id: Uuid::new_v4(),
+        org_id: org.id,
+        github_id,
+        name: name.into(),
+    })
+    .await
+    .unwrap()
+}
+
+async fn seed_user(s: &PgStore, github_id: i64, login: &str) -> User {
+    s.upsert_user(&User {
+        id: Uuid::new_v4(),
+        github_id,
+        login: login.into(),
+        email: Some(format!("{login}@example.com")),
+        name: Some(login.to_string()),
+        deleted_at: None,
+    })
+    .await
+    .unwrap()
+}
+
+// ---------- tests ---------------------------------------------------
+
+/// `upsert_user` round-trips, dedupes on `github_id`, and the
+/// lookup-by-github-id path returns the same row. `list_users` is
+/// the soft-delete-aware projection.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Docker or DP_TEST_DATABASE_URL"]
+async fn upsert_user_and_lookups() {
+    let f = fixture().await;
+    let s = f.store();
+
+    let u1 = seed_user(s, 1001, "alice").await;
+    assert_eq!(u1.login, "alice");
+
+    // Same github_id with a renamed login → upsert keeps the id and
+    // overwrites the login (mirrors GitHub rename replay).
+    let u1_renamed = s
+        .upsert_user(&User {
+            id: Uuid::new_v4(), // ignored by ON CONFLICT
+            github_id: 1001,
+            login: "alice2".into(),
+            email: Some("alice2@example.com".into()),
+            name: Some("Alice".into()),
+            deleted_at: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(u1_renamed.id, u1.id, "id stable across rename");
+    assert_eq!(u1_renamed.login, "alice2");
+
+    let by_gh = s.get_user_by_github_id(1001).await.unwrap();
+    assert_eq!(by_gh.id, u1.id);
+
+    let by_id = s.get_user(u1.id).await.unwrap();
+    assert_eq!(by_id.login, "alice2");
+
+    // Negative path: unknown github_id → NotFound.
+    let miss = s.get_user_by_github_id(9_999_999).await.unwrap_err();
+    assert!(matches!(miss, StoreError::NotFound { .. }));
+
+    // list_users sees the live row.
+    let listed = s.list_users().await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].id, u1.id);
+}
+
+/// `upsert_membership` must not clobber `home_org`. Only
+/// `set_home_org` writes it (the invariant the schema can't catch
+/// — `home_org` is a normal nullable column).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Docker or DP_TEST_DATABASE_URL"]
+async fn upsert_membership_preserves_home_org() {
+    let f = fixture().await;
+    let s = f.store();
+
+    let org_a = seed_org(s, 1, "org-a").await;
+    let org_b = seed_org(s, 2, "org-b").await;
+    let user = seed_user(s, 42, "bob").await;
+
+    // Initial upsert with no home_org.
+    let joined = Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap();
+    s.upsert_membership(&Membership {
+        user_id: user.id,
+        org_id: org_a.id,
+        role: MembershipRole::Member,
+        home_org: None,
+        joined_at: joined,
+    })
+    .await
+    .unwrap();
+
+    // Admin then sets home_org via the dedicated path.
+    s.set_home_org(user.id, org_a.id, Some(org_b.id))
+        .await
+        .unwrap();
+
+    // Fetcher replays the upsert (e.g. periodic reconciliation).
+    // Even though it carries `home_org: None`, the COALESCE in the
+    // SQL must keep the previously-set value.
+    let later = joined + Duration::days(30);
+    let after = s
+        .upsert_membership(&Membership {
+            user_id: user.id,
+            org_id: org_a.id,
+            role: MembershipRole::Admin,
+            home_org: None,
+            joined_at: later,
+        })
+        .await
+        .unwrap();
+    assert_eq!(after.role, MembershipRole::Admin, "role updated");
+    assert_eq!(
+        after.home_org,
+        Some(org_b.id),
+        "home_org preserved across upsert"
+    );
+    // joined_at takes the LEAST of old/new so an out-of-order
+    // replay never moves the join-date forward.
+    assert_eq!(after.joined_at, joined);
+
+    // Clearing home_org goes through set_home_org with None.
+    s.set_home_org(user.id, org_a.id, None).await.unwrap();
+    let memberships = s.list_memberships_for_user(user.id).await.unwrap();
+    assert_eq!(memberships.len(), 1);
+    assert_eq!(memberships[0].home_org, None);
+
+    // set_home_org on a non-existent (user, org) pair → NotFound.
+    let bogus = s
+        .set_home_org(Uuid::new_v4(), org_a.id, None)
+        .await
+        .unwrap_err();
+    assert!(matches!(bogus, StoreError::NotFound { .. }));
+}
+
+/// `put_cursor` / `get_cursor` must treat `repo_id IS NULL` as a
+/// distinct cursor (org-scoped resources: members, teams). Relies on
+/// PG15 `NULLS NOT DISTINCT` on the cursor's unique constraint —
+/// the schema decision called out in `0001_init.sql`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Docker or DP_TEST_DATABASE_URL"]
+async fn cursor_roundtrip_with_and_without_repo() {
+    let f = fixture().await;
+    let s = f.store();
+
+    let org = seed_org(s, 1, "org-a").await;
+    let repo = seed_repo(s, &org, 10, "dev-pulse").await;
+
+    // Use a whole-second timestamp: Postgres `TIMESTAMPTZ` is
+    // microsecond-precision but `Utc::now()` is nanosecond, so a
+    // round-trip via PG truncates and a literal struct-equality
+    // assertion fails. Whole-second values are exactly representable
+    // in both, which keeps the assert honest about *what* round-trips
+    // (the value) rather than *how* PG stores it.
+    let now = Utc.with_ymd_and_hms(2025, 5, 19, 10, 0, 0).unwrap();
+    // Org-scoped cursor (members) — repo_id is NULL.
+    let members_cursor = FetchCursor {
+        org_id: org.id,
+        repo_id: None,
+        resource_kind: ResourceKind::Members,
+        since: Some(now - Duration::days(7)),
+        etag: Some("W/\"abc\"".into()),
+        last_event_id: None,
+        updated_at: now,
+    };
+    s.put_cursor(&members_cursor).await.unwrap();
+
+    // Repo-scoped cursor (commits) — same org, same NOW, distinct
+    // row because resource_kind differs and repo_id is concrete.
+    let commits_cursor = FetchCursor {
+        org_id: org.id,
+        repo_id: Some(repo.id),
+        resource_kind: ResourceKind::Commits,
+        since: None,
+        etag: None,
+        last_event_id: Some("evt_99".into()),
+        updated_at: now,
+    };
+    s.put_cursor(&commits_cursor).await.unwrap();
+
+    let got_members = s
+        .get_cursor(org.id, None, ResourceKind::Members)
+        .await
+        .unwrap();
+    assert_eq!(got_members, members_cursor);
+
+    let got_commits = s
+        .get_cursor(org.id, Some(repo.id), ResourceKind::Commits)
+        .await
+        .unwrap();
+    assert_eq!(got_commits, commits_cursor);
+
+    // Replay with a fresher timestamp — `put_cursor` upserts on the
+    // unique constraint, so we get exactly one row back, not a
+    // duplicate.
+    let advanced = FetchCursor {
+        updated_at: now + Duration::minutes(5),
+        last_event_id: Some("evt_100".into()),
+        ..commits_cursor.clone()
+    };
+    s.put_cursor(&advanced).await.unwrap();
+    let after = s
+        .get_cursor(org.id, Some(repo.id), ResourceKind::Commits)
+        .await
+        .unwrap();
+    assert_eq!(after.last_event_id.as_deref(), Some("evt_100"));
+
+    // Unknown cursor → NotFound (the report layer relies on this
+    // to seed an initial cursor).
+    let miss = s
+        .get_cursor(org.id, Some(repo.id), ResourceKind::Releases)
+        .await
+        .unwrap_err();
+    assert!(matches!(miss, StoreError::NotFound { .. }));
+}
+
+/// Webhook inbox path: enqueue → duplicate `delivery_id` surfaces
+/// `Conflict` (so the receiver can return 200 OK on replays), then
+/// `claim_webhooks` drains FIFO and `mark_*` flips the row.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Docker or DP_TEST_DATABASE_URL"]
+async fn webhook_inbox_enqueue_claim_mark() {
+    let f = fixture().await;
+    let s = f.store();
+
+    let t0 = Utc.with_ymd_and_hms(2025, 5, 1, 0, 0, 0).unwrap();
+    let d1 = WebhookDelivery {
+        id: Uuid::new_v4(),
+        delivery_id: "delivery-1".into(),
+        event: "pull_request".into(),
+        payload: json!({"action": "opened"}),
+        received_at: t0,
+        processed_at: None,
+        error: None,
+    };
+    let d2 = WebhookDelivery {
+        id: Uuid::new_v4(),
+        delivery_id: "delivery-2".into(),
+        event: "push".into(),
+        payload: json!({"ref": "refs/heads/main"}),
+        received_at: t0 + Duration::seconds(1),
+        processed_at: None,
+        error: None,
+    };
+
+    s.enqueue_webhook(&d1).await.unwrap();
+    s.enqueue_webhook(&d2).await.unwrap();
+
+    // Replay of d1 (same delivery_id, fresh row id) → Conflict.
+    let replay = WebhookDelivery {
+        id: Uuid::new_v4(),
+        ..d1.clone()
+    };
+    let dup = s.enqueue_webhook(&replay).await.unwrap_err();
+    assert!(
+        matches!(dup, StoreError::Conflict(_)),
+        "expected Conflict on duplicate delivery_id, got {dup:?}"
+    );
+
+    // FIFO drain: d1 (older `received_at`) comes first.
+    let claimed = s.claim_webhooks(10).await.unwrap();
+    assert_eq!(claimed.len(), 2);
+    assert_eq!(claimed[0].delivery_id, "delivery-1");
+    assert_eq!(claimed[1].delivery_id, "delivery-2");
+
+    // Happy path on d1, failure recorded on d2.
+    s.mark_webhook_processed(claimed[0].id).await.unwrap();
+    s.mark_webhook_failed(claimed[1].id, "boom: parse error")
+        .await
+        .unwrap();
+
+    // d1 is no longer claimable (processed_at set); d2 is — the
+    // partial index `WHERE processed_at IS NULL` still sees it.
+    let again = s.claim_webhooks(10).await.unwrap();
+    assert_eq!(again.len(), 1);
+    assert_eq!(again[0].delivery_id, "delivery-2");
+    assert_eq!(again[0].error.as_deref(), Some("boom: parse error"));
+
+    // Marking an unknown id → NotFound.
+    let nope = s
+        .mark_webhook_processed(Uuid::new_v4())
+        .await
+        .unwrap_err();
+    assert!(matches!(nope, StoreError::NotFound { .. }));
+}
+
+/// Events + multi-actor attribution + the windowed report read.
+/// Verifies the (event, actor) join, the four filter dimensions
+/// (org, repo, user, role), and the window bounds (`[start, end)`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Docker or DP_TEST_DATABASE_URL"]
+async fn events_actors_and_window_filters() {
+    let f = fixture().await;
+    let s = f.store();
+
+    let org_a = seed_org(s, 1, "org-a").await;
+    let org_b = seed_org(s, 2, "org-b").await;
+    let repo_a = seed_repo(s, &org_a, 10, "alpha").await;
+    let repo_b = seed_repo(s, &org_b, 20, "beta").await;
+    let alice = seed_user(s, 100, "alice").await;
+    let bob = seed_user(s, 200, "bob").await;
+
+    // Three events spread across the window.
+    let t0 = Utc.with_ymd_and_hms(2025, 5, 10, 12, 0, 0).unwrap();
+    let e_in = ActivityEvent {
+        id: Uuid::new_v4(),
+        org_id: org_a.id,
+        repo_id: repo_a.id,
+        kind: EventKind::PullRequestMerged,
+        ts: t0,
+        external_id: "PR_in".into(),
+        payload: json!({"number": 1}),
+    };
+    let e_in_other = ActivityEvent {
+        id: Uuid::new_v4(),
+        org_id: org_b.id,
+        repo_id: repo_b.id,
+        kind: EventKind::Review,
+        ts: t0 + Duration::hours(1),
+        external_id: "RV_in".into(),
+        payload: json!({}),
+    };
+    let e_out = ActivityEvent {
+        id: Uuid::new_v4(),
+        org_id: org_a.id,
+        repo_id: repo_a.id,
+        kind: EventKind::Commit,
+        ts: t0 - Duration::days(2),
+        external_id: "C_out".into(),
+        payload: json!({}),
+    };
+    for e in [&e_in, &e_in_other, &e_out] {
+        s.record_event(e).await.unwrap();
+    }
+
+    // Idempotency on (kind, external_id): re-recording the same
+    // event returns a row with the same id.
+    let replay = s.record_event(&e_in).await.unwrap();
+    assert_eq!(replay.id, e_in.id);
+
+    // Multi-actor: e_in has Alice as author + Bob as merger;
+    // e_in_other has Bob as reviewer; e_out has Alice as author.
+    s.add_event_actors(&[
+        EventActor {
+            event_id: e_in.id,
+            user_id: alice.id,
+            role: ActorRole::Author,
+        },
+        EventActor {
+            event_id: e_in.id,
+            user_id: bob.id,
+            role: ActorRole::Merger,
+        },
+        EventActor {
+            event_id: e_in_other.id,
+            user_id: bob.id,
+            role: ActorRole::Reviewer,
+        },
+        EventActor {
+            event_id: e_out.id,
+            user_id: alice.id,
+            role: ActorRole::Author,
+        },
+    ])
+    .await
+    .unwrap();
+
+    // Idempotency on actors: replay must be a no-op (ON CONFLICT
+    // DO NOTHING).
+    s.add_event_actors(&[EventActor {
+        event_id: e_in.id,
+        user_id: alice.id,
+        role: ActorRole::Author,
+    }])
+    .await
+    .unwrap();
+
+    let window = Window {
+        start: t0 - Duration::hours(1),
+        end: t0 + Duration::days(1),
+        label: "test".into(),
+        tz: "UTC".into(),
+        anchor: WindowAnchor::Utc,
+    };
+
+    // No filters — both in-window events surface, the out-of-window
+    // one does not.
+    let all = s
+        .list_event_actor_rows_in_window(&window, &[], &[], &[], &[])
+        .await
+        .unwrap();
+    assert_eq!(all.len(), 3, "alice author + bob merger + bob reviewer");
+
+    // Filter by org → only org_a's events.
+    let by_org = s
+        .list_event_actor_rows_in_window(&window, &[org_a.id], &[], &[], &[])
+        .await
+        .unwrap();
+    assert_eq!(by_org.len(), 2);
+    assert!(by_org.iter().all(|r| r.org_id == org_a.id));
+
+    // Filter by user (Bob) → his two rows across both orgs.
+    let by_user = s
+        .list_event_actor_rows_in_window(&window, &[], &[], &[bob.id], &[])
+        .await
+        .unwrap();
+    assert_eq!(by_user.len(), 2);
+    assert!(by_user.iter().all(|r| r.user_id == bob.id));
+
+    // Filter by role (Author) → only Alice's row in e_in (e_out
+    // is out of window).
+    let by_role = s
+        .list_event_actor_rows_in_window(&window, &[], &[], &[], &[ActorRole::Author])
+        .await
+        .unwrap();
+    assert_eq!(by_role.len(), 1);
+    assert_eq!(by_role[0].user_id, alice.id);
+    assert_eq!(by_role[0].role, ActorRole::Author);
+
+    // Conjunctive filter: repo_a × Bob → just Bob-merger on e_in.
+    let conj = s
+        .list_event_actor_rows_in_window(&window, &[], &[repo_a.id], &[bob.id], &[])
+        .await
+        .unwrap();
+    assert_eq!(conj.len(), 1);
+    assert_eq!(conj[0].role, ActorRole::Merger);
+    assert_eq!(conj[0].repo_id, repo_a.id);
+}
+
+/// `start_fetch_run` → `finish_fetch_run` writes the run log and
+/// `list_recent_fetch_runs` returns newest-first.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Docker or DP_TEST_DATABASE_URL"]
+async fn fetch_run_lifecycle() {
+    let f = fixture().await;
+    let s = f.store();
+
+    let r1 = s.start_fetch_run(FetchRunKind::Backfill).await.unwrap();
+    s.finish_fetch_run(r1, 100, 2, true).await.unwrap();
+
+    let r2 = s.start_fetch_run(FetchRunKind::Reconciler).await.unwrap();
+    s.finish_fetch_run(r2, 5, 0, false).await.unwrap();
+
+    let runs = s.list_recent_fetch_runs(10).await.unwrap();
+    assert_eq!(runs.len(), 2);
+    // Newest first.
+    assert_eq!(runs[0].id, r2);
+    assert_eq!(runs[0].kind, FetchRunKind::Reconciler);
+    assert_eq!(runs[0].items, 5);
+    assert!(!runs[0].partial);
+
+    assert_eq!(runs[1].id, r1);
+    assert_eq!(runs[1].items, 100);
+    assert_eq!(runs[1].errors, 2);
+    assert!(runs[1].partial);
+
+    // finish on an unknown id is NotFound.
+    let nope = s
+        .finish_fetch_run(Uuid::new_v4(), 0, 0, false)
+        .await
+        .unwrap_err();
+    assert!(matches!(nope, StoreError::NotFound { .. }));
+}
+
+/// `pseudonymise_user` rewrites identifying columns + sets
+/// `deleted_at`, but keeps the row id so historical events still
+/// resolve their actor. Idempotent: a second call doesn't disturb
+/// the existing `deleted_at`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Docker or DP_TEST_DATABASE_URL"]
+async fn pseudonymise_user_clears_pii_keeps_id() {
+    let f = fixture().await;
+    let s = f.store();
+
+    let org = seed_org(s, 1, "org-a").await;
+    let repo = seed_repo(s, &org, 10, "dev-pulse").await;
+    let user = seed_user(s, 42, "carol").await;
+
+    // Park one event so we can prove the FK still resolves after
+    // pseudonymisation.
+    let event = ActivityEvent {
+        id: Uuid::new_v4(),
+        org_id: org.id,
+        repo_id: repo.id,
+        kind: EventKind::Commit,
+        ts: Utc::now(),
+        external_id: "C_1".into(),
+        payload: json!({}),
+    };
+    s.record_event(&event).await.unwrap();
+    s.add_event_actors(&[EventActor {
+        event_id: event.id,
+        user_id: user.id,
+        role: ActorRole::Author,
+    }])
+    .await
+    .unwrap();
+
+    s.pseudonymise_user(user.id).await.unwrap();
+
+    let after = s.get_user(user.id).await.unwrap();
+    assert_eq!(after.id, user.id, "row id stable");
+    assert!(
+        after.login.starts_with("deleted-user-"),
+        "login rewritten, got {:?}",
+        after.login
+    );
+    assert!(after.email.is_none());
+    assert!(after.name.is_none());
+    let first_deleted_at: DateTime<Utc> = after.deleted_at.expect("deleted_at set");
+
+    // Soft-deleted rows are hidden from list_users.
+    assert!(s.list_users().await.unwrap().is_empty());
+
+    // Historical event still has the user attached via the
+    // foreign key — the report read still finds it.
+    let window = Window {
+        start: event.ts - Duration::hours(1),
+        end: event.ts + Duration::hours(1),
+        label: "test".into(),
+        tz: "UTC".into(),
+        anchor: WindowAnchor::Utc,
+    };
+    let rows = s
+        .list_event_actor_rows_in_window(&window, &[], &[], &[user.id], &[])
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].user_id, user.id);
+
+    // Idempotent second call: deleted_at must not be reset.
+    s.pseudonymise_user(user.id).await.unwrap();
+    let again = s.get_user(user.id).await.unwrap();
+    assert_eq!(
+        again.deleted_at, Some(first_deleted_at),
+        "deleted_at preserved across re-pseudonymisation"
+    );
+
+    // Pseudonymising an unknown user → NotFound.
+    let miss = s.pseudonymise_user(Uuid::new_v4()).await.unwrap_err();
+    assert!(matches!(miss, StoreError::NotFound { .. }));
+}
+
+/// `upsert_team` is keyed on `(org_id, github_id)` so a slug rename
+/// updates the same row.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Docker or DP_TEST_DATABASE_URL"]
+async fn upsert_team_dedupes_on_org_and_github_id() {
+    let f = fixture().await;
+    let s = f.store();
+
+    let org = seed_org(s, 1, "org-a").await;
+    let t1 = s
+        .upsert_team(&Team {
+            id: Uuid::new_v4(),
+            org_id: org.id,
+            github_id: 7,
+            slug: "backend".into(),
+            name: "Backend".into(),
+        })
+        .await
+        .unwrap();
+    let t2 = s
+        .upsert_team(&Team {
+            id: Uuid::new_v4(),
+            org_id: org.id,
+            github_id: 7,
+            slug: "platform".into(),
+            name: "Platform".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(t1.id, t2.id, "team id stable on (org, github_id) replay");
+    assert_eq!(t2.slug, "platform");
+    assert_eq!(t2.name, "Platform");
+}
