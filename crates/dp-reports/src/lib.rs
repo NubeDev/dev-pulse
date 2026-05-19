@@ -13,6 +13,7 @@
 #![warn(missing_docs)]
 
 pub mod envelope;
+pub mod lenses;
 
 pub use envelope::{
     resolve_window, resolve_window_at, GroupBy, ReportRequest, ResolveError, ScopeMode,
@@ -22,3 +23,8 @@ pub use envelope::{
 // Re-export the resolved Window type from dp-domain so callers only
 // need to depend on dp-reports for the request/response shapes.
 pub use dp_domain::window::{Window, WindowAnchor};
+
+// Re-export the EventActorRow projection the lenses operate on, so
+// downstream report code can `use dp_reports::EventActorRow` without
+// pulling in dp-domain directly.
+pub use dp_domain::store::EventActorRow;
