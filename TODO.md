@@ -492,3 +492,9 @@ Tracks SCOPE §11:
       the whole repo's git log. Enforced by
       `scripts/check-boundaries.sh` in CI from Phase 0 (§0.6) —
       not an aspirational invariant.
+
+## Copilot smoke test
+
+- [ ] Verify codeless Copilot runner can execute a real one-stage
+      job end-to-end: edit a file, write handover, run closing
+      trio, and push to job branch.
