@@ -284,6 +284,9 @@ mod tests {
         async fn list_recent_fetch_runs(&self, _: i64) -> Result<Vec<FetchRun>, StoreError> {
             Ok(self.runs.lock().unwrap().clone())
         }
+        async fn data_as_of(&self) -> Result<dp_domain::freshness::DataAsOf, StoreError> {
+            Ok(dp_domain::freshness::DataAsOf::default())
+        }
         async fn enqueue_webhook(&self, _: &WebhookDelivery) -> Result<(), StoreError> {
             Ok(())
         }

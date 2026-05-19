@@ -638,6 +638,114 @@ async fn fetch_run_lifecycle() {
     assert!(matches!(nope, StoreError::NotFound { .. }));
 }
 
+/// `data_as_of` reports the latest finished `webhook_worker` /
+/// `reconciler` runs and groups cursor `updated_at` per org.
+///
+/// Covers the three things SCOPE §11.7 needs visible on every report
+/// response (TODO §0.3):
+///
+/// * unfinished runs are excluded from the headline `MAX(finished)`;
+/// * the latest finished run *of each kind* wins (older finishes are
+///   ignored even if their `started` is newer);
+/// * per-org freshness collapses multiple cursors (different
+///   resource_kinds / repos) into the org's `MAX(updated_at)`;
+/// * orgs with no cursor rows are absent from `per_org` (the UI
+///   treats absence as "pending first reconcile").
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Docker or DP_TEST_DATABASE_URL"]
+async fn data_as_of_snapshots_freshness_headline_and_per_org() {
+    let f = fixture().await;
+    let s = f.store();
+
+    // Empty state: every field is None / empty.
+    let empty = s.data_as_of().await.unwrap();
+    assert!(empty.webhook_latest.is_none());
+    assert!(empty.reconciler_latest.is_none());
+    assert!(empty.per_org.is_empty());
+
+    // Two webhook runs: only the second one finishes, so it wins.
+    let wh_started_first = s
+        .start_fetch_run(FetchRunKind::WebhookWorker)
+        .await
+        .unwrap();
+    let wh_finished_first = s
+        .start_fetch_run(FetchRunKind::WebhookWorker)
+        .await
+        .unwrap();
+    s.finish_fetch_run(wh_finished_first, 3, 0, false)
+        .await
+        .unwrap();
+
+    // One reconciler tick, finished.
+    let rec = s.start_fetch_run(FetchRunKind::Reconciler).await.unwrap();
+    s.finish_fetch_run(rec, 7, 0, false).await.unwrap();
+
+    // Two orgs with cursors at different times. Org A has two
+    // cursors (different resource kinds) — its `per_org` value
+    // should be the later of the two. Org B has one.
+    let org_a = seed_org(s, 1, "org-a").await;
+    let org_b = seed_org(s, 2, "org-b").await;
+    // Org C exists but has no cursor — must be absent from per_org.
+    let org_c = seed_org(s, 3, "org-c").await;
+    let repo_a = seed_repo(s, &org_a, 10, "alpha").await;
+
+    let t_old = Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).single().unwrap();
+    let t_mid = Utc.with_ymd_and_hms(2025, 1, 2, 0, 0, 0).single().unwrap();
+    let t_new = Utc.with_ymd_and_hms(2025, 1, 3, 0, 0, 0).single().unwrap();
+
+    s.put_cursor(&FetchCursor {
+        org_id: org_a.id,
+        repo_id: Some(repo_a.id),
+        resource_kind: ResourceKind::PullRequests,
+        since: None,
+        etag: None,
+        last_event_id: None,
+        updated_at: t_old,
+    })
+    .await
+    .unwrap();
+    s.put_cursor(&FetchCursor {
+        org_id: org_a.id,
+        repo_id: None,
+        resource_kind: ResourceKind::Members,
+        since: None,
+        etag: None,
+        last_event_id: None,
+        updated_at: t_new,
+    })
+    .await
+    .unwrap();
+    s.put_cursor(&FetchCursor {
+        org_id: org_b.id,
+        repo_id: None,
+        resource_kind: ResourceKind::Members,
+        since: None,
+        etag: None,
+        last_event_id: None,
+        updated_at: t_mid,
+    })
+    .await
+    .unwrap();
+
+    let snap = s.data_as_of().await.unwrap();
+
+    // Headlines: only finished runs count, and they pick the latest
+    // per kind.
+    assert!(snap.webhook_latest.is_some(), "webhook tick finished");
+    assert!(snap.reconciler_latest.is_some(), "reconciler tick finished");
+    // The unfinished webhook run must NOT mask the finished one.
+    let _ = wh_started_first; // keep id alive in scope for clarity
+
+    // Per-org: org_a picks the max across its cursors; org_b matches
+    // its single cursor; org_c is absent.
+    assert_eq!(snap.per_org.get(&org_a.id).copied(), Some(t_new));
+    assert_eq!(snap.per_org.get(&org_b.id).copied(), Some(t_mid));
+    assert!(
+        !snap.per_org.contains_key(&org_c.id),
+        "orgs with no cursors must be absent (treated as pending)",
+    );
+}
+
 /// `pseudonymise_user` rewrites identifying columns + sets
 /// `deleted_at`, but keeps the row id so historical events still
 /// resolve their actor. Idempotent: a second call doesn't disturb

@@ -1,0 +1,48 @@
+{
+  "name": "co-authored-commit-spanning-two-orgs",
+  "description": "SCOPE §11.4 + TODO §0.2 regression. A commit authored by user U1 with co-author U2 lands once in the store but is visible in two orgs (a fork merged across an org boundary — the same activity_event row carries the same event_id while the EventActorRow projection joins it once per (org, role) pairing). The all_orgs_combined lens must dedup on (user_id, event_id) so U1 is credited once and U2 once, not twice each. The single_org lens on either org must credit each contributor once for that org. A second, unrelated org-B commit by U2 is included so totals are distinguishable from a naive 'collapse everything' bug.",
+  "github_recorded_payload_ref": "Synthesized from the GitHub REST response shape documented at https://docs.github.com/en/rest/commits/commits — verbatim raw payload is not checked in to keep this regression hermetic.",
+  "rows": [
+    {"event_id": "c0c0c0c0-0000-0000-0000-000000000001", "user_id": "11111111-0000-0000-0000-0000000000a1", "role": "author",    "org_id": "00000000-0000-0000-0000-000000000a01", "repo_id": "00000000-0000-0000-0000-000000000b01", "kind": "commit", "ts": "2025-01-06T10:00:00Z"},
+    {"event_id": "c0c0c0c0-0000-0000-0000-000000000001", "user_id": "11111111-0000-0000-0000-0000000000a1", "role": "author",    "org_id": "00000000-0000-0000-0000-000000000a02", "repo_id": "00000000-0000-0000-0000-000000000b02", "kind": "commit", "ts": "2025-01-06T10:00:00Z"},
+
+    {"event_id": "c0c0c0c0-0000-0000-0000-000000000001", "user_id": "22222222-0000-0000-0000-0000000000a2", "role": "co_author", "org_id": "00000000-0000-0000-0000-000000000a01", "repo_id": "00000000-0000-0000-0000-000000000b01", "kind": "commit", "ts": "2025-01-06T10:00:00Z"},
+    {"event_id": "c0c0c0c0-0000-0000-0000-000000000001", "user_id": "22222222-0000-0000-0000-0000000000a2", "role": "co_author", "org_id": "00000000-0000-0000-0000-000000000a02", "repo_id": "00000000-0000-0000-0000-000000000b02", "kind": "commit", "ts": "2025-01-06T10:00:00Z"},
+
+    {"event_id": "c0c0c0c0-0000-0000-0000-000000000002", "user_id": "22222222-0000-0000-0000-0000000000a2", "role": "author",    "org_id": "00000000-0000-0000-0000-000000000a02", "repo_id": "00000000-0000-0000-0000-000000000b02", "kind": "commit", "ts": "2025-01-07T11:00:00Z"}
+  ],
+  "checks": [
+    {
+      "name": "all_orgs_combined: co-authored commit credits each contributor once across both orgs",
+      "scope_mode": "all_orgs_combined",
+      "metric": "commits_authored",
+      "expected_total": 3,
+      "expected_by_user": {
+        "11111111-0000-0000-0000-0000000000a1": 1,
+        "22222222-0000-0000-0000-0000000000a2": 2
+      }
+    },
+    {
+      "name": "single_org A: each contributor credited once for the shared commit",
+      "scope_mode": "single_org",
+      "scope_org_id": "00000000-0000-0000-0000-000000000a01",
+      "metric": "commits_authored",
+      "expected_total": 2,
+      "expected_by_user": {
+        "11111111-0000-0000-0000-0000000000a1": 1,
+        "22222222-0000-0000-0000-0000000000a2": 1
+      }
+    },
+    {
+      "name": "single_org B: A1+A2 from shared commit, plus the extra org-B-only commit by U2",
+      "scope_mode": "single_org",
+      "scope_org_id": "00000000-0000-0000-0000-000000000a02",
+      "metric": "commits_authored",
+      "expected_total": 3,
+      "expected_by_user": {
+        "11111111-0000-0000-0000-0000000000a1": 1,
+        "22222222-0000-0000-0000-0000000000a2": 2
+      }
+    }
+  ]
+}

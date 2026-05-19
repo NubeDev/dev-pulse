@@ -24,8 +24,10 @@
 use std::error::Error as StdError;
 
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use dp_domain::event::{ActivityEvent, ActorRole, EventActor};
 use dp_domain::fetch::{FetchCursor, FetchRun, FetchRunKind, ResourceKind};
+use dp_domain::freshness::DataAsOf;
 use dp_domain::membership::Membership;
 use dp_domain::org::Org;
 use dp_domain::repo::Repo;
@@ -642,6 +644,54 @@ impl Store for PgStore {
         .await
         .map_err(map_sqlx)?;
         rows.iter().map(row_to_fetch_run).collect()
+    }
+
+    async fn data_as_of(&self) -> Result<DataAsOf, StoreError> {
+        // Three indexed aggregates dispatched as three small queries
+        // rather than one CTE so the row decoders stay obvious. The
+        // dp_fetch_runs_started_idx covers the headline `MAX(finished)`
+        // probes; the per-org group-by on dp_fetch_cursors is small
+        // (one row per (org, repo, resource_kind)) so a seq-scan +
+        // hash-agg is fine at the scales TODO §0.1 sizes for.
+        let webhook_latest: Option<DateTime<Utc>> = sqlx::query_scalar(
+            "SELECT MAX(finished) FROM dp_fetch_runs \
+             WHERE kind = $1 AND finished IS NOT NULL",
+        )
+        .bind(fetch_run_kind_to_text(FetchRunKind::WebhookWorker))
+        .fetch_one(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+
+        let reconciler_latest: Option<DateTime<Utc>> = sqlx::query_scalar(
+            "SELECT MAX(finished) FROM dp_fetch_runs \
+             WHERE kind = $1 AND finished IS NOT NULL",
+        )
+        .bind(fetch_run_kind_to_text(FetchRunKind::Reconciler))
+        .fetch_one(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+
+        let cursor_rows = sqlx::query(
+            "SELECT org_id, MAX(updated_at) AS latest \
+             FROM dp_fetch_cursors \
+             GROUP BY org_id",
+        )
+        .fetch_all(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+
+        let mut per_org = std::collections::HashMap::with_capacity(cursor_rows.len());
+        for r in &cursor_rows {
+            let org_id: Uuid = r.try_get("org_id").map_err(map_sqlx)?;
+            let latest: DateTime<Utc> = r.try_get("latest").map_err(map_sqlx)?;
+            per_org.insert(org_id, latest);
+        }
+
+        Ok(DataAsOf {
+            webhook_latest,
+            reconciler_latest,
+            per_org,
+        })
     }
 
     // ---- webhook inbox --------------------------------------------

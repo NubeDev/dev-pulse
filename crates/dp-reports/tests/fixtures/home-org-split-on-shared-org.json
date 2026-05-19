@@ -1,0 +1,54 @@
+{
+  "name": "home-org-split-on-shared-org",
+  "description": "SCOPE §7 cross-company executive use case. Two engineers contribute across two orgs. U1's home org is A; U2's home org is B. Both also contribute to the shared org S. The per_org_split lens must surface two buckets per user (home and shared), exposing context-switching to the exec viewer. The single_org lens on org S must merge both engineers' contributions into one org-scoped view.",
+  "github_recorded_payload_ref": "Synthesized from /orgs/{org}/events GitHub REST response shape, three orgs (A, B, S) with one user each in home + both crossing into S.",
+  "rows": [
+    {"event_id": "e1000000-0000-0000-0000-000000000001", "user_id": "11111111-0000-0000-0000-000000000001", "role": "author",   "org_id": "0a000000-0000-0000-0000-000000000aaa", "repo_id": "0b000000-0000-0000-0000-000000000aa1", "kind": "commit",                "ts": "2025-01-06T08:00:00Z"},
+    {"event_id": "e1000000-0000-0000-0000-000000000002", "user_id": "11111111-0000-0000-0000-000000000001", "role": "author",   "org_id": "0a000000-0000-0000-0000-000000000aaa", "repo_id": "0b000000-0000-0000-0000-000000000aa1", "kind": "commit",                "ts": "2025-01-07T09:00:00Z"},
+    {"event_id": "e1000000-0000-0000-0000-000000000003", "user_id": "11111111-0000-0000-0000-000000000001", "role": "author",   "org_id": "0a000000-0000-0000-0000-000000000aaa", "repo_id": "0b000000-0000-0000-0000-000000000aa1", "kind": "commit",                "ts": "2025-01-08T10:00:00Z"},
+
+    {"event_id": "e1000000-0000-0000-0000-000000000004", "user_id": "11111111-0000-0000-0000-000000000001", "role": "author",   "org_id": "05000000-0000-0000-0000-000000000555", "repo_id": "05000000-0000-0000-0000-000000000551", "kind": "commit",                "ts": "2025-01-09T11:00:00Z"},
+    {"event_id": "e1000000-0000-0000-0000-000000000005", "user_id": "11111111-0000-0000-0000-000000000001", "role": "author",   "org_id": "05000000-0000-0000-0000-000000000555", "repo_id": "05000000-0000-0000-0000-000000000551", "kind": "pull_request_opened",  "ts": "2025-01-09T12:00:00Z"},
+
+    {"event_id": "e2000000-0000-0000-0000-000000000001", "user_id": "22222222-0000-0000-0000-000000000002", "role": "author",   "org_id": "0b000000-0000-0000-0000-000000000bbb", "repo_id": "0b000000-0000-0000-0000-000000000bb1", "kind": "commit",                "ts": "2025-01-06T08:30:00Z"},
+    {"event_id": "e2000000-0000-0000-0000-000000000002", "user_id": "22222222-0000-0000-0000-000000000002", "role": "author",   "org_id": "0b000000-0000-0000-0000-000000000bbb", "repo_id": "0b000000-0000-0000-0000-000000000bb1", "kind": "commit",                "ts": "2025-01-08T09:30:00Z"},
+
+    {"event_id": "e2000000-0000-0000-0000-000000000003", "user_id": "22222222-0000-0000-0000-000000000002", "role": "author",   "org_id": "05000000-0000-0000-0000-000000000555", "repo_id": "05000000-0000-0000-0000-000000000551", "kind": "commit",                "ts": "2025-01-09T10:00:00Z"},
+    {"event_id": "e2000000-0000-0000-0000-000000000004", "user_id": "22222222-0000-0000-0000-000000000002", "role": "author",   "org_id": "05000000-0000-0000-0000-000000000555", "repo_id": "05000000-0000-0000-0000-000000000551", "kind": "commit",                "ts": "2025-01-09T16:00:00Z"},
+    {"event_id": "e2000000-0000-0000-0000-000000000005", "user_id": "22222222-0000-0000-0000-000000000002", "role": "author",   "org_id": "05000000-0000-0000-0000-000000000555", "repo_id": "05000000-0000-0000-0000-000000000551", "kind": "commit",                "ts": "2025-01-10T11:00:00Z"}
+  ],
+  "checks": [
+    {
+      "name": "per_org_split: U1 splits 3 (home A) / 1 (shared S); U2 splits 2 (home B) / 3 (shared S)",
+      "scope_mode": "per_org_split",
+      "metric": "commits_authored",
+      "expected_by_user_org": {
+        "11111111-0000-0000-0000-000000000001|0a000000-0000-0000-0000-000000000aaa": 3,
+        "11111111-0000-0000-0000-000000000001|05000000-0000-0000-0000-000000000555": 1,
+        "22222222-0000-0000-0000-000000000002|0b000000-0000-0000-0000-000000000bbb": 2,
+        "22222222-0000-0000-0000-000000000002|05000000-0000-0000-0000-000000000555": 3
+      }
+    },
+    {
+      "name": "single_org S: both engineers' shared-org commits merge to 1 + 3 = 4",
+      "scope_mode": "single_org",
+      "scope_org_id": "05000000-0000-0000-0000-000000000555",
+      "metric": "commits_authored",
+      "expected_total": 4,
+      "expected_by_user": {
+        "11111111-0000-0000-0000-000000000001": 1,
+        "22222222-0000-0000-0000-000000000002": 3
+      }
+    },
+    {
+      "name": "all_orgs_combined: 8 distinct commits authored total (U1: 4, U2: 5; deduped per (user, event))",
+      "scope_mode": "all_orgs_combined",
+      "metric": "commits_authored",
+      "expected_total": 9,
+      "expected_by_user": {
+        "11111111-0000-0000-0000-000000000001": 4,
+        "22222222-0000-0000-0000-000000000002": 5
+      }
+    }
+  ]
+}

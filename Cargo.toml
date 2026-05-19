@@ -47,6 +47,7 @@ starter-cli             = { path = "../starter/crates/starter-cli",             
 anyhow      = "1"
 async-trait = "0.1"
 chrono      = { version = "0.4", default-features = false, features = ["serde", "clock"] }
+chrono-tz   = { version = "0.10", default-features = false, features = ["serde"] }
 clap        = { version = "4",   features = ["derive", "env"] }
 serde       = { version = "1",   features = ["derive"] }
 serde_json  = "1"
