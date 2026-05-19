@@ -12,4 +12,10 @@ publish = false
 path = "src/lib.rs"
 
 [dependencies]
-dp-domain = { workspace = true }
+dp-domain  = { workspace = true }
+dp-fetcher = { workspace = true }
+anyhow     = { workspace = true }
+clap       = { workspace = true }
+tokio      = { workspace = true, features = ["rt", "macros"] }
+tracing    = { workspace = true }
+uuid       = { workspace = true }

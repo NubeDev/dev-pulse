@@ -1,0 +1,20 @@
+{
+  "_comment": "Recorded shape of a `push` whose commit author email does not resolve to any known GitHub user — GitHub leaves `username` absent on these. SCOPE §6 calls this the 'unattributed' bucket: the commit still happened so the event row must exist (the org/repo commit count needs to be right), but there is no GitHub user to credit. Because the `EventActor` schema has a non-null `user_id` column, the handler emits the `ActivityEvent` with **zero** actor rows attached — the count stays correct via the event row itself, and the report layer treats actor-less commits as the unattributed bucket. (A later schema change could move to a NULL user_id + role=author row; the contract this test pins is that ingest never invents a fake user.)",
+  "ref": "refs/heads/main",
+  "repository": {
+    "id": 1001,
+    "name": "dev-pulse",
+    "full_name": "nube-io/dev-pulse",
+    "owner": { "id": 42, "login": "nube-io" }
+  },
+  "sender": { "id": 7, "login": "alice" },
+  "commits": [
+    {
+      "id": "cafef00d00000000000000000000000000001234",
+      "timestamp": "2024-04-04T04:04:04Z",
+      "message": "wip: delete deprecated module\n",
+      "author":    { "name": "External Contributor", "email": "anon-contributor@example.org" },
+      "committer": { "name": "External Contributor", "email": "anon-contributor@example.org" }
+    }
+  ]
+}

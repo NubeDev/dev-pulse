@@ -1,0 +1,22 @@
+{
+  "_comment": "Recorded shape of a `pull_request` webhook delivery for a squash-merge. SCOPE §6: a squashed merge collapses every commit on the branch into a single new commit, so author (the PR opener), committer (the user who pressed merge as recorded on the merge commit), and merger (the user who pressed the button) can all be different humans. All three must be distinct actor rows on the merged-PR event.",
+  "action": "closed",
+  "repository": {
+    "id": 1001,
+    "name": "dev-pulse",
+    "full_name": "nube-io/dev-pulse",
+    "owner": { "id": 42, "login": "nube-io" }
+  },
+  "sender": { "id": 91, "login": "merger-bob" },
+  "pull_request": {
+    "node_id":    "PR_squash_distinct_ids",
+    "number":     314,
+    "merged":     true,
+    "created_at": "2024-02-01T01:01:01Z",
+    "closed_at":  "2024-02-02T02:02:02Z",
+    "merged_at":  "2024-02-02T02:02:02Z",
+    "user":       { "id": 7,  "login": "alice-author"  },
+    "merged_by":  { "id": 91, "login": "merger-bob"    },
+    "committer":  { "id": 113, "login": "carol-committer" }
+  }
+}

@@ -1,0 +1,58 @@
+name: phase2-smoke
+
+# Phase 2 ingestion smoke tests — Stage 10 of TODO.md §Phase-2.
+#
+# This job pins seven invariants by name:
+#
+#   1. webhook_replay_same_delivery_id_yields_exactly_one_upsert
+#   2. co_authored_commit_fans_out_to_n_event_actors_rows
+#   3. missed_webhook_detected_by_reconciler
+#   4. backfill_respects_rate_limit_headroom
+#   5. scheduler_coalesces_overlapping_ticks
+#   6. fetch_runs_row_written_per_batch_per_kind
+#   7. boundary-check-still-green (scripts/check-boundaries.sh)
+#
+# Tests 1–6 live in `crates/dp-fetcher/src/phase2_smoke.rs` so the
+# CI log line carries the literal contract name. Test 7 is the
+# starter-* boundary script — re-run here so a smoke breakage and
+# a boundary breakage surface in the same workflow.
+#
+# Docker is NOT required: every smoke test uses the in-memory
+# `FakeStore` plus wiremock. The Postgres-backed integration tests
+# live in `.github/workflows/integration.yml`.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  phase2-smoke:
+    name: phase2-smoke (dp-fetcher)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # Run only the six named smoke tests. `--exact` would require
+      # listing each, so we filter on the module prefix instead —
+      # `cargo test phase2_smoke` matches the in-crate test module
+      # set up in `crates/dp-fetcher/src/lib.rs`.
+      - name: Run Phase-2 smoke tests
+        run: cargo test -p dp-fetcher --lib phase2_smoke -- --nocapture
+
+      # Stage-10 spec calls out `boundary-check-still-green` as
+      # one of the seven invariants — re-run the script here so
+      # a smoke-job failure flags both classes of regression in
+      # one workflow. (It also runs in `.github/workflows/boundaries.yml`
+      # on the same triggers, but a duplicate run is cheap and
+      # keeps this workflow self-contained.)
+      - name: Boundary check
+        run: ./scripts/check-boundaries.sh

@@ -12,4 +12,46 @@ publish = false
 path = "src/lib.rs"
 
 [dependencies]
-dp-domain = { workspace = true }
+dp-domain    = { workspace = true }
+async-trait  = { workspace = true }
+chrono       = { workspace = true }
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+thiserror    = { workspace = true }
+tokio        = { workspace = true, features = ["sync", "time", "rt", "macros"] }
+tracing      = { workspace = true }
+uuid         = { workspace = true }
+
+# Octocrab is the *only* GitHub HTTP client used in dev-pulse. Stage 3
+# encapsulates it inside `dp_fetcher::client`; everything else in this
+# crate (reconciler, backfill, webhook worker) goes through that
+# wrapper so rate-limit pacing + conditional-GET handling live in one
+# place (TODO §Phase 2, SCOPE §10).
+octocrab       = { version = "0.43", default-features = false, features = ["default-client", "rustls", "rustls-ring", "retry", "timeout", "tracing"] }
+jsonwebtoken   = "9"
+secrecy        = "0.10"
+http           = "1"
+http-body-util = "0.1"
+bytes          = "1"
+
+# Stage 4 — webhook receiver. axum mounts the POST /webhooks/github
+# route, prometheus carries the receipt-to-200 histogram (TODO
+# §Phase-2), hmac/sha2 perform the GitHub `X-Hub-Signature-256`
+# validation, hex decodes the wire format. `subtle` is pulled in
+# transitively by `hmac` for constant-time comparison.
+axum         = { workspace = true }
+prometheus   = { workspace = true }
+hmac         = "0.12"
+sha2         = "0.10"
+hex          = "0.4"
+
+[dev-dependencies]
+# Wiremock-backed unit tests for the client wrapper — exercise the
+# happy path, 304, 401, 403 secondary-rate, 429, and 5xx branches
+# without a real GitHub on the other end.
+wiremock   = "0.6"
+tokio      = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+serde_json = { workspace = true }
+# Stage 4 webhook tests drive the axum Router via `tower::ServiceExt`'s
+# `oneshot`, which needs the `util` feature.
+tower      = { version = "0.5", features = ["util"] }
