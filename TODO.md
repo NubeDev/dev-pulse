@@ -233,27 +233,27 @@ deletion-cascade all roll into Phases 1–2 and inflate them.
 
 ### Phase 0 — bootstrap (1–2 days)
 
-- [ ] Add `dev-pulse` to a workspace `Cargo.toml`. Pin `starter-*`
+- [x] Add `dev-pulse` to a workspace `Cargo.toml`. Pin `starter-*`
       via `path = "../starter/crates/<name>"`.
-- [ ] Copy `examples/notes/Cargo.toml` as a starting point; swap
+- [x] Copy `examples/notes/Cargo.toml` as a starting point; swap
       `sqlite` → `postgres`, `auth-token` → `auth-users`, drop
       tonic/prost/build.rs.
-- [ ] Scaffold the crates listed in §2 (empty `lib.rs` each).
-- [ ] Wire `starter_observability::tracing::init` in `main.rs`.
-- [ ] Land `scripts/check-boundaries.sh` and a CI job that runs it
+- [x] Scaffold the crates listed in §2 (empty `lib.rs` each).
+- [x] Wire `starter_observability::tracing::init` in `main.rs`.
+- [x] Land `scripts/check-boundaries.sh` and a CI job that runs it
       (§0.6).
 
 ### Phase 1 — domain + store + migrations (4–5 days)
 
-- [ ] Write `dp-domain`: entity types and the `Store` trait
+- [x] Write `dp-domain`: entity types and the `Store` trait
       (`upsert_user`, `record_event`, `add_event_actors`,
       `list_event_actor_rows_in_window`, `set_home_org`,
       `pseudonymise_user`, `get_cursor`, `put_cursor`,
       `enqueue_webhook`, `claim_webhooks`, …). Zero `starter-*`
       imports. Mirror
       [domain.rs](file:///home/user/code/rust/starter/examples/notes/src/domain.rs).
-- [ ] Write `dp-store-pg`: implement `Store` against a `PgPool`.
-- [ ] Schema (SCOPE §5/§6/§4.1 + §0.2/§0.3/§0.5):
+- [x] Write `dp-store-pg`: implement `Store` against a `PgPool`.
+- [x] Schema (SCOPE §5/§6/§4.1 + §0.2/§0.3/§0.5):
       - `users(id, github_id, login, email, name, deleted_at)` —
         soft-delete + pseudonymisation per §0.5.
       - `orgs`, `teams`, `repos`.
@@ -272,7 +272,7 @@ deletion-cascade all roll into Phases 1–2 and inflate them.
       - `fetch_runs(id, kind, started, finished, items, errors,
         partial)` — `kind ∈ webhook_worker, reconciler, backfill`.
       - `audit_log(actor_user_id, action, target, at)`.
-- [ ] Mandatory indexes (medium issue, called out explicitly):
+- [x] Mandatory indexes (medium issue, called out explicitly):
       - `event_actors(user_id, event_id)`
       - `activity_events(org_id, ts DESC)`
       - `activity_events(repo_id, ts DESC)`
@@ -283,7 +283,7 @@ deletion-cascade all roll into Phases 1–2 and inflate them.
         Decide at first 10k-event load test, not up-front.
       - `webhook_inbox(processed_at) WHERE processed_at IS NULL`
         (partial index for the worker drain).
-- [ ] Migrations under `crates/dp-store-pg/migrations/dp/`. Build
+- [x] Migrations under `crates/dp-store-pg/migrations/dp/`. Build
       a `sources()` returning `[starter_auth_users, dp]` per the
       starter migrations namespacing rule (consumer rules §4.5).
 
