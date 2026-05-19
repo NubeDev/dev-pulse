@@ -1,0 +1,16 @@
+[package]
+name        = "dp-rest"
+description = "axum Router<AppState> with utoipa-annotated handlers."
+version.workspace      = true
+edition.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+dp-domain  = { workspace = true }
+dp-reports = { workspace = true }

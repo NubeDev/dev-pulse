@@ -1,0 +1,60 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/dp-domain",
+    "crates/dp-store-pg",
+    "crates/dp-fetcher",
+    "crates/dp-reports",
+    "crates/dp-rest",
+    "crates/dp-mcp",
+    "crates/dp-cli",
+    "crates/dp-server",
+    "crates/dev-pulse",
+]
+
+[workspace.package]
+version      = "0.1.0"
+edition      = "2021"
+license      = "MIT OR Apache-2.0"
+repository   = "https://github.com/NubeDev/dev-pulse"
+rust-version = "1.78"
+
+[workspace.dependencies]
+# Internal dev-pulse crates.
+dp-domain   = { path = "crates/dp-domain",   version = "0.1.0" }
+dp-store-pg = { path = "crates/dp-store-pg", version = "0.1.0" }
+dp-fetcher = { path = "crates/dp-fetcher",  version = "0.1.0" }
+dp-reports  = { path = "crates/dp-reports",  version = "0.1.0" }
+dp-rest     = { path = "crates/dp-rest",     version = "0.1.0" }
+dp-mcp      = { path = "crates/dp-mcp",      version = "0.1.0" }
+dp-cli      = { path = "crates/dp-cli",      version = "0.1.0" }
+dp-server   = { path = "crates/dp-server",   version = "0.1.0" }
+
+# starter-* — consumed as a library (TODO §1). Pinned via path per
+# SCOPE §"In scope". Never edited from this repo.
+starter-spi             = { path = "../starter/crates/starter-spi",             version = "0.1.0" }
+starter-config          = { path = "../starter/crates/starter-config",          version = "0.1.0" }
+starter-observability   = { path = "../starter/crates/starter-observability",   version = "0.1.0" }
+starter-server          = { path = "../starter/crates/starter-server",          version = "0.1.0" }
+starter-store-postgres  = { path = "../starter/crates/starter-store-postgres",  version = "0.1.0" }
+starter-mcp             = { path = "../starter/crates/starter-mcp",             version = "0.1.0" }
+starter-auth-users      = { path = "../starter/crates/starter-auth-users",      version = "0.1.0" }
+starter-secrets-file    = { path = "../starter/crates/starter-secrets-file",    version = "0.1.0" }
+starter-client-rs       = { path = "../starter/crates/starter-client-rs",       version = "0.1.0" }
+starter-cli             = { path = "../starter/crates/starter-cli",             version = "0.1.0" }
+
+# Common third-party deps used across dev-pulse crates.
+anyhow      = "1"
+async-trait = "0.1"
+chrono      = { version = "0.4", default-features = false, features = ["serde", "clock"] }
+clap        = { version = "4",   features = ["derive", "env"] }
+serde       = { version = "1",   features = ["derive"] }
+serde_json  = "1"
+thiserror   = "1"
+tokio       = { version = "1",   features = ["rt-multi-thread", "macros", "sync", "signal"] }
+tracing     = "0.1"
+uuid        = { version = "1",   features = ["v4", "serde"] }
+sqlx        = { version = "0.8", default-features = false, features = ["runtime-tokio", "macros", "postgres"] }
+axum        = { version = "0.8", features = ["macros"] }
+utoipa      = { version = "5",   features = ["axum_extras", "uuid", "chrono"] }
+prometheus  = "0.14"

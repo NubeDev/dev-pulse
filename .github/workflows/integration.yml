@@ -1,0 +1,46 @@
+name: integration
+
+# Integration tests for `dp-store-pg` against a real Postgres.
+#
+# `cargo test --workspace` (the `boundaries` and any future default
+# test job) skips these — every integration test is marked
+# `#[ignore]` so Docker is not required for the default flow. This
+# job opts them in with `-- --ignored`.
+#
+# The tests use `testcontainers-modules` to spin up an ephemeral
+# PG16 container per test (see `fixture()` in
+# `crates/dp-store-pg/tests/integration.rs`). GitHub's
+# `ubuntu-latest` runners ship a working Docker socket, so no extra
+# service definition is needed — and per-test containers give us
+# state isolation for free (no manual TRUNCATE between tests).
+#
+# If you want to point at a long-lived database instead (faster on
+# repeated local runs), export `DP_TEST_DATABASE_URL` before
+# invoking cargo and the fixture will skip the container path.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  integration:
+    name: dp-store-pg integration
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run integration tests
+        # `--test integration` so we only build the integration
+        # target, not every test tree in the workspace. `--ignored`
+        # opts the gated tests in.
+        run: cargo test -p dp-store-pg --test integration -- --ignored

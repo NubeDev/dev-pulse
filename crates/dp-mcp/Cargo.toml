@@ -1,0 +1,16 @@
+[package]
+name        = "dp-mcp"
+description = "MCP tools: user_activity, team_activity, home_org_split, freshness."
+version.workspace      = true
+edition.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+dp-domain  = { workspace = true }
+dp-reports = { workspace = true }
