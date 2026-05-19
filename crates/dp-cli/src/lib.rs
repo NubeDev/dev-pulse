@@ -23,7 +23,9 @@
 use std::sync::Arc;
 
 use anyhow::Result;
+use dp_fetcher::backfill::{Backfill, BackfillStats};
 use dp_fetcher::reconciler::{Scheduler, Scope, TickStats};
+use uuid::Uuid;
 
 /// Run one reconciler tick via the scheduler's coalescing guard.
 ///
@@ -52,7 +54,38 @@ pub async fn fetch_now(scheduler: Arc<Scheduler>, scope: Scope) -> Result<Option
     Ok(stats)
 }
 
-// Coverage note: the end-to-end semantics of `fetch_now`
-// (coalescing, run-log writes, cursor advancement) are exercised
-// in `dp_fetcher::reconciler::tests`. This crate is a thin
-// adapter; an extra test here would duplicate that surface.
+/// Run a one-shot backfill for `org_id` against the configured
+/// historical window (TODO §Phase 2, default 90 days).
+///
+/// Stage 9's shared seam: the bin's `backfill` subcommand and the
+/// `dp-server` install-time hook both call this. The
+/// [`Backfill`] driver itself does no CLI parsing — the bin
+/// resolves the `org_id` from `--org` (or iterates installations
+/// in install-time mode) and constructs the [`Backfill`] with a
+/// **dedicated** octocrab client wrapper so live webhook traffic
+/// keeps its share of the rate-limit budget.
+///
+/// Resumability lives entirely in the cursor: a crashed
+/// backfill picks up at the high-water timestamp the previous
+/// run reached, so re-invoking this function is the recovery
+/// path — there is no separate "resume" CLI verb.
+pub async fn backfill_org(backfill: Arc<Backfill>, org_id: Uuid) -> Result<BackfillStats> {
+    let stats = backfill.run_for_org(org_id, None).await?;
+    tracing::info!(
+        target: "dp_cli::backfill",
+        %org_id,
+        chunks  = stats.chunks,
+        items   = stats.items,
+        errors  = stats.errors,
+        skipped = stats.skipped,
+        "backfill complete"
+    );
+    Ok(stats)
+}
+
+// Coverage note: the end-to-end semantics of `fetch_now` and
+// `backfill_org` (coalescing, run-log writes, cursor
+// advancement, resumability) are exercised in
+// `dp_fetcher::reconciler::tests` and
+// `dp_fetcher::backfill::tests`. This crate is a thin adapter;
+// extra tests here would duplicate that surface.

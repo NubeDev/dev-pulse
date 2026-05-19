@@ -49,7 +49,7 @@
 //! talks to octocrab; reconciler tests don't need to mock it
 //! deeper.
 
-mod synth;
+pub(crate) mod synth;
 mod targets;
 #[cfg(test)]
 mod tests;
