@@ -34,3 +34,8 @@ pub mod client;
 pub mod reconciler;
 pub mod webhook;
 pub mod worker;
+
+// Stage-10 Phase-2 smoke tests. Pinned-by-name in this module so
+// the CI log line is the contract — see TODO §Phase-2 stage 10.
+#[cfg(test)]
+mod phase2_smoke;
