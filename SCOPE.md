@@ -384,3 +384,174 @@ TODO §0.1–§0.6 are settled and locked as inputs to Phase 2:
 - §0.6 boundary rule + `scripts/check-boundaries.sh` — enforced
   in CI; this phase adds no `starter_*` imports to
   `dp-fetcher`.
+
+### 15.6 Report envelope shape (Phase 3, locked for v1)
+
+- **Decision (Phase 3):** every report in `dp-reports` accepts
+  exactly one input envelope, used verbatim by the Phase 4 REST
+  handlers and the Phase 5 MCP tool schemas so the three surfaces
+  never drift:
+
+  ```rust
+  pub struct ReportEnvelope {
+      pub orgs:           Vec<OrgId>,        // empty = all visible to caller
+      pub users:          Vec<UserId>,       // empty = no user filter
+      pub teams:          Vec<TeamId>,       // empty = no team filter
+      pub window:         Window,            // §0.4: {label, tz, anchor}
+      pub scope_mode:     ScopeMode,         // SingleOrg | AllOrgsCombined | PerOrgSplit
+      pub group_by:       Vec<GroupBy>,      // User | Team | Repo | HomeOrg | Org
+      pub activity_types: Vec<ActivityType>, // empty = all four §6 categories
+      pub actor_roles:    Vec<ActorRole>,    // empty = role filter from metric default
+  }
+  ```
+
+  - `Window` is the §0.4 contract `{label, tz, anchor}`; the
+    resolved UTC `(start, end)` is **computed server-side** and
+    echoed in the response (§0.4 + Phase 3 task list).
+  - `scope_mode` drives the three SCOPE §8.1 lenses; the de-dup
+    rule for `AllOrgsCombined` is `(user_id, event_id)` per §0.2.
+  - `group_by` is ordered — the first dimension is the row key,
+    the rest are sub-keys for nested rendering.
+  - `actor_roles` overrides the per-metric default mapping in
+    §15.7 when the caller wants a non-default lens (e.g. "PRs I
+    *authored or co-authored*" vs the default "PRs authored").
+- **Why locked now:** Phase 4 handlers (utoipa schemas) and Phase
+  5 MCP `Tool::input_schema` both serialise this struct. Changing
+  field names or shape after Phase 3 lands forces a coordinated
+  three-surface migration and breaks any persisted saved-report
+  URLs the frontend issues.
+- **Revisit triggers:**
+  - A use-case in SCOPE §7 needs a dimension this envelope cannot
+    express (e.g. filter by label, by branch) → extend with a new
+    *additive* optional field, never repurpose an existing one.
+  - The MCP surface (Phase 5) discovers an agent ergonomics issue
+    that requires a flatter schema → re-open with the Phase 4
+    REST shape pinned, MCP gets a thin adapter.
+- **Resolves:** Phase 3 task list line 1 ("every report accepts
+  the same envelope").
+
+### 15.7 Role → metric mapping (one filter per metric, no overlap)
+
+- **Decision (Phase 3):** every count-style metric has **exactly
+  one** `actor_roles` filter against `event_actors.role` (§0.2).
+  No metric sums two roles by default; callers who want a union
+  pass `actor_roles` explicitly in the envelope (§15.6).
+
+  | Metric                       | `activity_events.kind`              | Default `actor_roles` filter      |
+  |------------------------------|-------------------------------------|-----------------------------------|
+  | commits authored             | `push.commit`                       | `role IN (author, co_author)`     |
+  | commits committed (squash)   | `push.commit`                       | `role = committer`                |
+  | PRs opened                   | `pull_request.opened`               | `role = author`                   |
+  | PRs merged                   | `pull_request.merged`               | `role = merger`                   |
+  | PRs closed (unmerged)        | `pull_request.closed`               | `role = closer`                   |
+  | PRs reviewed                 | `pull_request_review`               | `role = reviewer`                 |
+  | PR review comments           | `pull_request_review_comment`       | `role = commenter`                |
+  | issues opened                | `issues.opened`                     | `role = author`                   |
+  | issues closed                | `issues.closed`                     | `role = closer`                   |
+  | issues commented             | `issue_comment`                     | `role = commenter`                |
+  | issues assigned              | `issues.assigned`                   | `role = assignee`                 |
+  | review requests received     | `pull_request_review_requested`     | `role = requester`                |
+  | workflow runs triggered      | `workflow_run`                      | `role = author`                   |
+  | deployments cut              | `deployment`                        | `role = author`                   |
+  | releases cut                 | `release`                           | `role = author`                   |
+
+  - `commits authored` unions `author + co_author` because SCOPE
+    §6 mandates co-author credit; this is the *only* default-union
+    metric and it is called out in the response field-doc.
+  - Bot users (SCOPE §6 caveat) are filtered at the
+    `users.is_bot = false` predicate, **not** in this role map —
+    the role attribution is the same for humans and bots; the UI
+    suppression is a separate step.
+  - Unattributed events (`event_actors.user_id IS NULL`) still
+    count in totals but never group into a per-user row.
+- **Why locked now:** the role union for the same logical metric
+  shifting between Phase 3 (reports) and Phase 5 (MCP) would
+  cause silently divergent numbers across surfaces — a direct
+  violation of SCOPE §11.4 trust.
+- **Revisit triggers:**
+  - GitHub adds a new event type (e.g. discussion answers) → add
+    a row, do not edit an existing one.
+  - A target deployment requests "PRs I touched" (union of
+    author + reviewer + commenter) → that is a *new metric*, not
+    a redefinition of an existing row.
+- **Resolves:** Phase 3 task list line "counts for events
+  (filtered by `actor_roles`)".
+
+### 15.8 Trend bucket granularity (window-length driven)
+
+- **Decision (Phase 3):** the trend chart's bucket size is a pure
+  function of the resolved UTC window length, picked server-side
+  so every surface (REST, MCP, frontend) renders identical
+  buckets for the same envelope:
+
+  | Window length (UTC days) | Bucket  | Postgres truncation                     |
+  |--------------------------|---------|-----------------------------------------|
+  | ≤ 31                     | day     | `date_trunc('day',  ts AT TIME ZONE tz)`|
+  | 32 – 183                 | week    | `date_trunc('week', ts AT TIME ZONE tz)`|
+  | > 183                    | month   | `date_trunc('month',ts AT TIME ZONE tz)`|
+
+  - Truncation is performed in the **window TZ** (§0.4
+    `Window.tz`), then the bucket-start is converted back to UTC
+    for the response. This makes "week starting Monday" mean
+    Monday-in-Berlin for a Berlin viewer and Monday-in-UTC for
+    `anchor = utc`.
+  - The response carries the resolved bucket size as
+    `trend.bucket ∈ "day" | "week" | "month"` so the frontend
+    labels axes without re-deriving the rule.
+  - Empty buckets are emitted as zero-count rows so the chart has
+    no gaps; the frontend never has to infer missing periods.
+- **Why locked now:** without a fixed mapping, two callers
+  hitting the same envelope on different surfaces can get charts
+  with different bucket sizes — confusing and a SCOPE §11.4 trust
+  hit.
+- **Revisit triggers:**
+  - SCOPE §7 exec audiences request "trailing 18 months as
+    weeks" → add an optional envelope override
+    (`trend_bucket: Option<TrendBucket>`); the default stays the
+    table above.
+  - Performance: monthly aggregation over 5y of events on the
+    first production deployment is too slow → consider a
+    materialised `event_actor_facts` pre-aggregate (already
+    flagged in Phase 1 §6 of TODO).
+- **Resolves:** Phase 3 task list (trend implied by SCOPE §11.5
+  "headline + table + trend") and the Phase 7 frontend's chart
+  contract.
+
+### 15.9 Percentile semantics (`percentile_cont`, NULL when n < 5)
+
+- **Decision (Phase 3):** duration-style metrics (review
+  turnaround, time-to-first-review, time-to-merge, lead time) are
+  aggregated with Postgres `percentile_cont(p) WITHIN GROUP
+  (ORDER BY duration_seconds)` for `p ∈ {0.50, 0.90, 0.95}`. The
+  arithmetic mean is **not** computed (SCOPE §8 "Means are not
+  used for these (long-tail distortion)").
+
+  - **Sample size floor:** when the per-row sample count is
+    `< 5`, all three percentile fields are serialised as `null`
+    (not zero, not omitted) and the response carries the actual
+    `sample_n` so the UI can render "—" / "n too small" instead
+    of a noisy single-data-point "p95 = 12h".
+  - **Continuous, not discrete:** `percentile_cont` interpolates
+    between two ranked values; `percentile_disc` returns an
+    actual observed value. We pick `_cont` because the duration
+    distribution is continuous (seconds) and interpolation gives
+    a smoother trend across small samples once they cross the
+    n ≥ 5 floor.
+  - **Units:** durations are stored and returned in **seconds
+    (int)**; rendering to "1h 23m" is a frontend concern.
+  - The same n < 5 rule applies bucket-wise in trend charts —
+    each bucket independently nulls out its percentile triple
+    when sparse.
+- **Why locked now:** showing a "p95 = 12h" from a single
+  observation has burned every prior dev-analytics product on
+  the comparison list (SCOPE §13). Decide once, surface
+  consistently across REST/MCP/frontend.
+- **Revisit triggers:**
+  - A target deployment with very small teams (n < 5 per week is
+    normal) asks for a lower floor → expose
+    `percentile.min_sample_n` in `starter-config`; default stays
+    5.
+  - Postgres performance on `percentile_cont` over wide windows
+    degrades → consider `percentile_disc` or pre-aggregation.
+- **Resolves:** Phase 3 task list "p50/p90/p95 for durations
+  (`percentile_cont`). No means."
