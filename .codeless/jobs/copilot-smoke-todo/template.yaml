@@ -1,0 +1,9 @@
+name: copilot-smoke-todo
+goal: |
+  Verify the codeless Copilot runner can execute a real one-stage job
+  end-to-end on the dev-pulse repo: edit a single file, write a
+  non-empty handover, run the closing trio, and push to the job
+  branch.
+
+stages:
+  - Append a "Copilot smoke test" section to TODO.md and complete the closing trio.
