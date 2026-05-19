@@ -1,82 +1,61 @@
-# Handover — after stage 1 (workspace and crate scaffolding)
+# Handover — after stage 2 (boundary enforcement)
 
-## What landed
+## Done
 
-- Workspace `Cargo.toml` at the repo root with `resolver = "2"` and all
-  crates from TODO §2 as members:
-  `dp-domain`, `dp-store-pg`, `dp-fetcher`, `dp-reports`, `dp-rest`,
-  `dp-mcp`, `dp-cli`, `dp-server`, and the `dev-pulse` binary crate at
-  `crates/dev-pulse`.
-- `starter-*` deps pinned via `path = "../starter/crates/<name>"` in
-  `[workspace.dependencies]`, exactly per SCOPE. No edits to any
-  starter crate.
-- Each crate has a Cargo.toml + empty `src/lib.rs` (bin: `src/main.rs`)
-  with a short module doc-comment naming the boundary rule that
-  applies (TODO §0.6).
-- `crates/dev-pulse/src/main.rs` wires
-  `starter_observability::tracing::init` and a clap skeleton.
-- `scripts/` directory created (empty — stage 2 lands
-  `check-boundaries.sh`).
-- `.gitignore` for `/target` etc.
+- Wrote `scripts/check-boundaries.sh` per TODO.md §0.6. It fails CI on any
+  `^\s*(pub\s+)?use\s+starter_` line in `crates/dp-domain`,
+  `crates/dp-fetcher`, or `crates/dp-reports`, and on any non-`starter_spi::`
+  starter import in `crates/dp-store-pg`. Other crates
+  (server/rest/mcp/cli/dev-pulse bin) are unrestricted, matching §0.6.
+- Verified the script with both a clean tree (exit 0, `OK`) and a
+  synthetic scratch repo containing one violation per rule (exit 1, prints
+  offending file:line for each).
+- Added a CI job at `.github/workflows/boundaries.yml` that runs the
+  script on push to `main` and on every PR.
+- `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
+  `cargo test --workspace`, and `./scripts/check-boundaries.sh` all green.
+- Committed as `stage 2: boundary enforcement` on branch
+  `codeless/bootstrap-domain-store`. Not pushed (no remote auth in this
+  session — same caveat as stage 1).
 
-## Verification (closing trio, stage 1)
+## Next
 
-- `cargo fmt --check` — clean.
-- `cargo clippy --workspace --all-targets -- -D warnings` — clean.
-- `cargo test --workspace` — all 9 crates' (empty) test binaries +
-  doc-tests pass.
-- `./scripts/check-boundaries.sh` — not yet required (stage 2 task).
+- Stage 3 is the **first REVIEW gate** per WORKFLOW.md. Do not advance.
+  Write the gate handover summarising stages 1+2, surface the two
+  deferred questions (below), and wait for user approval.
 
-## Decisions / deviations to flag at REVIEW
+## What you need to know
 
-1. **`starter-*` path resolution from worktrees.** SCOPE mandates
-   `path = "../starter/crates/<name>"`. From the main dev-pulse repo at
-   `/home/user/code/rust/dev-pulse/` this resolves to
-   `/home/user/code/rust/starter/`. The job runs inside a git worktree
-   at `/home/user/.codeless/worktrees/job-…/`, where the same relative
-   path does **not** resolve. To make `cargo` work in the worktree
-   without deviating from SCOPE in committed files, an out-of-tree
-   symlink was created at `/home/user/.codeless/worktrees/starter →
-   /home/user/code/rust/starter`. The symlink lives in the worktree
-   *parent* directory, is not part of the commit, and has no effect on
-   the main repo. Subsequent worktree-based stages may need the same
-   symlink — `ln -sfn /home/user/code/rust/starter
-   /home/user/.codeless/worktrees/starter` is the one-liner.
-2. **`MigrationSource` location.** TODO §0.6 and SCOPE permit
-   `dp-store-pg` to import `starter_spi::MigrationSource`. The type
-   actually lives in `starter_store_postgres::migrate::MigrationSource`
-   (and the same in `starter_store_sqlite`). This is not a stage-1
-   blocker — no imports landed yet — but the boundary script (stage 2)
-   and the store impl (stage 5) need to settle on the real path.
-   Likely resolution: allow
-   `starter_store_postgres::{migrate, migrate::MigrationSource, Pool,
-   pool}` in `dp-store-pg`, since those are the zero-feature
-   contract-like surface this crate needs to apply migrations.
-   Flag this at the stage-3 REVIEW gate before locking the boundary
-   script.
-3. **No starter-* deps in lib crates yet.** Only the `dev-pulse` bin
-   pulls `starter-observability` (for tracing init). The other crates
-   wire their starter deps when they need them (stages 4–6+). This
-   keeps the dependency graph honest stage-by-stage.
+- **Worktree symlink still required.** `starter-*` paths in the root
+  `Cargo.toml` are `../starter/crates/<name>`. From this worktree at
+  `/home/user/.codeless/worktrees/job-…/`, that only resolves because
+  `ln -sfn /home/user/code/rust/starter /home/user/.codeless/worktrees/starter`
+  was created out-of-tree by stage 1. A fresh worktree must run that
+  one-liner before any cargo command.
+- **Boundary script uses `git grep`**, so it only scans tracked files
+  and respects `.gitignore`. That means a stray untracked `.rs` with a
+  bad import will not fail CI locally until it's `git add`-ed —
+  acceptable, because CI checks out the committed tree.
+- **dp-store-pg allowlist is `starter_spi::*` literally**, not just
+  `MigrationSource`. TODO §0.6 phrases the rule as
+  "MigrationSource + starter_spi's zero-dep contract types," so the
+  allowlist is the whole `starter_spi::` crate. If we ever want tighter
+  than that, we change the script — for now it matches the spec.
+- **MigrationSource location mismatch (carried from stage 1).** TODO
+  §0.6 says `starter_spi::MigrationSource`, but in starter the type
+  actually lives at `starter_store_postgres::migrate::MigrationSource`.
+  No imports landed yet, so the boundary script enforces the *spec'd*
+  rule. If stage 5 finds it has to import `starter_store_postgres::…`
+  to get a usable `MigrationSource`, the script will fail — and that
+  is the REVIEW-gate decision point.
 
-## What the next stage should do
+## Open questions
 
-Stage 2 — `scripts/check-boundaries.sh` and a CI job that runs it
-(TODO §0.6). The script must enforce:
-
-- `dp-domain`, `dp-fetcher`, `dp-reports` — zero `^\s*use\s+starter_`
-  matches.
-- `dp-store-pg` — only the `starter_*` imports on the (to-be-confirmed)
-  allowlist; everything else fails.
-- `dp-server`, `dp-rest`, `dp-mcp`, `dp-cli`, `dev-pulse` —
-  unrestricted.
-
-After stage 2 lands the script + CI wiring, every subsequent stage's
-closing trio also runs `./scripts/check-boundaries.sh`.
-
-## Files of interest
-
-- `Cargo.toml` — workspace + pinned starter deps.
-- `crates/*/Cargo.toml`, `crates/*/src/lib.rs` — crate stubs with
-  per-crate boundary-rule reminders in doc-comments.
-- `crates/dev-pulse/src/main.rs` — tracing init + clap skeleton.
+- (REVIEW gate, deferred since stage 1) Is the `starter_spi::*`
+  allowlist correct, or do we need to expand it to
+  `starter_store_postgres::{migrate, Pool, pool}` so stage 5 can
+  actually compile? Pick one before stage 5.
+- (REVIEW gate, deferred since stage 1) Keep the out-of-tree
+  `/home/user/.codeless/worktrees/starter` symlink as the worktree
+  bootstrap, or switch to absolute paths / `[patch]` so a fresh
+  worktree boots without manual setup?

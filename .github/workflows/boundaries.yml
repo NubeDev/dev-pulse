@@ -1,0 +1,22 @@
+name: boundaries
+
+# Enforces the starter-* import boundary rule from TODO.md §0.6.
+# This job MUST pass on every PR / push from Phase 0 onward —
+# see `scripts/check-boundaries.sh` for the rule.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check-boundaries:
+    name: check-boundaries
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run boundary check
+        run: ./scripts/check-boundaries.sh
