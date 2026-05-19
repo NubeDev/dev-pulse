@@ -1,0 +1,35 @@
+{
+  "name": "single-user-single-org",
+  "description": "Sanity fixture (SCOPE §11.4 trust gate). One user lands six commits and three PR reviews in one org over a one-week window; the single_org lens with metric=commits_authored returns 6, with metric=pull_requests_reviewed returns 3.",
+  "github_recorded_payload_ref": "fixtures/raw/single-user-single-org.commits.json (synthesized — see comment block at top of spot_check.rs)",
+  "rows": [
+    {"event_id": "11111111-0000-0000-0000-000000000001", "user_id": "aaaa1111-0000-0000-0000-000000000001", "role": "author",   "org_id": "00000000-0000-0000-0000-0000000000aa", "repo_id": "00000000-0000-0000-0000-0000000000bb", "kind": "commit", "ts": "2025-01-06T09:00:00Z"},
+    {"event_id": "11111111-0000-0000-0000-000000000002", "user_id": "aaaa1111-0000-0000-0000-000000000001", "role": "author",   "org_id": "00000000-0000-0000-0000-0000000000aa", "repo_id": "00000000-0000-0000-0000-0000000000bb", "kind": "commit", "ts": "2025-01-06T11:30:00Z"},
+    {"event_id": "11111111-0000-0000-0000-000000000003", "user_id": "aaaa1111-0000-0000-0000-000000000001", "role": "author",   "org_id": "00000000-0000-0000-0000-0000000000aa", "repo_id": "00000000-0000-0000-0000-0000000000bb", "kind": "commit", "ts": "2025-01-07T14:00:00Z"},
+    {"event_id": "11111111-0000-0000-0000-000000000004", "user_id": "aaaa1111-0000-0000-0000-000000000001", "role": "author",   "org_id": "00000000-0000-0000-0000-0000000000aa", "repo_id": "00000000-0000-0000-0000-0000000000bb", "kind": "commit", "ts": "2025-01-08T10:15:00Z"},
+    {"event_id": "11111111-0000-0000-0000-000000000005", "user_id": "aaaa1111-0000-0000-0000-000000000001", "role": "author",   "org_id": "00000000-0000-0000-0000-0000000000aa", "repo_id": "00000000-0000-0000-0000-0000000000bb", "kind": "commit", "ts": "2025-01-09T16:45:00Z"},
+    {"event_id": "11111111-0000-0000-0000-000000000006", "user_id": "aaaa1111-0000-0000-0000-000000000001", "role": "author",   "org_id": "00000000-0000-0000-0000-0000000000aa", "repo_id": "00000000-0000-0000-0000-0000000000bb", "kind": "commit", "ts": "2025-01-10T08:30:00Z"},
+
+    {"event_id": "22222222-0000-0000-0000-000000000001", "user_id": "aaaa1111-0000-0000-0000-000000000001", "role": "reviewer", "org_id": "00000000-0000-0000-0000-0000000000aa", "repo_id": "00000000-0000-0000-0000-0000000000bb", "kind": "review", "ts": "2025-01-07T10:00:00Z"},
+    {"event_id": "22222222-0000-0000-0000-000000000002", "user_id": "aaaa1111-0000-0000-0000-000000000001", "role": "reviewer", "org_id": "00000000-0000-0000-0000-0000000000aa", "repo_id": "00000000-0000-0000-0000-0000000000bb", "kind": "review", "ts": "2025-01-08T13:00:00Z"},
+    {"event_id": "22222222-0000-0000-0000-000000000003", "user_id": "aaaa1111-0000-0000-0000-000000000001", "role": "reviewer", "org_id": "00000000-0000-0000-0000-0000000000aa", "repo_id": "00000000-0000-0000-0000-0000000000bb", "kind": "review", "ts": "2025-01-09T15:00:00Z"}
+  ],
+  "checks": [
+    {
+      "name": "commits authored, single-org lens",
+      "scope_mode": "single_org",
+      "scope_org_id": "00000000-0000-0000-0000-0000000000aa",
+      "metric": "commits_authored",
+      "expected_total": 6,
+      "expected_by_user": {"aaaa1111-0000-0000-0000-000000000001": 6}
+    },
+    {
+      "name": "pull requests reviewed, single-org lens",
+      "scope_mode": "single_org",
+      "scope_org_id": "00000000-0000-0000-0000-0000000000aa",
+      "metric": "pull_requests_reviewed",
+      "expected_total": 3,
+      "expected_by_user": {"aaaa1111-0000-0000-0000-000000000001": 3}
+    }
+  ]
+}
