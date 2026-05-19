@@ -34,6 +34,17 @@ http           = "1"
 http-body-util = "0.1"
 bytes          = "1"
 
+# Stage 4 — webhook receiver. axum mounts the POST /webhooks/github
+# route, prometheus carries the receipt-to-200 histogram (TODO
+# §Phase-2), hmac/sha2 perform the GitHub `X-Hub-Signature-256`
+# validation, hex decodes the wire format. `subtle` is pulled in
+# transitively by `hmac` for constant-time comparison.
+axum         = { workspace = true }
+prometheus   = { workspace = true }
+hmac         = "0.12"
+sha2         = "0.10"
+hex          = "0.4"
+
 [dev-dependencies]
 # Wiremock-backed unit tests for the client wrapper — exercise the
 # happy path, 304, 401, 403 secondary-rate, 429, and 5xx branches
@@ -41,3 +52,6 @@ bytes          = "1"
 wiremock   = "0.6"
 tokio      = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 serde_json = { workspace = true }
+# Stage 4 webhook tests drive the axum Router via `tower::ServiceExt`'s
+# `oneshot`, which needs the `util` feature.
+tower      = { version = "0.5", features = ["util"] }

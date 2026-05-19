@@ -5,16 +5,19 @@
 //! the [`client`] wrapper — the **only** place in dev-pulse that
 //! constructs an [`octocrab::Octocrab`]. Reconciler and backfill
 //! (later stages) call typed methods on [`client::Client`] rather
-//! than touching octocrab directly.
+//! than touching octocrab directly. Stage 4 adds [`webhook`] —
+//! an HMAC-validating axum route fragment that enqueues to
+//! `webhook_inbox` and returns 200 in under 100ms.
 //!
 //! Boundary rule (TODO §0.6): zero `starter_*` imports. GitHub App
-//! credentials originate in `starter-secrets-file`, but the
-//! resolution happens in the unrestricted bin / `dp-server` layer
-//! which then constructs a
-//! [`client::InstallationCredentials`] value and hands it to this
-//! crate.
+//! credentials and the webhook HMAC secret originate in
+//! `starter-secrets-file`, but the resolution happens in the
+//! unrestricted bin / `dp-server` layer which then constructs a
+//! [`client::InstallationCredentials`] value (or implements
+//! [`webhook::WebhookSecretSource`]) and hands it to this crate.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
 pub mod client;
+pub mod webhook;
