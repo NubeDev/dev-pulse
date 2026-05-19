@@ -1,0 +1,22 @@
+{
+  "_comment": "Recorded shape of a GitHub `push` webhook delivery payload, trimmed to the fields the dp-fetcher worker reads. Exercises the Co-authored-by: trailer path (SCOPE §6, TODO §0.2): the commit message footer carries two co-authors, one with a `users.noreply.github.com` login GitHub recognises and one with a plain external email. The handler should record one Commit event and three actor rows: author (alice), co_author (octocat), co_author (mallory).",
+  "ref": "refs/heads/main",
+  "before": "0000000000000000000000000000000000000000",
+  "after":  "deadbeef0000000000000000000000000000aaaa",
+  "repository": {
+    "id": 1001,
+    "name": "dev-pulse",
+    "full_name": "nube-io/dev-pulse",
+    "owner": { "id": 42, "login": "nube-io" }
+  },
+  "sender": { "id": 7, "login": "alice" },
+  "commits": [
+    {
+      "id": "deadbeef0000000000000000000000000000aaaa",
+      "timestamp": "2024-04-04T04:04:04Z",
+      "message": "feat: ship co-authored work\n\nMain change implemented by alice; pairing credit recorded\nvia trailers below.\n\nCo-authored-by: Octocat <12345+octocat@users.noreply.github.com>\nCo-authored-by: Mallory External <mallory@external.example>\nSigned-off-by: Alice <alice@example.com>\n",
+      "author":    { "name": "Alice",   "email": "alice@example.com",   "username": "alice" },
+      "committer": { "name": "Alice",   "email": "alice@example.com",   "username": "alice" }
+    }
+  ]
+}

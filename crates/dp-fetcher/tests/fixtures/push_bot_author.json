@@ -1,0 +1,24 @@
+{
+  "_comment": "Recorded shape of a `push` webhook from a bot account (dependabot). SCOPE §6 says bots are 'tracked separately' — the worker still records the actor row with role=author; the report layer suppresses bot rows from the user-facing leaderboards downstream by filtering on the `[bot]` login suffix. The fixture pins this contract: ingest does NOT drop the row.",
+  "ref": "refs/heads/main",
+  "repository": {
+    "id": 1001,
+    "name": "dev-pulse",
+    "full_name": "nube-io/dev-pulse",
+    "owner": { "id": 42, "login": "nube-io" }
+  },
+  "sender": {
+    "id":   49699333,
+    "login":"dependabot[bot]",
+    "type": "Bot"
+  },
+  "commits": [
+    {
+      "id": "b07b07b00000000000000000000000000000ffff",
+      "timestamp": "2024-04-04T04:04:04Z",
+      "message": "chore(deps): bump serde from 1.0.0 to 1.0.1\n\nSigned-off-by: dependabot[bot] <support@github.com>\n",
+      "author":    { "name": "dependabot[bot]", "email": "49699333+dependabot[bot]@users.noreply.github.com", "username": "dependabot[bot]" },
+      "committer": { "name": "GitHub",          "email": "noreply@github.com",                              "username": "web-flow" }
+    }
+  ]
+}

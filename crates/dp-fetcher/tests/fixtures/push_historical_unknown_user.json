@@ -1,0 +1,20 @@
+{
+  "_comment": "Backfill / historical-replay scenario. A push event arrives whose author has never been seen by dev-pulse — the `users` table does not yet have a row for them. The worker's contract is to lazy-`upsert_user` (TODO §Phase-2 §0.2) before calling `add_event_actors`, so the resulting `event_actors(user_id)` FK always resolves. The fixture pins the contract: starting from an empty store, processing this delivery must create exactly one user row AND attach an Author actor row pointing at it.",
+  "ref": "refs/heads/main",
+  "repository": {
+    "id": 2002,
+    "name": "ops-history",
+    "full_name": "nube-io/ops-history",
+    "owner": { "id": 42, "login": "nube-io" }
+  },
+  "sender": { "id": 555, "login": "history-hannah" },
+  "commits": [
+    {
+      "id": "1234567890abcdef1234567890abcdef12345678",
+      "timestamp": "2023-08-15T09:00:00Z",
+      "message": "chore: import legacy backup\n",
+      "author":    { "name": "History Hannah", "email": "hannah@example.com", "username": "history-hannah" },
+      "committer": { "name": "History Hannah", "email": "hannah@example.com", "username": "history-hannah" }
+    }
+  ]
+}

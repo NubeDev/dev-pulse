@@ -51,6 +51,8 @@ pub mod handlers;
 pub mod trailers;
 #[cfg(test)]
 pub(crate) mod test_store;
+#[cfg(test)]
+mod fixture_tests;
 
 use std::sync::Arc;
 use std::time::Duration;
