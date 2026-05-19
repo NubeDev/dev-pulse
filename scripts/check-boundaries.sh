@@ -5,9 +5,10 @@
 #
 #   - dp-domain, dp-fetcher, dp-reports MUST NOT contain any
 #     `starter_*` imports. Zero exceptions.
-#   - dp-store-pg MAY import only from `starter_spi::`
-#     (MigrationSource + other zero-dep contract types). Any other
-#     `starter_*` import in dp-store-pg is a CI failure.
+#   - dp-store-pg MAY import only from `starter_spi::` and
+#     `starter_store_postgres::` (the Postgres pool + MigrationSource
+#     runner the crate is built on). Any other `starter_*` import in
+#     dp-store-pg is a CI failure.
 #   - dp-server, dp-rest, dp-mcp, dp-cli, dev-pulse (bin) are
 #     unrestricted — not checked.
 #
@@ -54,18 +55,18 @@ for crate in "${FORBIDDEN_CRATES[@]}"; do
   fi
 done
 
-# ---- 2. dp-store-pg: only `starter_spi::` is allowed.
+# ---- 2. dp-store-pg: only `starter_spi::` and
+#        `starter_store_postgres::` are allowed.
 STORE_PG="crates/dp-store-pg"
 if [[ -d "$STORE_PG" ]]; then
   # Find every `use starter_*` line, then drop the ones that begin
-  # with `use starter_spi::` (or `pub use starter_spi::`). Anything
-  # left is a violation.
+  # with the allowed prefixes. Anything left is a violation.
   if all_uses=$(git grep -nE "$USE_RE" -- "$STORE_PG" 2>/dev/null); then
     bad=$(echo "$all_uses" \
-      | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(pub[[:space:]]+)?use[[:space:]]+starter_spi::' \
+      | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(pub[[:space:]]+)?use[[:space:]]+starter_(spi|store_postgres)(::|;|[[:space:]])' \
       || true)
     if [[ -n "$bad" ]]; then
-      echo "check-boundaries: $STORE_PG may only import starter_spi::*; found:" >&2
+      echo "check-boundaries: $STORE_PG may only import starter_spi::* or starter_store_postgres::*; found:" >&2
       echo "$bad" >&2
       violations=$((violations + 1))
     fi

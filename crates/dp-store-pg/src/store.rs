@@ -1,0 +1,736 @@
+//! [`PgStore`] — the `dp-domain::Store` implementation backed by
+//! Postgres via `starter_store_postgres::Pool`.
+//!
+//! Every method here is a thin SQL body. Behaviour notes worth
+//! knowing before changing them:
+//!
+//! * Upserts use `ON CONFLICT … DO UPDATE` on the GitHub-id columns
+//!   so the fetcher can replay without growing duplicates.
+//! * `upsert_membership` deliberately does **not** clobber
+//!   `home_org`. The schema invariant (TODO §0.5) is that home-org is
+//!   only ever written through `set_home_org`; the upsert path keeps
+//!   the existing value via `COALESCE(EXCLUDED.home_org, dp_memberships.home_org)`.
+//! * `add_event_actors` `INSERT … ON CONFLICT DO NOTHING` on the
+//!   composite PK so partial batches are safe to retry.
+//! * `enqueue_webhook` surfaces the unique-violation on `delivery_id`
+//!   as [`StoreError::Conflict`] so the receiver can translate it to
+//!   `200 OK` (idempotent replays — TODO §0.1).
+//! * `claim_webhooks` uses `FOR UPDATE SKIP LOCKED` so multiple
+//!   workers don't fight over the same row.
+//! * Closed enums (`ActorRole`, `EventKind`, …) round-trip via the
+//!   helpers in [`crate::encode`] so the column matches the JSON wire
+//!   form one-for-one.
+
+use std::error::Error as StdError;
+
+use async_trait::async_trait;
+use dp_domain::event::{ActivityEvent, ActorRole, EventActor};
+use dp_domain::fetch::{FetchCursor, FetchRun, FetchRunKind, ResourceKind};
+use dp_domain::membership::Membership;
+use dp_domain::org::Org;
+use dp_domain::repo::Repo;
+use dp_domain::store::{EventActorRow, Store, StoreError};
+use dp_domain::team::Team;
+use dp_domain::user::User;
+use dp_domain::webhook::WebhookDelivery;
+use dp_domain::window::Window;
+use serde_json::Value as JsonValue;
+use sqlx::Row;
+use starter_store_postgres::Pool;
+use uuid::Uuid;
+
+use crate::encode::{
+    actor_role_from_text, actor_role_to_text, event_kind_from_text, event_kind_to_text,
+    fetch_run_kind_from_text, fetch_run_kind_to_text, membership_role_from_text,
+    membership_role_to_text, resource_kind_from_text, resource_kind_to_text,
+};
+
+/// Postgres-backed [`Store`].
+///
+/// Cloneable: the underlying [`Pool`] is a wrapper around
+/// `Arc<PgPool>` so cloning is cheap and every surface holding an
+/// `Arc<dyn Store>` shares the same pool.
+#[derive(Clone)]
+pub struct PgStore {
+    pool: Pool,
+}
+
+impl PgStore {
+    /// Wrap a pre-built [`Pool`]. Construction is the consumer's
+    /// problem (they pick max-connections, the URL, etc. via
+    /// `starter_store_postgres::pool::connect`).
+    pub fn new(pool: Pool) -> Self {
+        Self { pool }
+    }
+
+    /// Borrow the underlying pool — handy for one-off queries from
+    /// adjacent crates that need raw SQL but should not own the
+    /// `PgStore`.
+    pub fn pool(&self) -> &Pool {
+        &self.pool
+    }
+}
+
+// ---------- error mapping -------------------------------------------
+
+/// Map a `sqlx::Error` into the most accurate `StoreError` variant.
+///
+/// * Unique-violation (PG SQLSTATE `23505`) becomes
+///   [`StoreError::Conflict`] so the webhook receiver can recognise
+///   replays and the upsert path can recognise concurrent inserts.
+/// * `RowNotFound` becomes [`StoreError::NotFound`] (the caller's
+///   `entity`/`id` is set by the helper, see [`not_found`]).
+/// * Everything else is boxed into [`StoreError::Backend`].
+fn map_sqlx(err: sqlx::Error) -> StoreError {
+    if let sqlx::Error::Database(db) = &err {
+        if db.code().as_deref() == Some("23505") {
+            return StoreError::Conflict(db.message().to_string());
+        }
+    }
+    StoreError::Backend(Box::new(err))
+}
+
+fn not_found(entity: &'static str, id: impl ToString) -> StoreError {
+    StoreError::NotFound {
+        entity,
+        id: id.to_string(),
+    }
+}
+
+fn invalid(msg: impl Into<String>) -> StoreError {
+    let m: String = msg.into();
+    let e: Box<dyn StdError + Send + Sync> = m.into();
+    StoreError::Backend(e)
+}
+
+// ---------- row decoders --------------------------------------------
+
+fn row_to_user(r: &sqlx::postgres::PgRow) -> Result<User, StoreError> {
+    Ok(User {
+        id: r.try_get("id").map_err(map_sqlx)?,
+        github_id: r.try_get("github_id").map_err(map_sqlx)?,
+        login: r.try_get("login").map_err(map_sqlx)?,
+        email: r.try_get("email").map_err(map_sqlx)?,
+        name: r.try_get("name").map_err(map_sqlx)?,
+        deleted_at: r.try_get("deleted_at").map_err(map_sqlx)?,
+    })
+}
+
+fn row_to_org(r: &sqlx::postgres::PgRow) -> Result<Org, StoreError> {
+    Ok(Org {
+        id: r.try_get("id").map_err(map_sqlx)?,
+        github_id: r.try_get("github_id").map_err(map_sqlx)?,
+        login: r.try_get("login").map_err(map_sqlx)?,
+        name: r.try_get("name").map_err(map_sqlx)?,
+    })
+}
+
+fn row_to_team(r: &sqlx::postgres::PgRow) -> Result<Team, StoreError> {
+    Ok(Team {
+        id: r.try_get("id").map_err(map_sqlx)?,
+        org_id: r.try_get("org_id").map_err(map_sqlx)?,
+        github_id: r.try_get("github_id").map_err(map_sqlx)?,
+        slug: r.try_get("slug").map_err(map_sqlx)?,
+        name: r.try_get("name").map_err(map_sqlx)?,
+    })
+}
+
+fn row_to_repo(r: &sqlx::postgres::PgRow) -> Result<Repo, StoreError> {
+    Ok(Repo {
+        id: r.try_get("id").map_err(map_sqlx)?,
+        org_id: r.try_get("org_id").map_err(map_sqlx)?,
+        github_id: r.try_get("github_id").map_err(map_sqlx)?,
+        name: r.try_get("name").map_err(map_sqlx)?,
+    })
+}
+
+fn row_to_membership(r: &sqlx::postgres::PgRow) -> Result<Membership, StoreError> {
+    let role_text: String = r.try_get("role").map_err(map_sqlx)?;
+    Ok(Membership {
+        user_id: r.try_get("user_id").map_err(map_sqlx)?,
+        org_id: r.try_get("org_id").map_err(map_sqlx)?,
+        role: membership_role_from_text(&role_text),
+        home_org: r.try_get("home_org").map_err(map_sqlx)?,
+        joined_at: r.try_get("joined_at").map_err(map_sqlx)?,
+    })
+}
+
+fn row_to_activity_event(r: &sqlx::postgres::PgRow) -> Result<ActivityEvent, StoreError> {
+    let kind_text: String = r.try_get("kind").map_err(map_sqlx)?;
+    let kind = event_kind_from_text(&kind_text).map_err(invalid)?;
+    Ok(ActivityEvent {
+        id: r.try_get("id").map_err(map_sqlx)?,
+        org_id: r.try_get("org_id").map_err(map_sqlx)?,
+        repo_id: r.try_get("repo_id").map_err(map_sqlx)?,
+        kind,
+        ts: r.try_get("ts").map_err(map_sqlx)?,
+        external_id: r.try_get("external_id").map_err(map_sqlx)?,
+        payload: r.try_get::<JsonValue, _>("payload").map_err(map_sqlx)?,
+    })
+}
+
+fn row_to_fetch_run(r: &sqlx::postgres::PgRow) -> Result<FetchRun, StoreError> {
+    let kind_text: String = r.try_get("kind").map_err(map_sqlx)?;
+    let kind = fetch_run_kind_from_text(&kind_text).map_err(invalid)?;
+    Ok(FetchRun {
+        id: r.try_get("id").map_err(map_sqlx)?,
+        kind,
+        started: r.try_get("started").map_err(map_sqlx)?,
+        finished: r.try_get("finished").map_err(map_sqlx)?,
+        items: r.try_get("items").map_err(map_sqlx)?,
+        errors: r.try_get("errors").map_err(map_sqlx)?,
+        partial: r.try_get("partial").map_err(map_sqlx)?,
+    })
+}
+
+fn row_to_fetch_cursor(r: &sqlx::postgres::PgRow) -> Result<FetchCursor, StoreError> {
+    let rk_text: String = r.try_get("resource_kind").map_err(map_sqlx)?;
+    let resource_kind = resource_kind_from_text(&rk_text).map_err(invalid)?;
+    Ok(FetchCursor {
+        org_id: r.try_get("org_id").map_err(map_sqlx)?,
+        repo_id: r.try_get("repo_id").map_err(map_sqlx)?,
+        resource_kind,
+        since: r.try_get("since").map_err(map_sqlx)?,
+        etag: r.try_get("etag").map_err(map_sqlx)?,
+        last_event_id: r.try_get("last_event_id").map_err(map_sqlx)?,
+        updated_at: r.try_get("updated_at").map_err(map_sqlx)?,
+    })
+}
+
+fn row_to_webhook_delivery(r: &sqlx::postgres::PgRow) -> Result<WebhookDelivery, StoreError> {
+    Ok(WebhookDelivery {
+        id: r.try_get("id").map_err(map_sqlx)?,
+        delivery_id: r.try_get("delivery_id").map_err(map_sqlx)?,
+        event: r.try_get("event").map_err(map_sqlx)?,
+        payload: r.try_get::<JsonValue, _>("payload").map_err(map_sqlx)?,
+        received_at: r.try_get("received_at").map_err(map_sqlx)?,
+        processed_at: r.try_get("processed_at").map_err(map_sqlx)?,
+        error: r.try_get("error").map_err(map_sqlx)?,
+    })
+}
+
+fn row_to_event_actor_row(r: &sqlx::postgres::PgRow) -> Result<EventActorRow, StoreError> {
+    let role_text: String = r.try_get("role").map_err(map_sqlx)?;
+    let kind_text: String = r.try_get("kind").map_err(map_sqlx)?;
+    Ok(EventActorRow {
+        event_id: r.try_get("event_id").map_err(map_sqlx)?,
+        user_id: r.try_get("user_id").map_err(map_sqlx)?,
+        role: actor_role_from_text(&role_text).map_err(invalid)?,
+        org_id: r.try_get("org_id").map_err(map_sqlx)?,
+        repo_id: r.try_get("repo_id").map_err(map_sqlx)?,
+        kind: event_kind_from_text(&kind_text).map_err(invalid)?,
+        ts: r.try_get("ts").map_err(map_sqlx)?,
+    })
+}
+
+// ---------- Store impl ----------------------------------------------
+
+#[async_trait]
+impl Store for PgStore {
+    // ---- users -----------------------------------------------------
+
+    async fn upsert_user(&self, user: &User) -> Result<User, StoreError> {
+        let row = sqlx::query(
+            "INSERT INTO dp_users (id, github_id, login, email, name, deleted_at) \
+             VALUES ($1, $2, $3, $4, $5, $6) \
+             ON CONFLICT (github_id) DO UPDATE SET \
+                 login      = EXCLUDED.login, \
+                 email      = EXCLUDED.email, \
+                 name       = EXCLUDED.name, \
+                 deleted_at = EXCLUDED.deleted_at \
+             RETURNING id, github_id, login, email, name, deleted_at",
+        )
+        .bind(user.id)
+        .bind(user.github_id)
+        .bind(&user.login)
+        .bind(&user.email)
+        .bind(&user.name)
+        .bind(user.deleted_at)
+        .fetch_one(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        row_to_user(&row)
+    }
+
+    async fn get_user(&self, id: Uuid) -> Result<User, StoreError> {
+        let row = sqlx::query(
+            "SELECT id, github_id, login, email, name, deleted_at \
+             FROM dp_users WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        match row {
+            Some(r) => row_to_user(&r),
+            None => Err(not_found("user", id)),
+        }
+    }
+
+    async fn get_user_by_github_id(&self, github_id: i64) -> Result<User, StoreError> {
+        let row = sqlx::query(
+            "SELECT id, github_id, login, email, name, deleted_at \
+             FROM dp_users WHERE github_id = $1",
+        )
+        .bind(github_id)
+        .fetch_optional(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        match row {
+            Some(r) => row_to_user(&r),
+            None => Err(not_found("user", github_id)),
+        }
+    }
+
+    async fn list_users(&self) -> Result<Vec<User>, StoreError> {
+        let rows = sqlx::query(
+            "SELECT id, github_id, login, email, name, deleted_at \
+             FROM dp_users WHERE deleted_at IS NULL ORDER BY login",
+        )
+        .fetch_all(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        rows.iter().map(row_to_user).collect()
+    }
+
+    async fn pseudonymise_user(&self, id: Uuid) -> Result<(), StoreError> {
+        // Rewrite to a stable `deleted-user-<short-id>` form. The
+        // hash is derived from the row id so re-running this is a
+        // no-op (idempotent) and two different users never collide.
+        let short = id.simple().to_string();
+        let short = &short[..16];
+        let login = format!("deleted-user-{short}");
+        let result = sqlx::query(
+            "UPDATE dp_users SET \
+                 login      = $2, \
+                 email      = NULL, \
+                 name       = NULL, \
+                 deleted_at = COALESCE(deleted_at, NOW()) \
+             WHERE id = $1",
+        )
+        .bind(id)
+        .bind(&login)
+        .execute(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        if result.rows_affected() == 0 {
+            return Err(not_found("user", id));
+        }
+        Ok(())
+    }
+
+    // ---- orgs / teams / repos --------------------------------------
+
+    async fn upsert_org(&self, org: &Org) -> Result<Org, StoreError> {
+        let row = sqlx::query(
+            "INSERT INTO dp_orgs (id, github_id, login, name) \
+             VALUES ($1, $2, $3, $4) \
+             ON CONFLICT (github_id) DO UPDATE SET \
+                 login = EXCLUDED.login, \
+                 name  = EXCLUDED.name \
+             RETURNING id, github_id, login, name",
+        )
+        .bind(org.id)
+        .bind(org.github_id)
+        .bind(&org.login)
+        .bind(&org.name)
+        .fetch_one(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        row_to_org(&row)
+    }
+
+    async fn upsert_team(&self, team: &Team) -> Result<Team, StoreError> {
+        let row = sqlx::query(
+            "INSERT INTO dp_teams (id, org_id, github_id, slug, name) \
+             VALUES ($1, $2, $3, $4, $5) \
+             ON CONFLICT (org_id, github_id) DO UPDATE SET \
+                 slug = EXCLUDED.slug, \
+                 name = EXCLUDED.name \
+             RETURNING id, org_id, github_id, slug, name",
+        )
+        .bind(team.id)
+        .bind(team.org_id)
+        .bind(team.github_id)
+        .bind(&team.slug)
+        .bind(&team.name)
+        .fetch_one(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        row_to_team(&row)
+    }
+
+    async fn upsert_repo(&self, repo: &Repo) -> Result<Repo, StoreError> {
+        let row = sqlx::query(
+            "INSERT INTO dp_repos (id, org_id, github_id, name) \
+             VALUES ($1, $2, $3, $4) \
+             ON CONFLICT (org_id, github_id) DO UPDATE SET \
+                 name = EXCLUDED.name \
+             RETURNING id, org_id, github_id, name",
+        )
+        .bind(repo.id)
+        .bind(repo.org_id)
+        .bind(repo.github_id)
+        .bind(&repo.name)
+        .fetch_one(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        row_to_repo(&row)
+    }
+
+    async fn upsert_membership(&self, membership: &Membership) -> Result<Membership, StoreError> {
+        // home_org intentionally NOT clobbered — only `set_home_org`
+        // writes it (TODO §0.5 / SCOPE §3 manual mapping).
+        let role_text = membership_role_to_text(&membership.role).to_string();
+        let row = sqlx::query(
+            "INSERT INTO dp_memberships (user_id, org_id, role, home_org, joined_at) \
+             VALUES ($1, $2, $3, $4, $5) \
+             ON CONFLICT (user_id, org_id) DO UPDATE SET \
+                 role      = EXCLUDED.role, \
+                 home_org  = COALESCE(EXCLUDED.home_org, dp_memberships.home_org), \
+                 joined_at = LEAST(dp_memberships.joined_at, EXCLUDED.joined_at) \
+             RETURNING user_id, org_id, role, home_org, joined_at",
+        )
+        .bind(membership.user_id)
+        .bind(membership.org_id)
+        .bind(&role_text)
+        .bind(membership.home_org)
+        .bind(membership.joined_at)
+        .fetch_one(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        row_to_membership(&row)
+    }
+
+    async fn list_memberships_for_user(
+        &self,
+        user_id: Uuid,
+    ) -> Result<Vec<Membership>, StoreError> {
+        let rows = sqlx::query(
+            "SELECT user_id, org_id, role, home_org, joined_at \
+             FROM dp_memberships WHERE user_id = $1 ORDER BY org_id",
+        )
+        .bind(user_id)
+        .fetch_all(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        rows.iter().map(row_to_membership).collect()
+    }
+
+    async fn set_home_org(
+        &self,
+        user_id: Uuid,
+        org_id: Uuid,
+        home_org: Option<Uuid>,
+    ) -> Result<(), StoreError> {
+        let result = sqlx::query(
+            "UPDATE dp_memberships SET home_org = $3 \
+             WHERE user_id = $1 AND org_id = $2",
+        )
+        .bind(user_id)
+        .bind(org_id)
+        .bind(home_org)
+        .execute(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        if result.rows_affected() == 0 {
+            return Err(not_found("membership", format!("({user_id}, {org_id})")));
+        }
+        Ok(())
+    }
+
+    // ---- events + actors ------------------------------------------
+
+    async fn record_event(&self, event: &ActivityEvent) -> Result<ActivityEvent, StoreError> {
+        let kind_text = event_kind_to_text(event.kind);
+        let row = sqlx::query(
+            "INSERT INTO dp_activity_events (id, org_id, repo_id, kind, ts, external_id, payload) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7) \
+             ON CONFLICT (kind, external_id) DO UPDATE SET \
+                 ts      = EXCLUDED.ts, \
+                 payload = EXCLUDED.payload \
+             RETURNING id, org_id, repo_id, kind, ts, external_id, payload",
+        )
+        .bind(event.id)
+        .bind(event.org_id)
+        .bind(event.repo_id)
+        .bind(kind_text)
+        .bind(event.ts)
+        .bind(&event.external_id)
+        .bind(&event.payload)
+        .fetch_one(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        row_to_activity_event(&row)
+    }
+
+    async fn add_event_actors(&self, actors: &[EventActor]) -> Result<(), StoreError> {
+        if actors.is_empty() {
+            return Ok(());
+        }
+        // Batch via UNNEST so the call is one round-trip regardless
+        // of fan-out. ON CONFLICT DO NOTHING because the composite
+        // PK is the dedupe key — retries are safe.
+        let event_ids: Vec<Uuid> = actors.iter().map(|a| a.event_id).collect();
+        let user_ids: Vec<Uuid> = actors.iter().map(|a| a.user_id).collect();
+        let roles: Vec<String> = actors
+            .iter()
+            .map(|a| actor_role_to_text(a.role).to_string())
+            .collect();
+        sqlx::query(
+            "INSERT INTO dp_event_actors (event_id, user_id, role) \
+             SELECT * FROM UNNEST($1::uuid[], $2::uuid[], $3::text[]) \
+             ON CONFLICT (event_id, user_id, role) DO NOTHING",
+        )
+        .bind(&event_ids)
+        .bind(&user_ids)
+        .bind(&roles)
+        .execute(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        Ok(())
+    }
+
+    async fn list_event_actor_rows_in_window(
+        &self,
+        window: &Window,
+        orgs: &[Uuid],
+        repos: &[Uuid],
+        users: &[Uuid],
+        roles: &[ActorRole],
+    ) -> Result<Vec<EventActorRow>, StoreError> {
+        // Empty array = "no filter on this dimension"; each predicate
+        // short-circuits with `cardinality($N) = 0`. Avoids dynamic
+        // SQL building and keeps the prepared-statement cache happy.
+        let role_texts: Vec<String> = roles
+            .iter()
+            .map(|r| actor_role_to_text(*r).to_string())
+            .collect();
+        let rows = sqlx::query(
+            "SELECT ea.event_id, ea.user_id, ea.role, \
+                    e.org_id, e.repo_id, e.kind, e.ts \
+             FROM dp_event_actors ea \
+             JOIN dp_activity_events e ON e.id = ea.event_id \
+             WHERE e.ts >= $1 AND e.ts < $2 \
+               AND (cardinality($3::uuid[]) = 0 OR e.org_id  = ANY($3)) \
+               AND (cardinality($4::uuid[]) = 0 OR e.repo_id = ANY($4)) \
+               AND (cardinality($5::uuid[]) = 0 OR ea.user_id = ANY($5)) \
+               AND (cardinality($6::text[]) = 0 OR ea.role   = ANY($6)) \
+             ORDER BY e.ts",
+        )
+        .bind(window.start)
+        .bind(window.end)
+        .bind(orgs)
+        .bind(repos)
+        .bind(users)
+        .bind(&role_texts)
+        .fetch_all(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        rows.iter().map(row_to_event_actor_row).collect()
+    }
+
+    // ---- cursors + run log ----------------------------------------
+
+    async fn get_cursor(
+        &self,
+        org_id: Uuid,
+        repo_id: Option<Uuid>,
+        resource_kind: ResourceKind,
+    ) -> Result<FetchCursor, StoreError> {
+        // `IS NOT DISTINCT FROM` so the NULL repo_id (org-scoped
+        // resources) matches the way the unique index does
+        // (NULLS NOT DISTINCT).
+        let rk_text = resource_kind_to_text(resource_kind);
+        let row = sqlx::query(
+            "SELECT org_id, repo_id, resource_kind, since, etag, last_event_id, updated_at \
+             FROM dp_fetch_cursors \
+             WHERE org_id = $1 \
+               AND repo_id IS NOT DISTINCT FROM $2 \
+               AND resource_kind = $3",
+        )
+        .bind(org_id)
+        .bind(repo_id)
+        .bind(rk_text)
+        .fetch_optional(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        match row {
+            Some(r) => row_to_fetch_cursor(&r),
+            None => Err(not_found(
+                "cursor",
+                format!("({org_id}, {repo_id:?}, {rk_text})"),
+            )),
+        }
+    }
+
+    async fn put_cursor(&self, cursor: &FetchCursor) -> Result<(), StoreError> {
+        // `ON CONFLICT` references the unique constraint columns
+        // directly — the runner created it with NULLS NOT DISTINCT
+        // so two cursors with the same (org, NULL, kind) collide.
+        let rk_text = resource_kind_to_text(cursor.resource_kind);
+        sqlx::query(
+            "INSERT INTO dp_fetch_cursors \
+                 (org_id, repo_id, resource_kind, since, etag, last_event_id, updated_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7) \
+             ON CONFLICT (org_id, repo_id, resource_kind) DO UPDATE SET \
+                 since         = EXCLUDED.since, \
+                 etag          = EXCLUDED.etag, \
+                 last_event_id = EXCLUDED.last_event_id, \
+                 updated_at    = EXCLUDED.updated_at",
+        )
+        .bind(cursor.org_id)
+        .bind(cursor.repo_id)
+        .bind(rk_text)
+        .bind(cursor.since)
+        .bind(&cursor.etag)
+        .bind(&cursor.last_event_id)
+        .bind(cursor.updated_at)
+        .execute(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        Ok(())
+    }
+
+    async fn start_fetch_run(&self, kind: FetchRunKind) -> Result<Uuid, StoreError> {
+        let id = Uuid::new_v4();
+        let kind_text = fetch_run_kind_to_text(kind);
+        sqlx::query(
+            "INSERT INTO dp_fetch_runs (id, kind, started, items, errors, partial) \
+             VALUES ($1, $2, NOW(), 0, 0, FALSE)",
+        )
+        .bind(id)
+        .bind(kind_text)
+        .execute(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        Ok(id)
+    }
+
+    async fn finish_fetch_run(
+        &self,
+        id: Uuid,
+        items: i64,
+        errors: i64,
+        partial: bool,
+    ) -> Result<(), StoreError> {
+        let result = sqlx::query(
+            "UPDATE dp_fetch_runs SET \
+                 finished = NOW(), items = $2, errors = $3, partial = $4 \
+             WHERE id = $1",
+        )
+        .bind(id)
+        .bind(items)
+        .bind(errors)
+        .bind(partial)
+        .execute(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        if result.rows_affected() == 0 {
+            return Err(not_found("fetch_run", id));
+        }
+        Ok(())
+    }
+
+    async fn list_recent_fetch_runs(&self, limit: i64) -> Result<Vec<FetchRun>, StoreError> {
+        let rows = sqlx::query(
+            "SELECT id, kind, started, finished, items, errors, partial \
+             FROM dp_fetch_runs ORDER BY started DESC LIMIT $1",
+        )
+        .bind(limit)
+        .fetch_all(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        rows.iter().map(row_to_fetch_run).collect()
+    }
+
+    // ---- webhook inbox --------------------------------------------
+
+    async fn enqueue_webhook(&self, delivery: &WebhookDelivery) -> Result<(), StoreError> {
+        // No ON CONFLICT — we WANT the unique-violation on
+        // `delivery_id` to surface so the caller can translate it to
+        // a 200 OK and avoid double-processing.
+        sqlx::query(
+            "INSERT INTO dp_webhook_inbox \
+                 (id, delivery_id, event, payload, received_at, processed_at, error) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        )
+        .bind(delivery.id)
+        .bind(&delivery.delivery_id)
+        .bind(&delivery.event)
+        .bind(&delivery.payload)
+        .bind(delivery.received_at)
+        .bind(delivery.processed_at)
+        .bind(&delivery.error)
+        .execute(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        Ok(())
+    }
+
+    async fn claim_webhooks(&self, max: i64) -> Result<Vec<WebhookDelivery>, StoreError> {
+        // `FOR UPDATE SKIP LOCKED` is how multiple workers cooperate
+        // without serialising — Postgres-canonical queue pattern.
+        // The CTE writes the lock; the outer SELECT returns the
+        // rows shaped like the regular read.
+        let rows = sqlx::query(
+            "WITH claimed AS ( \
+                 SELECT id FROM dp_webhook_inbox \
+                 WHERE processed_at IS NULL \
+                 ORDER BY received_at \
+                 LIMIT $1 \
+                 FOR UPDATE SKIP LOCKED \
+             ) \
+             SELECT w.id, w.delivery_id, w.event, w.payload, \
+                    w.received_at, w.processed_at, w.error \
+             FROM dp_webhook_inbox w \
+             JOIN claimed c ON c.id = w.id",
+        )
+        .bind(max)
+        .fetch_all(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        rows.iter().map(row_to_webhook_delivery).collect()
+    }
+
+    async fn mark_webhook_processed(&self, id: Uuid) -> Result<(), StoreError> {
+        let result = sqlx::query(
+            "UPDATE dp_webhook_inbox SET processed_at = NOW(), error = NULL \
+             WHERE id = $1",
+        )
+        .bind(id)
+        .execute(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        if result.rows_affected() == 0 {
+            return Err(not_found("webhook", id));
+        }
+        Ok(())
+    }
+
+    async fn mark_webhook_failed(&self, id: Uuid, error: &str) -> Result<(), StoreError> {
+        let result = sqlx::query("UPDATE dp_webhook_inbox SET error = $2 WHERE id = $1")
+            .bind(id)
+            .bind(error)
+            .execute(self.pool.sqlx())
+            .await
+            .map_err(map_sqlx)?;
+        if result.rows_affected() == 0 {
+            return Err(not_found("webhook", id));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Object-safety guard. Every surface holds an
+    /// `Arc<dyn Store>`; if `PgStore` ever picked up a generic that
+    /// broke object-safety, this test would fail at compile time.
+    #[allow(dead_code)]
+    fn pg_store_is_a_store(s: PgStore) -> Box<dyn Store> {
+        Box::new(s)
+    }
+}
