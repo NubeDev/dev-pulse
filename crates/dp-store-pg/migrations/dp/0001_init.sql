@@ -100,10 +100,12 @@ CREATE TABLE dp_activity_events (
 -- Report path: list_event_actor_rows_in_window joins event_actors to
 -- events and filters by ts within a window, then optionally by org /
 -- repo / user / role. These three indexes cover the common
--- access patterns; (org_id, ts) is the dominant one.
-CREATE INDEX dp_activity_events_org_ts_idx  ON dp_activity_events (org_id, ts);
-CREATE INDEX dp_activity_events_repo_ts_idx ON dp_activity_events (repo_id, ts);
-CREATE INDEX dp_activity_events_kind_ts_idx ON dp_activity_events (kind, ts);
+-- access patterns; (org_id, ts DESC) is the dominant one. DESC
+-- mirrors the TODO §Phase 1 spec — recent-events-first is the
+-- universal report shape.
+CREATE INDEX dp_activity_events_org_ts_idx  ON dp_activity_events (org_id,  ts DESC);
+CREATE INDEX dp_activity_events_repo_ts_idx ON dp_activity_events (repo_id, ts DESC);
+CREATE INDEX dp_activity_events_kind_ts_idx ON dp_activity_events (kind,    ts DESC);
 
 CREATE TABLE dp_event_actors (
     event_id  UUID  NOT NULL REFERENCES dp_activity_events(id) ON DELETE CASCADE,
@@ -114,9 +116,11 @@ CREATE TABLE dp_event_actors (
 
 -- "Show me this user's activity" — reverse lookup from a user to
 -- their event_actor rows. The join then fetches the event row via
--- its PK.
-CREATE INDEX dp_event_actors_user_idx ON dp_event_actors (user_id);
-CREATE INDEX dp_event_actors_role_idx ON dp_event_actors (role);
+-- its PK. The composite `(user_id, event_id)` matches the TODO
+-- §Phase 1 mandatory-index list and lets index-only scans satisfy
+-- the join without a heap fetch on event_actors.
+CREATE INDEX dp_event_actors_user_event_idx ON dp_event_actors (user_id, event_id);
+CREATE INDEX dp_event_actors_role_idx       ON dp_event_actors (role);
 
 -- ---------- fetch runs + cursors ------------------------------------
 
@@ -140,10 +144,17 @@ CREATE TABLE dp_fetch_cursors (
     etag           TEXT         NULL,
     last_event_id  TEXT         NULL,
     updated_at     TIMESTAMPTZ  NOT NULL,
-    -- PG15+: treat NULL repo_id as equal for uniqueness so the
-    -- org-scoped resources (members, teams) get at most one cursor
-    -- per (org, resource_kind).
-    UNIQUE NULLS NOT DISTINCT (org_id, repo_id, resource_kind)
+    -- TODO §Phase 1 calls this a "composite PK (org_id, repo_id,
+    -- resource_kind)". A literal PRIMARY KEY can't include
+    -- `repo_id` because PG forbids NULL in PK columns and org-scoped
+    -- resources (members, teams) intentionally carry NULL repo_id.
+    -- We get the same semantics — exactly one row per
+    -- (org, repo_or_org-scope, resource_kind) — via PG15+
+    -- `NULLS NOT DISTINCT` on a unique constraint, which treats two
+    -- NULL repo_ids as a conflict. Upserts in
+    -- `dp_store_pg::PgStore::put_cursor` target this constraint.
+    CONSTRAINT dp_fetch_cursors_pk
+        UNIQUE NULLS NOT DISTINCT (org_id, repo_id, resource_kind)
 );
 
 -- ---------- webhook inbox -------------------------------------------
@@ -158,9 +169,67 @@ CREATE TABLE dp_webhook_inbox (
     error         TEXT         NULL
 );
 
--- Worker drain path: `SELECT ... WHERE processed_at IS NULL FOR
--- UPDATE SKIP LOCKED`. Partial index keeps it tiny once the inbox
--- has burned through most of its rows.
+-- Worker drain path: `SELECT ... WHERE processed_at IS NULL ORDER
+-- BY received_at FOR UPDATE SKIP LOCKED`. The partial predicate
+-- (`processed_at IS NULL`) keeps the index tiny once the inbox has
+-- burned through most of its rows; ordering by `received_at` inside
+-- that partial set gives FIFO drain. The TODO §Phase 1 mandatory
+-- list spells this as `webhook_inbox(processed_at) WHERE
+-- processed_at IS NULL` — same partial predicate, different leading
+-- column. We pick `received_at` because the worker query orders by
+-- it; indexing `processed_at` (which is NULL by definition inside
+-- the partial set) would carry no information.
 CREATE INDEX dp_webhook_inbox_pending_idx
     ON dp_webhook_inbox (received_at)
     WHERE processed_at IS NULL;
+
+-- ---------- issues --------------------------------------------------
+
+-- SCOPE §4.1: the local store models issues with **all** fields the
+-- future CRUD-on-issues feature will need (title, body, labels,
+-- assignees, state, milestone), not just the counters required for
+-- reporting. Storing them now means no schema reshape later. Labels
+-- and assignees are jsonb arrays so we can land the schema without
+-- committing to a normalised label / assignee table — those can
+-- arrive in a later migration if reports need them.
+CREATE TABLE dp_issues (
+    id           UUID         PRIMARY KEY,
+    org_id       UUID         NOT NULL REFERENCES dp_orgs(id)  ON DELETE CASCADE,
+    repo_id      UUID         NOT NULL REFERENCES dp_repos(id) ON DELETE CASCADE,
+    github_id    BIGINT       NOT NULL,
+    number       BIGINT       NOT NULL,
+    title        TEXT         NOT NULL,
+    body         TEXT         NULL,
+    state        TEXT         NOT NULL,
+    labels       JSONB        NOT NULL DEFAULT '[]'::jsonb,
+    assignees    JSONB        NOT NULL DEFAULT '[]'::jsonb,
+    milestone    TEXT         NULL,
+    created_at   TIMESTAMPTZ  NOT NULL,
+    updated_at   TIMESTAMPTZ  NOT NULL,
+    closed_at    TIMESTAMPTZ  NULL,
+    UNIQUE (repo_id, github_id),
+    UNIQUE (repo_id, number)
+);
+
+-- Most issue queries are "list issues in this repo by recency" or
+-- "list open issues in this org". Cover both.
+CREATE INDEX dp_issues_repo_updated_idx ON dp_issues (repo_id, updated_at DESC);
+CREATE INDEX dp_issues_org_state_idx    ON dp_issues (org_id,  state);
+
+-- ---------- audit log ----------------------------------------------
+
+-- SCOPE §9 transparency / §0.5 access-log requirement. Every
+-- protected handler writes one row. `actor_user_id` stays a UUID
+-- even after the user is pseudonymised (§0.5) — pseudonymisation
+-- rewrites `dp_users.login/email/name` but keeps the `id`, which
+-- preserves legal-defensibility of the log.
+CREATE TABLE dp_audit_log (
+    id             UUID         PRIMARY KEY,
+    actor_user_id  UUID         NOT NULL REFERENCES dp_users(id),
+    action         TEXT         NOT NULL,
+    target         TEXT         NOT NULL,
+    at             TIMESTAMPTZ  NOT NULL
+);
+
+CREATE INDEX dp_audit_log_actor_at_idx ON dp_audit_log (actor_user_id, at DESC);
+CREATE INDEX dp_audit_log_at_idx       ON dp_audit_log (at DESC);
