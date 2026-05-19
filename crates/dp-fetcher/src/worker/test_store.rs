@@ -49,6 +49,7 @@ struct Inner {
     actors: Vec<EventActor>,
     inbox: Vec<WebhookDelivery>,
     fetch_runs: HashMap<Uuid, FetchRun>,
+    cursors: HashMap<(Uuid, Option<Uuid>, ResourceKind), FetchCursor>,
 }
 
 impl FakeStore {
@@ -135,6 +136,20 @@ impl FakeStore {
             .iter()
             .filter(|d| d.processed_at.is_none())
             .count()
+    }
+
+    pub fn get_cursor_sync(
+        &self,
+        org_id: Uuid,
+        repo_id: Option<Uuid>,
+        kind: ResourceKind,
+    ) -> Option<FetchCursor> {
+        self.inner
+            .lock()
+            .unwrap()
+            .cursors
+            .get(&(org_id, repo_id, kind))
+            .cloned()
     }
 
     pub fn last_error_for_pending(&self) -> Option<String> {
@@ -320,14 +335,24 @@ impl Store for FakeStore {
     // ---- cursors + run log --------------------------------------
     async fn get_cursor(
         &self,
-        _: Uuid,
-        _: Option<Uuid>,
-        _: ResourceKind,
+        org_id: Uuid,
+        repo_id: Option<Uuid>,
+        resource_kind: ResourceKind,
     ) -> Result<FetchCursor, StoreError> {
-        unimplemented!()
+        let g = self.inner.lock().unwrap();
+        g.cursors
+            .get(&(org_id, repo_id, resource_kind))
+            .cloned()
+            .ok_or(StoreError::NotFound {
+                entity: "fetch_cursor",
+                id: format!("({org_id},{repo_id:?},{resource_kind:?})"),
+            })
     }
-    async fn put_cursor(&self, _: &FetchCursor) -> Result<(), StoreError> {
-        unimplemented!()
+    async fn put_cursor(&self, c: &FetchCursor) -> Result<(), StoreError> {
+        let mut g = self.inner.lock().unwrap();
+        g.cursors
+            .insert((c.org_id, c.repo_id, c.resource_kind), c.clone());
+        Ok(())
     }
 
     async fn start_fetch_run(&self, kind: FetchRunKind) -> Result<Uuid, StoreError> {

@@ -24,5 +24,6 @@
 #![warn(missing_docs)]
 
 pub mod client;
+pub mod reconciler;
 pub mod webhook;
 pub mod worker;

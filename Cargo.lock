@@ -594,7 +594,13 @@ checksum = "1aaf95b3e5c8f23aa320147307562d361db0ae0d51242340f558153b4eb2439b"
 name = "dp-cli"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "clap",
  "dp-domain",
+ "dp-fetcher",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -656,8 +662,19 @@ dependencies = [
 name = "dp-rest"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "axum",
+ "chrono",
  "dp-domain",
+ "dp-fetcher",
  "dp-reports",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tower",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
