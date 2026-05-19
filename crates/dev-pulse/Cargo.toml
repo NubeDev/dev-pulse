@@ -1,0 +1,23 @@
+[package]
+name        = "dev-pulse"
+description = "dev-pulse top-level binary. main.rs only — clap subcommands compose dp-cli + starter-cli registry."
+version.workspace      = true
+edition.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "dev-pulse"
+path = "src/main.rs"
+
+[dependencies]
+# Stage 1 scaffolding: only what main.rs needs to wire tracing init
+# and stand up a clap skeleton. Real subcommands (migrate, serve,
+# fetch-now, backfill, claim) land in later phases.
+starter-observability = { workspace = true }
+anyhow                = { workspace = true }
+clap                  = { workspace = true }
+tokio                 = { workspace = true }
+tracing               = { workspace = true }

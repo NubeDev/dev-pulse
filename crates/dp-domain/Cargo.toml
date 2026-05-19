@@ -1,0 +1,14 @@
+[package]
+name         = "dp-domain"
+description  = "dev-pulse domain entities and Store trait. Zero starter_* imports (TODO §0.6)."
+version.workspace      = true
+edition.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]

@@ -1,0 +1,15 @@
+[package]
+name        = "dp-store-pg"
+description = "Postgres impl of the dp-domain Store trait. Owns PgPool and SQL under migrations/dp/."
+version.workspace      = true
+edition.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+dp-domain = { workspace = true }

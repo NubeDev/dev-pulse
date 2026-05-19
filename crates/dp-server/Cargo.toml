@@ -1,0 +1,20 @@
+[package]
+name        = "dp-server"
+description = "Composition root: ServerBuilder, merge_router, with_openapi, with_metrics, with_principal, mcp_router."
+version.workspace      = true
+edition.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+dp-domain   = { workspace = true }
+dp-store-pg = { workspace = true }
+dp-reports  = { workspace = true }
+dp-rest     = { workspace = true }
+dp-mcp      = { workspace = true }
+dp-fetcher  = { workspace = true }

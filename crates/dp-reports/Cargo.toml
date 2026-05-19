@@ -1,0 +1,15 @@
+[package]
+name        = "dp-reports"
+description = "Report query layer. Takes Window + scope + group_by + agg, returns rows. Zero starter_* imports."
+version.workspace      = true
+edition.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+dp-domain = { workspace = true }
