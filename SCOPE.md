@@ -247,3 +247,140 @@ Reports must load fast. To guarantee that, **the system never calls GitHub durin
 - Tech stack, choice of local store, API approach (REST vs GraphQL), job runner implementation — deferred to design doc.
 - UI / UX wireframes — deferred.
 - Pricing / packaging — deferred.
+
+---
+
+## 15. Decisions
+
+Locked decisions with revisit triggers. Anything not listed here is
+still an open question (§12). Phase 0 decisions in TODO §0 are
+locked inputs and are not re-opened here — this section captures
+decisions made during/for later phases.
+
+### 15.1 Auth to GitHub: **GitHub App** (not PAT)
+
+- **Decision (Phase 2):** dev-pulse authenticates to GitHub as a
+  **GitHub App** with per-org installation, exchanging the App's
+  private key (JWT) for a short-lived **installation access token**
+  consumed by `octocrab`. PAT is rejected.
+- **Why:**
+  - Webhook delivery requires an App; PATs cannot register the
+    org-wide event subscriptions that TODO §0.1 depends on.
+  - Per-installation rate-limit bucket (5000 req/h **per org
+    install**) scales with org count; a single PAT shares one
+    bucket across all orgs and breaks SCOPE §13 scale.
+  - Per-org install model means an admin in each org consents
+    explicitly — cleaner audit story for SCOPE §9.
+  - Permission scope can grow into write access (SCOPE §4.1
+    issues CRUD) without re-onboarding orgs.
+- **Revisit if:** GitHub changes App rate-limit policy, or a target
+  deployment refuses to install Apps and demands PAT-only operation
+  (then re-open as a deployment-mode flag, not a default).
+- **Resolves:** TODO §6 (working assumption → confirmed), SCOPE §12
+  authentication-model question (for *fetcher* auth; operator login
+  is a separate question still open).
+
+### 15.2 Backfill window default: **90 days**
+
+- **Decision (Phase 2):** one-shot per-org backfill at install time
+  covers the trailing **90 days** of activity, configurable via
+  `starter-config` (`backfill.window_days`). Paced against the
+  per-install rate-limit bucket.
+- **Why:**
+  - 90 days covers the longest report window the v1 UI surfaces
+    ("last quarter") plus a margin for trend comparisons (§8.1).
+  - Bounded window keeps install-time cost predictable; a fresh
+    install of an org with 1000 repos completes inside the
+    per-install bucket without throttling user-facing fetches.
+  - SCOPE §9 erasure obligations get easier the less historical
+    data we hold by default.
+- **Revisit triggers:**
+  - First target deployment requests deeper history → bump default
+    and document rate-limit impact.
+  - Trend reports (§3 secondary) need >90d of baseline → re-open.
+  - Storage cost on the first production deployment exceeds budget
+    → re-open downward.
+- **Resolves:** TODO §6 (revisit after first target deployment) and
+  SCOPE §12 backfill-strategy question.
+
+### 15.3 Webhook HMAC secret: stored in `starter-secrets-file`, rotated with overlap
+
+- **Decision (Phase 2):**
+  - Webhook HMAC secret is stored under
+    `secrets://github/webhook_hmac` in `starter-secrets-file`
+    (age-encrypted), alongside the GitHub App private key and
+    installation IDs.
+  - **Rotation path:** the secrets file holds **up to two** valid
+    secrets at any time — `current` and `previous`. The webhook
+    receiver validates an incoming signature against `current`
+    first; on mismatch it falls back to `previous` and logs a
+    `webhook.hmac.rotated_fallback` metric. After GitHub's App
+    settings have been updated to the new secret and metrics show
+    zero `previous` hits for a full reconciler cycle (4h, §0.3),
+    `previous` is removed.
+  - **Replay safety across rotation:** `webhook_inbox.delivery_id`
+    uniqueness is independent of which secret signed the request,
+    so already-enqueued deliveries replay safely across a cutover.
+  - **Fail-closed:** an incoming signature that matches **neither**
+    `current` nor `previous` returns HTTP 401 and is **not**
+    enqueued. There is no "accept-on-unknown-secret" mode.
+- **Why:** rotation without downtime is a v1 requirement (legal
+  asks for compromised-secret response within hours), and
+  webhook deliveries in flight at cutover must not be lost — the
+  overlap window covers them.
+- **Revisit if:** secrets backend changes (hosted KMS for SaaS), or
+  GitHub adds native key-id support to webhook signatures (then
+  the overlap window collapses to a header-driven dispatch).
+
+### 15.4 Octocrab rate-limit headroom: **pause when remaining < 100**
+
+- **Decision (Phase 2):**
+  - All octocrab calls go through a single client wrapper in
+    `dp-fetcher` that tracks `X-RateLimit-Remaining` and
+    `X-RateLimit-Reset` for **both** the primary REST bucket and
+    the secondary (search / abuse-detection) bucket.
+  - When `remaining < 100` on either bucket, the wrapper **pauses
+    all outbound calls until that bucket's reset timestamp**,
+    logging `ratelimit.paused{bucket}` and recording the pause in
+    `fetch_runs.errors` (non-fatal, partial=true).
+  - Webhook ingest is **unaffected** — it does not call GitHub. The
+    pause only gates reconciler + backfill paths.
+  - The threshold is exposed in `starter-config` as
+    `github.ratelimit.min_remaining` (default `100`) so the first
+    production deployment can tune without a rebuild.
+  - On HTTP 429 / `Retry-After`, the wrapper honours the header
+    even if `remaining` was above the threshold (defensive against
+    secondary-limit surprises).
+- **Why:**
+  - 100-request headroom on a 5000/h bucket leaves room for
+    user-triggered `fetch-now` (SCOPE §10) and webhook-replay
+    catch-up without starving the reconciler.
+  - Splitting primary vs secondary bucket avoids the common failure
+    where search calls exhaust the secondary bucket while primary
+    looks healthy.
+- **Revisit if:**
+  - First load test (TODO Phase 1) shows reconciler starvation →
+    raise threshold.
+  - GitHub introduces a third bucket or changes header names →
+    update wrapper and re-pin.
+  - SaaS deployment runs many installs through one wrapper instance
+    → the threshold becomes per-installation, not global.
+
+### 15.5 Phase 0 decisions (read-only inputs, not re-opened here)
+
+TODO §0.1–§0.6 are settled and locked as inputs to Phase 2:
+
+- §0.1 webhooks-primary + reconciler + bounded backfill —
+  the architecture this phase implements.
+- §0.2 multi-actor `event_actors` split — the schema this
+  phase writes against.
+- §0.3 per-`(org, repo, resource_kind)` cursors with etag —
+  the cursor model the reconciler uses.
+- §0.4 UTC + window contract — irrelevant to ingest; relevant to
+  Phase 3.
+- §0.5 soft-delete + pseudonymisation — the fetcher respects
+  `users.deleted_at` (does not resurrect pseudonymised users on
+  webhook receipt — see Phase 2 worker implementation note).
+- §0.6 boundary rule + `scripts/check-boundaries.sh` — enforced
+  in CI; this phase adds no `starter_*` imports to
+  `dp-fetcher`.
