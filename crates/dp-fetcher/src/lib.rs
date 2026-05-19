@@ -7,7 +7,11 @@
 //! (later stages) call typed methods on [`client::Client`] rather
 //! than touching octocrab directly. Stage 4 adds [`webhook`] —
 //! an HMAC-validating axum route fragment that enqueues to
-//! `webhook_inbox` and returns 200 in under 100ms.
+//! `webhook_inbox` and returns 200 in under 100ms. Stage 5 adds
+//! [`worker`] — the cooperative-shutdown drain task that empties
+//! `webhook_inbox`, applies idempotent upserts via
+//! `activity_events.external_id`, and fans out multi-actor events
+//! into `event_actors` per TODO §0.2.
 //!
 //! Boundary rule (TODO §0.6): zero `starter_*` imports. GitHub App
 //! credentials and the webhook HMAC secret originate in
@@ -21,3 +25,4 @@
 
 pub mod client;
 pub mod webhook;
+pub mod worker;
