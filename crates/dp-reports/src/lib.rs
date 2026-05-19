@@ -12,9 +12,16 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod aggregate;
 pub mod envelope;
 pub mod lenses;
 
+pub use aggregate::{
+    compute_percentiles, count_by_bucket, count_by_org, count_by_repo, count_by_team,
+    count_by_user, filter_rows_for_metric, percentile_cont_sql, pick_trend_bucket,
+    truncate_to_bucket, CountMetric, DurationMetric, MetricRoleEntry, Percentiles, TrendBucket,
+    METRIC_ROLE_MAP, MIN_PERCENTILE_SAMPLE_N,
+};
 pub use envelope::{
     resolve_window, resolve_window_at, GroupBy, ReportRequest, ResolveError, ScopeMode,
     WindowLabel, WindowSpec,
