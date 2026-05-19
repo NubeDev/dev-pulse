@@ -261,6 +261,7 @@ mod tests {
         async fn start_fetch_run(&self, _: FetchRunKind) -> Result<Uuid, StoreError> { unimplemented!() }
         async fn finish_fetch_run(&self, _: Uuid, _: i64, _: i64, _: bool) -> Result<(), StoreError> { unimplemented!() }
         async fn list_recent_fetch_runs(&self, _: i64) -> Result<Vec<FetchRun>, StoreError> { unimplemented!() }
+        async fn data_as_of(&self) -> Result<dp_domain::freshness::DataAsOf, StoreError> { unimplemented!() }
         async fn claim_webhooks(&self, _: i64) -> Result<Vec<WebhookDelivery>, StoreError> { unimplemented!() }
         async fn mark_webhook_processed(&self, _: Uuid) -> Result<(), StoreError> { unimplemented!() }
         async fn mark_webhook_failed(&self, _: Uuid, _: &str) -> Result<(), StoreError> { unimplemented!() }

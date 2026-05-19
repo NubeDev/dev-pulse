@@ -20,6 +20,7 @@ use uuid::Uuid;
 
 use crate::event::{ActivityEvent, ActorRole, EventActor, EventKind};
 use crate::fetch::{FetchCursor, FetchRun, FetchRunKind, ResourceKind};
+use crate::freshness::DataAsOf;
 use crate::membership::Membership;
 use crate::org::Org;
 use crate::repo::Repo;
@@ -199,6 +200,24 @@ pub trait Store: Send + Sync {
 
     /// List the most recent `limit` runs of any kind, newest first.
     async fn list_recent_fetch_runs(&self, limit: i64) -> Result<Vec<FetchRun>, StoreError>;
+
+    /// Snapshot the data-freshness envelope every report response
+    /// carries (SCOPE §11.7 / TODO §0.3).
+    ///
+    /// Returns:
+    ///
+    /// * `webhook_latest` — `MAX(finished)` of `dp_fetch_runs` rows
+    ///   where `kind = webhook_worker` and `finished IS NOT NULL`.
+    /// * `reconciler_latest` — same, for `kind = reconciler`.
+    /// * `per_org` — `MAX(updated_at)` of `dp_fetch_cursors` grouped
+    ///   by `org_id`. Orgs that have no cursor rows yet (no
+    ///   reconciler tick has ever touched them) are absent rather
+    ///   than mapped to a sentinel.
+    ///
+    /// Cheap — three indexed aggregates, no per-row scan. Reports
+    /// call this once per request and the result rides on the
+    /// response envelope.
+    async fn data_as_of(&self) -> Result<DataAsOf, StoreError>;
 
     // ---- webhook inbox -------------------------------------------
 

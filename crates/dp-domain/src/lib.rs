@@ -24,6 +24,7 @@
 
 pub mod event;
 pub mod fetch;
+pub mod freshness;
 pub mod membership;
 pub mod org;
 pub mod repo;
@@ -35,6 +36,7 @@ pub mod window;
 
 pub use event::{ActivityEvent, ActorRole, EventActor, EventKind};
 pub use fetch::{FetchCursor, FetchRun, FetchRunKind, ResourceKind};
+pub use freshness::DataAsOf;
 pub use membership::{Membership, MembershipRole};
 pub use org::Org;
 pub use repo::Repo;

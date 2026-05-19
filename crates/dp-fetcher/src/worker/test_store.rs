@@ -396,6 +396,14 @@ impl Store for FakeStore {
         unimplemented!()
     }
 
+    async fn data_as_of(&self) -> Result<dp_domain::freshness::DataAsOf, StoreError> {
+        // The webhook-worker tests don't exercise data_as_of; the
+        // dp-store-pg integration suite is what proves the Postgres
+        // body. Keep the fake honest with a Default so a caller who
+        // *does* invoke this in future doesn't get a panic.
+        Ok(dp_domain::freshness::DataAsOf::default())
+    }
+
     // ---- webhook inbox ------------------------------------------
     async fn enqueue_webhook(&self, d: &WebhookDelivery) -> Result<(), StoreError> {
         let mut g = self.inner.lock().unwrap();
