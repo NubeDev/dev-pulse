@@ -1,20 +1,16 @@
 /**
- * `GET /reports/org/:org_id` page — SCOPE §11.5 "headline + table +
- * trend" shape, three-lens toggle (§8.1), "Data as of" banner per
- * §0.3.
- *
- * Same shell as the user / team pages — the only difference is the
- * selector (a single org dropdown populated from `GET /orgs`) and
- * the fetch verb. Lens hint text from `LENSES` clarifies the
- * single-org/all-orgs distinction for the org-level view.
- *
- * Mock-data smoke: when `VITE_USE_MOCK_REPORTS=1`, queries are
- * short-circuited so the page renders without dp-server.
+ * `GET /reports/org/:org_id` page — same skeleton as user/team/
+ * home-org-split. Single Org selector populated from `GET /orgs`.
  */
 
 import { useMemo, useState, useId } from "react";
 import { useQueries, useQuery } from "@tanstack/react-query";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@nube/starter-ui-kit/components/card";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "@nube/starter-ui-kit/components/card";
 import { Label } from "@nube/starter-ui-kit/components/label";
 import {
   Select,
@@ -40,10 +36,12 @@ import { DataAsOfBanner } from "./data-as-of.jsx";
 import { LENSES, LensTabs } from "./lens-tabs.jsx";
 import {
   WindowPicker,
+  FILTER_GRID_CLASS,
   defaultWindowState,
   windowStateToParams,
   type WindowState,
 } from "./window-picker.jsx";
+import { PageHeading } from "../components/page-heading.jsx";
 
 const USE_MOCK = import.meta.env.VITE_USE_MOCK_REPORTS === "1";
 
@@ -168,62 +166,73 @@ export function OrgReportPage(): JSX.Element {
 
   const dropdownId = useId();
   return (
-    <Card>
-      <CardHeader>
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div className="grid gap-1">
-            <CardTitle className="text-2xl font-semibold tracking-tight">
-              Org activity report
-            </CardTitle>
-            <CardDescription className="text-muted-foreground">
-              <code>GET /reports/org/:org_id</code> · SCOPE §11.5 headline + table + trend.
-            </CardDescription>
-          </div>
-          <DataAsOfBanner data={dataAsOf} loading={anyLoading && !dataAsOf} />
-        </div>
-      </CardHeader>
-      <CardContent className="grid gap-4">
-        <div className="grid max-w-sm gap-1.5">
-          <Label htmlFor={dropdownId}>Org</Label>
-          <Select
-            value={activeOrgId ?? ""}
-            onValueChange={selectOrg}
-            disabled={orgsQuery.isPending || orgs.length === 0}
-          >
-            <SelectTrigger id={dropdownId} data-testid="org-select">
-              <SelectValue placeholder={orgsQuery.isPending ? "Loading orgs…" : "Select an org"} />
-            </SelectTrigger>
-            <SelectContent>
-              {orgs.map((o) => (
-                <SelectItem key={o.id} value={o.id}>
-                  {o.name ?? o.login}
-                  {o.name ? <span className="text-muted-foreground"> · {o.login}</span> : null}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
+    <div className="grid gap-6">
+      <PageHeading
+        title="Org activity report"
+        description={
+          <>
+            <code className="font-mono text-xs">GET /reports/org/:org_id</code> · headline + table + trend.
+          </>
+        }
+      />
 
-        <WindowPicker value={windowState} onChange={setWindowState} />
-
-        <LensTabs value={lens} onChange={setLens}>
-          {!activeOrgId ? (
-            <p className="text-muted-foreground">
-              Pick an org above to load the report.
-            </p>
-          ) : (
-            <>
-              <p
-                data-testid="headline"
-                className="mb-2 text-base text-foreground"
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Filters</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className={FILTER_GRID_CLASS}>
+            <div className="grid gap-1.5">
+              <Label htmlFor={dropdownId}>Org</Label>
+              <Select
+                value={activeOrgId ?? ""}
+                onValueChange={selectOrg}
+                disabled={orgsQuery.isPending || orgs.length === 0}
               >
-                {anyLoading && !dataAsOf ? "Loading report…" : headline}
+                <SelectTrigger id={dropdownId} data-testid="org-select">
+                  <SelectValue placeholder={orgsQuery.isPending ? "Loading orgs…" : "Select an org"} />
+                </SelectTrigger>
+                <SelectContent>
+                  {orgs.map((o) => (
+                    <SelectItem key={o.id} value={o.id}>
+                      {o.name ?? o.login}
+                      {o.name ? <span className="text-muted-foreground"> · {o.login}</span> : null}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <WindowPicker value={windowState} onChange={setWindowState} />
+          </div>
+        </CardContent>
+      </Card>
+
+      <DataAsOfBanner data={dataAsOf} loading={anyLoading && !dataAsOf} />
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Activity</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <LensTabs value={lens} onChange={setLens}>
+            {!activeOrgId ? (
+              <p className="text-sm text-muted-foreground">
+                Pick an org above to load the report.
               </p>
-              <ActivityTable rows={tableRows} />
-            </>
-          )}
-        </LensTabs>
-      </CardContent>
-    </Card>
+            ) : (
+              <>
+                <p
+                  data-testid="headline"
+                  className="text-sm text-foreground"
+                >
+                  {anyLoading && !dataAsOf ? "Loading report…" : headline}
+                </p>
+                <ActivityTable rows={tableRows} />
+              </>
+            )}
+          </LensTabs>
+        </CardContent>
+      </Card>
+    </div>
   );
 }

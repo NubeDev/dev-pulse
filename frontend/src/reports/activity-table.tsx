@@ -2,24 +2,39 @@
  * Activity table — one row per activity type, with sortable Total
  * column and a sparkline trend computed from the bucketed counts.
  *
- * The page upstream fires one `getReportUser` query per activity
- * type with `group_by=day`; this component receives the resulting
- * `CountRow[]` per type and renders the rolled-up table.
+ * Layout: shadcn `Table` primitives (TableHeader / TableBody /
+ * TableRow / TableHead / TableCell). Numeric columns use
+ * `text-right tabular-nums`; the trend column reserves a fixed
+ * `h-8 w-24` so the sparklines line up vertically across rows. Empty
+ * state renders shadcn `Empty`. Loading state renders `Skeleton`
+ * shapes that match the cell layout (number-sized blocks for totals,
+ * a full-width thin strip for trend).
  *
- * The kit doesn't ship a `Table` primitive, so the markup stays
- * semantic `<table>` / `<thead>` / `<tbody>` with Tailwind utility
- * classes applied via shared per-cell constants. shadcn `Button`
- * (ghost variant) drives the column-header sort affordances.
+ * Sort headers are wrapped in a ghost `Button` for the affordance.
  */
 
 import { useState } from "react";
 import { Button } from "@nube/starter-ui-kit/components/button";
 import { cn } from "@nube/starter-ui-kit/lib/utils";
-import { Skeleton } from "../components/skeleton.jsx";
 
 import type { CountRow } from "../api/client.js";
 import { ACTIVITY_KINDS } from "./activity-types.js";
 import { Sparkline } from "./trend-sparkline.jsx";
+import { Skeleton } from "../components/skeleton.jsx";
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyTitle,
+} from "../components/empty.jsx";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "../components/table.jsx";
 
 export interface ActivityRow {
   /** Snake-case `EventKind`. */
@@ -41,15 +56,6 @@ export interface ActivityTableProps {
 type SortKey = "label" | "total";
 type SortDir = "asc" | "desc";
 
-/** Shared column-header / body-cell class constants — keep the table
- *  consistent without dragging in a wrapper component for every
- *  `<th>` / `<td>`. */
-const HEADER_CLASS =
-  "border-b border-border px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground";
-const CELL_CLASS = "border-b border-border px-3 py-2 align-middle text-sm";
-const NUM_CLASS = cn(CELL_CLASS, "text-right tabular-nums");
-const HEADER_RIGHT_CLASS = cn(HEADER_CLASS, "text-right");
-
 export function buildActivityRows(
   perKind: ReadonlyMap<string, { rows: ReadonlyArray<CountRow>; loading: boolean }>,
 ): ActivityRow[] {
@@ -66,6 +72,36 @@ export function buildActivityRows(
       loading: entry?.loading ?? false,
     };
   });
+}
+
+function SortHeader({
+  label,
+  active,
+  dir,
+  align,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  dir: SortDir;
+  align?: "left" | "right";
+  onClick: () => void;
+}): JSX.Element {
+  const glyph = active ? (dir === "asc" ? "▲" : "▼") : null;
+  return (
+    <Button
+      variant="ghost"
+      size="sm"
+      onClick={onClick}
+      className={cn(
+        "h-7 -mx-2 px-2 text-xs font-medium text-muted-foreground hover:text-foreground",
+        align === "right" && "ml-auto",
+      )}
+    >
+      {label}
+      {glyph ? <span className="ml-1 text-[0.625rem]">{glyph}</span> : null}
+    </Button>
+  );
 }
 
 export function ActivityTable({ rows }: ActivityTableProps): JSX.Element {
@@ -87,82 +123,83 @@ export function ActivityTable({ rows }: ActivityTableProps): JSX.Element {
     return (a.total - b.total) * mul;
   });
 
-  // Empty-state: every row is loaded and every total is zero.
   const allLoaded = rows.every((r) => !r.loading);
   const allZero = allLoaded && rows.every((r) => r.total === 0);
 
-  const sortIndicator = (key: SortKey): string =>
-    sortKey === key ? (sortDir === "asc" ? "▲" : "▼") : "";
+  if (allZero) {
+    return (
+      <Empty data-testid="activity-table-empty">
+        <EmptyHeader>
+          <EmptyTitle>No activity in window</EmptyTitle>
+          <EmptyDescription>
+            No events were recorded for the selected entity in this window.
+            Try widening the range or picking another entity.
+          </EmptyDescription>
+        </EmptyHeader>
+      </Empty>
+    );
+  }
 
   return (
-    <div className="overflow-hidden rounded-md border border-border bg-card">
-      <table className="w-full border-collapse" data-testid="activity-table">
-        <thead className="bg-muted">
-          <tr>
-            <th className={HEADER_CLASS}>
-              <Button
-                variant="ghost"
-                size="sm"
+    <div className="overflow-hidden rounded-xl border bg-card">
+      <Table data-testid="activity-table" className="text-sm">
+        <TableHeader className="bg-muted/40">
+          <TableRow>
+            <TableHead>
+              <SortHeader
+                label="Activity"
+                active={sortKey === "label"}
+                dir={sortDir}
                 onClick={() => toggleSort("label")}
-                className="h-auto p-0 text-inherit font-inherit uppercase tracking-wider"
-              >
-                Activity {sortIndicator("label")}
-              </Button>
-            </th>
-            <th className={HEADER_RIGHT_CLASS}>
-              <Button
-                variant="ghost"
-                size="sm"
+              />
+            </TableHead>
+            <TableHead className="text-right">
+              <SortHeader
+                label="Total"
+                active={sortKey === "total"}
+                dir={sortDir}
+                align="right"
                 onClick={() => toggleSort("total")}
-                className="h-auto p-0 text-inherit font-inherit uppercase tracking-wider"
-              >
-                Total {sortIndicator("total")}
-              </Button>
-            </th>
-            <th className={HEADER_RIGHT_CLASS}>Trend</th>
-          </tr>
-        </thead>
-        <tbody>
+              />
+            </TableHead>
+            <TableHead className="text-right">Trend</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
           {sorted.map((row) => (
-            <tr key={row.kind}>
-              <td className={CELL_CLASS}>{row.label}</td>
-              <td className={NUM_CLASS}>
+            <TableRow key={row.kind}>
+              <TableCell className="font-medium">{row.label}</TableCell>
+              <TableCell className="text-right tabular-nums">
                 {row.loading ? (
                   <Skeleton
                     data-testid="activity-skel-total"
-                    className="ml-auto h-3.5 w-10 rounded-sm"
+                    className="ml-auto h-4 w-10"
                   />
                 ) : (
                   row.total
                 )}
-              </td>
-              <td className={cn(NUM_CLASS, "w-40")}>
+              </TableCell>
+              <TableCell className="text-right">
                 {row.loading ? (
                   <Skeleton
                     data-testid="activity-skel-trend"
-                    className="h-5 w-full rounded-sm"
+                    className="ml-auto h-8 w-24"
                   />
                 ) : (
-                  <Sparkline
-                    points={row.trend.map((r) => ({ key: r.key, value: r.count }))}
-                    ariaLabel={`${row.label} trend, ${row.trend.length} buckets, total ${row.total}`}
-                  />
+                  <span className="ml-auto inline-flex h-8 w-24 items-center justify-end align-middle">
+                    <Sparkline
+                      points={row.trend.map((r) => ({ key: r.key, value: r.count }))}
+                      width={96}
+                      height={32}
+                      ariaLabel={`${row.label} trend, ${row.trend.length} buckets, total ${row.total}`}
+                    />
+                  </span>
                 )}
-              </td>
-            </tr>
+              </TableCell>
+            </TableRow>
           ))}
-          {allZero && (
-            <tr data-testid="activity-table-empty">
-              <td
-                colSpan={3}
-                className={cn(CELL_CLASS, "border-b-0 py-6 text-center text-muted-foreground")}
-              >
-                No activity recorded in the selected window.
-              </td>
-            </tr>
-          )}
-        </tbody>
-      </table>
+        </TableBody>
+      </Table>
     </div>
   );
 }

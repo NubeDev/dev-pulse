@@ -3,30 +3,24 @@
  * + trend" shape, three-lens toggle (§8.1), "Data as of" banner per
  * §0.3.
  *
- * The layout:
+ * Skeleton (shared with team / org / home-org-split):
  *
- *   [user dropdown]  [Data as of …]
- *   [window picker]
- *   [tabs: SingleOrg | AllOrgsCombined | PerOrgSplit]
- *     - headline sentence
- *     - sortable activity-table (per-kind totals + sparkline trend)
- *
- * Per-row data: one `getReportUser` query per activity kind, fired
- * in parallel via `useQueries` with `group_by=day` so the row's
- * trend column has bucketed data. The freshness banner shares the
- * `data_as_of` from whichever query lands first — they all read the
- * same store snapshot so the timestamps are consistent.
- *
- * Mock-data smoke: when `VITE_USE_MOCK_REPORTS=1` (set in tests /
- * Storybook-style harness), the queries are short-circuited to a
- * deterministic fixture so the page still renders fully without
- * dp-server running. The real `useQueries` shape is preserved so
- * production wiring is one env-flag flip away.
+ *   1. PageHeading lockup (h1 + muted description).
+ *   2. Filter Card — User picker, Window, Time zone, Anchor — laid
+ *      out in one responsive grid of Label+Select pairs.
+ *   3. Data-as-of Alert with the staleness Badge.
+ *   4. Results Card — TabsList (three lenses, segmented) over the
+ *      activity Table (per-kind totals + sparkline).
  */
 
 import { useMemo, useState, useId } from "react";
 import { useQueries, useQuery } from "@tanstack/react-query";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@nube/starter-ui-kit/components/card";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "@nube/starter-ui-kit/components/card";
 import { Label } from "@nube/starter-ui-kit/components/label";
 import {
   Select,
@@ -52,22 +46,19 @@ import { DataAsOfBanner } from "./data-as-of.jsx";
 import { LENSES, LensTabs } from "./lens-tabs.jsx";
 import {
   WindowPicker,
+  FILTER_GRID_CLASS,
   defaultWindowState,
   windowStateToParams,
   type WindowState,
 } from "./window-picker.jsx";
+import { PageHeading } from "../components/page-heading.jsx";
 
 const USE_MOCK = import.meta.env.VITE_USE_MOCK_REPORTS === "1";
 
-/** Deterministic mock — used by the stage-4 smoke harness so the
- *  page renders without dp-server. The shape mirrors a real
- *  `getReportUser` response with `group_by=day` over 7 daily
- *  buckets. */
 function mockResponse(kind: string): ReportResponse<CountRow[]> {
   const day = 86_400_000;
-  const today = Date.UTC(2026, 4, 20); // 2026-05-20, matches harness clock.
+  const today = Date.UTC(2026, 4, 20);
   const rows: CountRow[] = [];
-  // Seed each kind with a different base so the table is non-trivial.
   const base = kind.length;
   for (let i = 6; i >= 0; i--) {
     const value = Math.max(0, base + ((i * 3 + kind.charCodeAt(0)) % 5) - 1);
@@ -97,11 +88,8 @@ function mockUsers(): UserDto[] {
   ];
 }
 
-/** Parse `#/reports/user/<uuid>` -> `<uuid>` (or `null` for a bare
- *  `#/reports`). */
 function userIdFromRoute(route: string): string | null {
   const path = route.replace(/^#/, "").replace(/^\/+/, "").split("/");
-  // ["reports", "user", "<uuid>"] -> path[2]
   if (path[0] === "reports" && path[1] === "user" && path[2]) return path[2];
   return null;
 }
@@ -110,9 +98,6 @@ export function UserReportPage(): JSX.Element {
   const route = useRoute();
   const routeUserId = userIdFromRoute(route);
 
-  // User dropdown population. The dropdown is the source of truth
-  // for the active user — the route updates as a side-effect so a
-  // refresh keeps the same user selected.
   const usersQuery = useQuery({
     queryKey: ["users"],
     queryFn: () => (USE_MOCK ? Promise.resolve(mockUsers()) : api.listUsers()),
@@ -123,13 +108,9 @@ export function UserReportPage(): JSX.Element {
   const activeUserId = userId ?? routeUserId ?? users[0]?.id ?? null;
   const activeUser = users.find((u) => u.id === activeUserId);
 
-  // Window + lens state.
   const [windowState, setWindowState] = useState<WindowState>(defaultWindowState());
   const [lens, setLens] = useState<ScopeMode>("single_org");
 
-  // Per-activity-kind queries — one `useQuery` per kind, fanned out
-  // through `useQueries` so the table can stream in as each kind
-  // resolves.
   const params = useMemo(
     () => ({
       ...windowStateToParams(windowState),
@@ -154,7 +135,6 @@ export function UserReportPage(): JSX.Element {
     })),
   });
 
-  // Build the table rows from the per-kind query results.
   const perKind = useMemo(() => {
     const m = new Map<string, { rows: ReadonlyArray<CountRow>; loading: boolean }>();
     queries.forEach((q, i) => {
@@ -168,14 +148,10 @@ export function UserReportPage(): JSX.Element {
   }, [queries]);
   const tableRows = useMemo(() => buildActivityRows(perKind), [perKind]);
 
-  // Pick the freshness banner from the first resolved query — every
-  // dp-rest report reads the same `data_as_of()` snapshot per request
-  // so the timestamps are consistent across the fanout.
   const firstSettled = queries.find((q) => q.data);
   const dataAsOf: DataAsOf | null = firstSettled?.data?.data_as_of ?? null;
   const anyLoading = queries.some((q) => q.isPending);
 
-  // Headline sentence — top three kinds by count.
   const headline = useMemo(() => {
     if (!activeUser) return "";
     const top = [...tableRows]
@@ -193,7 +169,6 @@ export function UserReportPage(): JSX.Element {
     return `${activeUser.name ?? activeUser.login} recorded ${joined} (${lensLabel}).`;
   }, [activeUser, tableRows, lens]);
 
-  // User-dropdown change — also push to the route so deep links work.
   function selectUser(id: string): void {
     setUserId(id);
     navigate(`/reports/user/${id}`);
@@ -201,62 +176,73 @@ export function UserReportPage(): JSX.Element {
 
   const dropdownId = useId();
   return (
-    <Card>
-      <CardHeader>
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div className="grid gap-1">
-            <CardTitle className="text-2xl font-semibold tracking-tight">
-              User activity report
-            </CardTitle>
-            <CardDescription className="text-muted-foreground">
-              <code>GET /reports/user/:user_id</code> · SCOPE §11.5 headline + table + trend.
-            </CardDescription>
-          </div>
-          <DataAsOfBanner data={dataAsOf} loading={anyLoading && !dataAsOf} />
-        </div>
-      </CardHeader>
-      <CardContent className="grid gap-4">
-        <div className="grid max-w-sm gap-1.5">
-          <Label htmlFor={dropdownId}>User</Label>
-          <Select
-            value={activeUserId ?? ""}
-            onValueChange={selectUser}
-            disabled={usersQuery.isPending || users.length === 0}
-          >
-            <SelectTrigger id={dropdownId} data-testid="user-select">
-              <SelectValue placeholder={usersQuery.isPending ? "Loading users…" : "Select a user"} />
-            </SelectTrigger>
-            <SelectContent>
-              {users.map((u) => (
-                <SelectItem key={u.id} value={u.id}>
-                  {u.name ?? u.login}
-                  {u.name ? <span className="text-muted-foreground"> · {u.login}</span> : null}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
+    <div className="grid gap-6">
+      <PageHeading
+        title="User activity report"
+        description={
+          <>
+            <code className="font-mono text-xs">GET /reports/user/:user_id</code> · headline + table + trend.
+          </>
+        }
+      />
 
-        <WindowPicker value={windowState} onChange={setWindowState} />
-
-        <LensTabs value={lens} onChange={setLens}>
-          {!activeUserId ? (
-            <p className="text-muted-foreground">
-              Pick a user above to load the report.
-            </p>
-          ) : (
-            <>
-              <p
-                data-testid="headline"
-                className="mb-2 text-base text-foreground"
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Filters</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className={FILTER_GRID_CLASS}>
+            <div className="grid gap-1.5">
+              <Label htmlFor={dropdownId}>User</Label>
+              <Select
+                value={activeUserId ?? ""}
+                onValueChange={selectUser}
+                disabled={usersQuery.isPending || users.length === 0}
               >
-                {anyLoading && !dataAsOf ? "Loading report…" : headline}
+                <SelectTrigger id={dropdownId} data-testid="user-select">
+                  <SelectValue placeholder={usersQuery.isPending ? "Loading users…" : "Select a user"} />
+                </SelectTrigger>
+                <SelectContent>
+                  {users.map((u) => (
+                    <SelectItem key={u.id} value={u.id}>
+                      {u.name ?? u.login}
+                      {u.name ? <span className="text-muted-foreground"> · {u.login}</span> : null}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <WindowPicker value={windowState} onChange={setWindowState} />
+          </div>
+        </CardContent>
+      </Card>
+
+      <DataAsOfBanner data={dataAsOf} loading={anyLoading && !dataAsOf} />
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Activity</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <LensTabs value={lens} onChange={setLens}>
+            {!activeUserId ? (
+              <p className="text-sm text-muted-foreground">
+                Pick a user above to load the report.
               </p>
-              <ActivityTable rows={tableRows} />
-            </>
-          )}
-        </LensTabs>
-      </CardContent>
-    </Card>
+            ) : (
+              <>
+                <p
+                  data-testid="headline"
+                  className="text-sm text-foreground"
+                >
+                  {anyLoading && !dataAsOf ? "Loading report…" : headline}
+                </p>
+                <ActivityTable rows={tableRows} />
+              </>
+            )}
+          </LensTabs>
+        </CardContent>
+      </Card>
+    </div>
   );
 }
