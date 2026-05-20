@@ -65,6 +65,56 @@ pub enum ApiError {
         /// Human-readable message; safe to render verbatim.
         message: String,
     },
+
+    /// Caller is authenticated but lacks the capability for the
+    /// requested operation — e.g. trying to mutate a tag whose
+    /// scope they can see but are not a member of
+    /// (SCOPE-PROJECTS §7.4 mutation rule). Mapped to `403`.
+    #[error("{message}")]
+    Forbidden {
+        /// Stable machine-readable code (e.g. `"tag_scope_member_required"`).
+        code: &'static str,
+        /// Human-readable message; safe to render verbatim.
+        message: String,
+    },
+
+    /// Per-item validation failure inside a batch request. Used by
+    /// the `POST /tags/{id}/links` / `DELETE /tags/{id}/links`
+    /// transactional batch path (SCOPE-PROJECTS §7.5): the whole
+    /// batch was rejected, and the caller gets one error object per
+    /// offending item so the UI can highlight exactly which rows
+    /// failed. Mapped to `422`.
+    ///
+    /// The body shape is `{ error, code, items: [{ index, code,
+    /// message }, ...] }` — `code` at the top level is the
+    /// envelope-level reason (typically `"batch_rejected"`), each
+    /// per-item code is the granular reason (`"target_not_visible"`,
+    /// `"wrong_kind"`, `"duplicate"`, …). All-or-nothing semantics:
+    /// nothing was committed.
+    #[error("{message}")]
+    Batch {
+        /// Envelope-level code (usually `"batch_rejected"`).
+        code: &'static str,
+        /// Envelope-level human message.
+        message: String,
+        /// Per-item failures. Indices reference positions in the
+        /// caller's submitted batch.
+        items: Vec<BatchItemError>,
+    },
+}
+
+/// One per-item failure in an [`ApiError::Batch`] response. Always
+/// serialises as `{ index, code, message }` — wire-stable so the
+/// frontend / MCP client can switch on `code` per item.
+#[derive(Debug, Clone, Serialize)]
+pub struct BatchItemError {
+    /// Zero-based position in the caller's submitted batch.
+    pub index: usize,
+    /// Stable machine-readable code for this row's failure
+    /// (`"target_not_visible"`, `"wrong_kind"`, `"duplicate"`, …).
+    pub code: &'static str,
+    /// Human-readable message.
+    pub message: String,
 }
 
 impl From<ResolveError> for ApiError {
@@ -91,34 +141,72 @@ struct ErrorBody<'a> {
     code: &'a str,
 }
 
+#[derive(Serialize)]
+struct BatchErrorBody<'a> {
+    error: &'a str,
+    code: &'a str,
+    items: &'a [BatchItemError],
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let (status, code, message) = match &self {
-            ApiError::BadRequest { code, message } => {
-                (StatusCode::BAD_REQUEST, *code, message.clone())
-            }
+        match &self {
+            ApiError::BadRequest { code, message } => (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorBody {
+                    error: message,
+                    code,
+                }),
+            )
+                .into_response(),
             ApiError::Store(e) => {
                 tracing::error!(error = %e, "store error returned to client");
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    "store_error",
-                    "internal error".to_string(),
+                    Json(ErrorBody {
+                        error: "internal error",
+                        code: "store_error",
+                    }),
                 )
+                    .into_response()
             }
-            ApiError::Conflict { code, message } => {
-                (StatusCode::CONFLICT, *code, message.clone())
-            }
-            ApiError::NotFound { code, message } => {
-                (StatusCode::NOT_FOUND, *code, message.clone())
-            }
-        };
-        (
-            status,
-            Json(ErrorBody {
-                error: &message,
+            ApiError::Conflict { code, message } => (
+                StatusCode::CONFLICT,
+                Json(ErrorBody {
+                    error: message,
+                    code,
+                }),
+            )
+                .into_response(),
+            ApiError::NotFound { code, message } => (
+                StatusCode::NOT_FOUND,
+                Json(ErrorBody {
+                    error: message,
+                    code,
+                }),
+            )
+                .into_response(),
+            ApiError::Forbidden { code, message } => (
+                StatusCode::FORBIDDEN,
+                Json(ErrorBody {
+                    error: message,
+                    code,
+                }),
+            )
+                .into_response(),
+            ApiError::Batch {
                 code,
-            }),
-        )
-            .into_response()
+                message,
+                items,
+            } => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(BatchErrorBody {
+                    error: message,
+                    code,
+                    items,
+                }),
+            )
+                .into_response(),
+        }
     }
 }

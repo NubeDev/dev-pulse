@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 /// What a [`TagLink`] points at. Pairs with the matching
 /// `target_*_id` column on the row.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TagLinkKind {
     /// `target_repo_id` set. Contributes to every report metric

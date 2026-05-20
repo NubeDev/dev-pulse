@@ -12,6 +12,15 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// Soft warning threshold for links-per-tag (SCOPE-PROJECTS §13.5,
+/// working assumption 500). Once a tag carries more than this many
+/// links, batch-link responses surface an advisory warning — the
+/// operation still commits. A hard cap would be a footgun: one-off
+/// imports legitimately push past 500 before the user splits the
+/// tag. Lives next to [`Tag`] so REST handler, store, and tests
+/// read the same constant. Eventually moves into `dp-config`.
+pub const TAG_LINK_WARN_THRESHOLD: usize = 500;
+
 /// Where a tag is visible. SCOPE-PROJECTS.md §7.4 ties this to the
 /// SCOPE.md §15.11 access gate:
 ///

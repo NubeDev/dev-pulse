@@ -40,6 +40,7 @@ pub mod openapi;
 pub mod pins;
 pub mod reports;
 pub mod state;
+pub mod tags;
 
 pub use admin::{
     admin_router, anonymise_user, export_user, list_runs, AdminState, ExportEvent, FetchRunDto,
@@ -62,3 +63,9 @@ pub use reports::{
     user_report, CountRow, DataAsOfDto, HomeOrgSplitRow, ReportQuery, ReportResponse,
 };
 pub use state::AppState;
+pub use tags::{
+    create_tag, get_tag, link_targets, list_my_tags, list_tags, tags_router, unlink_targets,
+    update_tag, CreateTagRequest, LinkBatchRequest, LinkBatchResponse, LinkRequestItem,
+    ListTagsQuery, TagDetailQuery, TagDetailResponse, TagDto, TagLinkKindDto, TagScopeKindDto,
+    UnlinkBatchRequest, UpdateTagRequest, LINKS_PAGE_SIZE,
+};

@@ -82,7 +82,7 @@ use dp_domain::store::Store;
 use dp_fetcher::reconciler::Scheduler;
 use dp_fetcher::webhook::{self, WebhookMetrics, WebhookSecretSource, WebhookState};
 use dp_rest::{
-    admin_router, directory_router, pins_router, reports_router, AdminState,
+    admin_router, directory_router, pins_router, reports_router, tags_router, AdminState,
     AppState as RestAppState, DevPulseApi,
 };
 use utoipa::OpenApi;
@@ -222,13 +222,15 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
 
     let reports = reports_router(rest_state.clone());
     let directory = directory_router(rest_state.clone());
-    let pins = pins_router(rest_state);
+    let pins = pins_router(rest_state.clone());
+    let tags = tags_router(rest_state);
     let admin = admin_router(admin_state);
 
     let protected = Router::new()
         .merge(reports)
         .merge(directory)
         .merge(pins)
+        .merge(tags)
         .merge(admin);
 
     // Hand the policy engine down via Extension. The per-route

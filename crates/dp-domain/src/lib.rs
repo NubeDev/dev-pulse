@@ -49,7 +49,7 @@ pub use org::Org;
 pub use pin::{Pin, PinKind, PIN_CAP};
 pub use repo::Repo;
 pub use store::{Store, StoreError};
-pub use tag::{Tag, TagScopeKind};
+pub use tag::{Tag, TagScopeKind, TAG_LINK_WARN_THRESHOLD};
 pub use tag_link::{TagLink, TagLinkKind};
 pub use team::Team;
 pub use user::User;
