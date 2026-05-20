@@ -1,0 +1,60 @@
+name: phase4-smoke
+
+# Phase 4 HTTP-surface smoke tests — Stage 11 of TODO.md §Phase-4.
+#
+# This job pins the eleven invariants the stage description
+# enumerates. They live in three test files so the CI log line
+# carries the literal contract name:
+#
+#   1. github_oauth_callback_mints_session_and_stamps_orgs
+#   2. out_of_org_github_user_signs_in_but_cannot_read_reports
+#   3. in_org_github_user_can_read_reports
+#   4. every_handler_echoes_resolved_window_verbatim
+#       (dp-rest reports unit tests)
+#       + every_handler_returns_data_as_of_object
+#   5. webhooks_github_not_principal_wrapped_but_rejects_bad_hmac
+#   6. audit_log_vocabulary_is_complete_and_each_verb_has_a_covering_test
+#       (the per-verb writes are pinned in dp-rest unit tests; see
+#       the table inside the test for the covering names)
+#   7. openapi_snapshot_matches  (dp-rest tests/openapi_snapshot.rs)
+#   8. with_principal_covers_every_non_webhook_non_auth_route
+#   9. require_permission_covers_every_protected_route
+#  10. boundary_check_script_passes (Rust shim) + scripts/check-boundaries.sh
+#  11. export_user_streams_100k_events_without_oom (dp-rest admin tests)
+#
+# Docker is NOT required: tests 1–10 use the
+# `starter_auth_oauth::testing::MemoryEverything` sqlite-in-memory
+# harness plus the `NoopStore` fake; test 11 fakes the page reader
+# and asserts the per-page limit invariant.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  phase4-smoke:
+    name: phase4-smoke (dp-server + dp-rest)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # 1, 2, 3, 5, 6, 8, 9, 10 (Rust shim).
+      - name: Run dp-server phase 4 smoke tests
+        run: cargo test -p dp-server --test phase4_smoke -- --nocapture
+
+      # 4, 6 (per-verb writes), 11.
+      - name: Run dp-rest unit tests (reports / admin / directory / openapi)
+        run: cargo test -p dp-rest -- --nocapture
+
+      # 10 (canonical script).
+      - name: Boundary check
+        run: ./scripts/check-boundaries.sh

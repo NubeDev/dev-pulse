@@ -18,3 +18,56 @@ dp-reports  = { workspace = true }
 dp-rest     = { workspace = true }
 dp-mcp      = { workspace = true }
 dp-fetcher  = { workspace = true }
+
+# starter — dp-server is the *only* dev-pulse crate that imports
+# the composition pieces. dp-rest and the ingestion / report crates
+# stay free of starter-specific Authenticator / PolicyEngine impls
+# per the §0.6 boundary; dp-server picks the concrete impls (the
+# AuthAuthenticator session bridge, the StaticRbacEngine policy
+# engine, the file-backed webhook secret) and threads them in.
+starter-server         = { workspace = true }
+starter-auth-users     = { workspace = true }
+starter-auth-oauth     = { workspace = true }
+starter-authz          = { workspace = true }
+starter-spi            = { workspace = true }
+starter-observability  = { workspace = true }
+
+# Third-party — axum is the surface we hand back from `build()`,
+# tokio runs the test harness, the rest fill in the seams.
+async-trait = { workspace = true }
+axum        = { workspace = true }
+prometheus  = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+thiserror   = { workspace = true }
+tokio       = { workspace = true }
+tracing     = { workspace = true }
+utoipa      = { workspace = true }
+
+[dev-dependencies]
+tower      = { version = "0.5", features = ["util"] }
+secrecy    = "0.10"
+chrono     = { workspace = true }
+uuid       = { workspace = true }
+serde_json = { workspace = true }
+
+# Phase 4 stage 11 smoke-tests use `MemoryEverything` from
+# starter-auth-oauth's `testing` module — it wires a sqlite-
+# in-memory `UserStore` / `SessionStore` / `IdentityStore` plus a
+# `MemoryStateStore` and the `FakeProvider` test double. Pulling
+# the `sqlite` features here keeps prod (the bin layer) free of
+# the sqlite path while letting integration tests drive the full
+# composed router without standing up Postgres.
+starter-auth-oauth = { workspace = true, features = ["sqlite"] }
+starter-auth-users = { workspace = true, features = ["sqlite"] }
+starter-store-sqlite = { workspace = true, features = ["testing"] }
+starter-authz      = { workspace = true }
+dp-rest            = { workspace = true }
+dp-fetcher         = { workspace = true }
+dp-domain          = { workspace = true }
+async-trait        = { workspace = true }
+http               = "1"
+hmac               = "0.12"
+sha2               = "0.10"
+hex                = "0.4"
+axum               = { workspace = true }

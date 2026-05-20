@@ -18,6 +18,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
+use crate::audit::AuditEntry;
 use crate::event::{ActivityEvent, ActorRole, EventActor, EventKind};
 use crate::fetch::{FetchCursor, FetchRun, FetchRunKind, ResourceKind};
 use crate::freshness::DataAsOf;
@@ -143,6 +144,64 @@ pub trait Store: Send + Sync {
         home_org: Option<Uuid>,
     ) -> Result<(), StoreError>;
 
+    /// Atomically flip the user's home org to `(user_id, org_id)`.
+    ///
+    /// Postcondition: among the user's memberships, exactly one row
+    /// has `home_org = Some(org_id)` — the `(user_id, org_id)` row —
+    /// and every other membership row for the same user has
+    /// `home_org = None`. Implementations must apply the
+    /// set-and-clear in one transaction so a reader can never observe
+    /// two `home_org` values for the same user (Phase 4 D-home-org
+    /// atomicity).
+    ///
+    /// Returns [`StoreError::NotFound`] if there is no `(user_id,
+    /// org_id)` membership row to flip — the caller has to add the
+    /// user to the org first.
+    ///
+    /// Default impl is the obvious non-atomic two-step using
+    /// [`Self::set_home_org`]; production backends override it for
+    /// the transactional guarantee.
+    async fn set_home_org_for_user(
+        &self,
+        user_id: Uuid,
+        org_id: Uuid,
+    ) -> Result<(), StoreError> {
+        // Best-effort default: clear-all-then-set. Backends that care
+        // about the atomicity guarantee override this.
+        let memberships = self.list_memberships_for_user(user_id).await?;
+        for m in &memberships {
+            if m.org_id != org_id && m.home_org.is_some() {
+                self.set_home_org(user_id, m.org_id, None).await?;
+            }
+        }
+        self.set_home_org(user_id, org_id, Some(org_id)).await
+    }
+
+    /// List every org dev-pulse has observed. Stage 4 of Phase 4
+    /// surfaces this for `GET /orgs`. Default impl returns an empty
+    /// vec so test fakes that don't seed orgs stay compiling.
+    async fn list_orgs(&self) -> Result<Vec<crate::org::Org>, StoreError> {
+        Ok(vec![])
+    }
+
+    /// List every team inside one org. Stage 4 of Phase 4 surfaces
+    /// this for `GET /teams?org_id=…`.
+    async fn list_teams_for_org(
+        &self,
+        _org_id: Uuid,
+    ) -> Result<Vec<crate::team::Team>, StoreError> {
+        Ok(vec![])
+    }
+
+    /// List the users that have a membership in `org_id`. Stage 4 of
+    /// Phase 4 surfaces this for `GET /users?org_id=…`.
+    async fn list_users_for_org(
+        &self,
+        _org_id: Uuid,
+    ) -> Result<Vec<crate::user::User>, StoreError> {
+        Ok(vec![])
+    }
+
     // ---- events + actors -----------------------------------------
 
     /// Insert (or upsert by `external_id`) one event row.
@@ -201,6 +260,46 @@ pub trait Store: Send + Sync {
     /// List the most recent `limit` runs of any kind, newest first.
     async fn list_recent_fetch_runs(&self, limit: i64) -> Result<Vec<FetchRun>, StoreError>;
 
+    /// Paginated projection over `dp_fetch_runs` ordered newest
+    /// first. Phase 4 stage 5 surfaces this on `GET /admin/runs`.
+    ///
+    /// Default impl falls back to [`Self::list_recent_fetch_runs`]
+    /// reading `limit + offset` rows and discarding the prefix —
+    /// inefficient but keeps every existing fake compiling. The PG
+    /// backend overrides with `LIMIT … OFFSET …`.
+    async fn list_fetch_runs(
+        &self,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<FetchRun>, StoreError> {
+        let take = limit.max(0);
+        let skip = offset.max(0);
+        let total = take.saturating_add(skip);
+        let mut rows = self.list_recent_fetch_runs(total).await?;
+        let skip = skip as usize;
+        if skip >= rows.len() {
+            return Ok(Vec::new());
+        }
+        Ok(rows.split_off(skip))
+    }
+
+    /// Page through every `event_actor` row credited to `user_id`,
+    /// joined back to its parent event. Ordered by `(ts ASC,
+    /// event_id ASC)` for a stable streaming order across pages.
+    ///
+    /// Phase 4 stage 5 uses this to chunk the GDPR export so a
+    /// 500MB user history does not need to materialise in process
+    /// memory. Default impl returns the empty vec so test fakes
+    /// that don't model events stay green.
+    async fn list_event_actor_rows_for_user_page(
+        &self,
+        _user_id: Uuid,
+        _offset: i64,
+        _limit: i64,
+    ) -> Result<Vec<EventActorRow>, StoreError> {
+        Ok(Vec::new())
+    }
+
     /// Snapshot the data-freshness envelope every report response
     /// carries (SCOPE §11.7 / TODO §0.3).
     ///
@@ -238,6 +337,17 @@ pub trait Store: Send + Sync {
     /// Record a processing failure on a delivery so the worker can
     /// retry. Stores the error text and leaves `processed_at` NULL.
     async fn mark_webhook_failed(&self, id: Uuid, error: &str) -> Result<(), StoreError>;
+
+    // ---- audit log ------------------------------------------------
+
+    /// Insert one `dp_audit_log` row (SCOPE §9). Phase 4 D4.4 pins
+    /// the `action` vocabulary in `dp-rest::audit`; this method is
+    /// vocabulary-free so other surfaces can write their own verbs
+    /// later. Default impl is a no-op so test fakes that don't care
+    /// about the audit trail stay green.
+    async fn record_audit_log(&self, _entry: &AuditEntry) -> Result<(), StoreError> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]

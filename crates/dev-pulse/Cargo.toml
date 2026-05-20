@@ -13,11 +13,40 @@ name = "dev-pulse"
 path = "src/main.rs"
 
 [dependencies]
-# Stage 1 scaffolding: only what main.rs needs to wire tracing init
-# and stand up a clap skeleton. Real subcommands (migrate, serve,
-# fetch-now, backfill, claim) land in later phases.
-starter-observability = { workspace = true }
-anyhow                = { workspace = true }
-clap                  = { workspace = true }
-tokio                 = { workspace = true }
-tracing               = { workspace = true }
+# dev-pulse crates — the bin layer pulls them together.
+dp-server   = { workspace = true }
+dp-fetcher  = { workspace = true }
+dp-store-pg = { workspace = true }
+
+# starter crates — `dev-pulse` (the bin) and `dp-server` are the two
+# crates allowed to import the starter composition pieces per the
+# §0.6 R-boundary. The bin owns concrete-store construction and
+# secret resolution; dp-server owns the router composition.
+starter-observability  = { workspace = true }
+starter-server         = { workspace = true }
+starter-spi            = { workspace = true }
+starter-store-postgres = { workspace = true }
+# `testing` feature pulled in transitively by starter-auth-oauth's
+# `pub mod testing` (which is itself feature-gated only on `sqlite`,
+# not on a separate testing flag). Until starter splits the testing
+# helpers out, consumers wiring the sqlite path need both.
+starter-store-sqlite   = { workspace = true, features = ["testing"] }
+starter-auth-users     = { workspace = true, features = ["sqlite"] }
+starter-auth-oauth     = { workspace = true, features = ["sqlite"] }
+starter-authz          = { workspace = true }
+
+# Third-party — Phase 4 stage 10's serve subcommand reads a TOML
+# config (`toml`), connects pools, registers prometheus metrics,
+# and drives axum::serve with a cooperative shutdown signal.
+anyhow      = { workspace = true }
+async-trait = { workspace = true }
+axum        = { workspace = true }
+clap        = { workspace = true }
+prometheus  = { workspace = true }
+secrecy     = "0.10"
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+sqlx        = { workspace = true, features = ["sqlite", "macros", "migrate"] }
+tokio       = { workspace = true }
+toml        = "0.8"
+tracing     = { workspace = true }
