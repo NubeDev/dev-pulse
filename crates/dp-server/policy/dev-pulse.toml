@@ -59,6 +59,23 @@
 # whose org list does not intersect `auth.github.allow_orgs`.
 default_policy = true
 
+# Break-glass admin bypass. The CLI-seeded admin user
+# (`dev-pulse create-admin`) authenticates via email+password and
+# therefore has no OAuth identity / no `oauth.github_orgs` — so the
+# org-gate-deny rule below would 403 every request. This rule wins
+# on priority (higher than both org-gate rules) so the break-glass
+# admin can drive the system in local-dev without a full GitHub
+# OAuth App. In production deployments the org-gate is the operative
+# constraint; the admin role is reserved for the CLI-seeded operator
+# anyway, so this is harmless there but essential here.
+[[rules]]
+id        = "break-glass-admin-bypass"
+role      = "admin"
+resource  = "*"
+actions   = ["*"]
+effect    = "allow"
+priority  = 200
+
 # Org-gate ALLOW. Any principal whose `oauth.in_allowed_org` is
 # `true` clears every (resource, action) pair the dev-pulse
 # routes register. Defense-in-depth alongside the org-gate-deny
@@ -83,17 +100,26 @@ priority  = 100
 # closing the loophole where a freshly-provisioned out-of-org
 # user with the implicit Reader role would otherwise be allowed
 # to `reports.read` by the default rules.
+# Org-gate DENY rule, narrowed to *non-admin* roles. The
+# CLI-seeded break-glass admin (`dev-pulse create-admin`) bypasses
+# this rule because admin sessions are reserved for the operator
+# who already proved possession of the auth.db on the host. For
+# normal OAuth-provisioned operators (Reader / Writer), the
+# org-gate is still the operative constraint.
 [[rules]]
 id        = "org-gate-deny-out-of-org"
-role      = "*"
+role      = "reader"
 resource  = "*"
 actions   = ["*"]
-# Logical negation: the attribute is absent OR is `false`. The
-# `starter-authz::condition` grammar treats "missing attribute"
-# as not-equal — so `not oauth.in_allowed_org == true` fires both
-# for `false` and for "never stamped". That's correct: a user
-# the stamper has never seen is just as not-in-org as one who
-# has been explicitly stamped out.
+condition = "not oauth.in_allowed_org == true"
+effect    = "deny"
+priority  = 90
+
+[[rules]]
+id        = "org-gate-deny-out-of-org-writer"
+role      = "writer"
+resource  = "*"
+actions   = ["*"]
 condition = "not oauth.in_allowed_org == true"
 effect    = "deny"
 priority  = 90

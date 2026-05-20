@@ -86,6 +86,23 @@ use dp_rest::{
     DevPulseApi,
 };
 use utoipa::OpenApi;
+use uuid::Uuid;
+
+/// Middleware: bridges `starter_spi::auth::Principal` (string id)
+/// into `dp_rest::audit::Principal` (Uuid id) so the handlers in
+/// `dp-rest` can read the actor from request extensions.
+async fn bridge_principal(
+    mut req: axum::http::Request<axum::body::Body>,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    if let Some(spi_principal) = req.extensions().get::<Principal>().cloned() {
+        if let Ok(uuid) = Uuid::parse_str(&spi_principal.subject) {
+            req.extensions_mut()
+                .insert(dp_rest::Principal { actor_user_id: uuid });
+        }
+    }
+    next.run(req).await
+}
 
 /// Value-level dependency bundle handed into [`build`].
 ///
@@ -227,6 +244,18 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
     // both the principal and the engine from extensions).
     let boxed_auth: Arc<BoxedAuthenticator> =
         Arc::new(BoxedAuthenticator(authenticator.clone()));
+    // Bridge: starter-server's `with_principal` attaches a
+    // `starter_spi::auth::Principal` (string `subject`). dp-rest
+    // handlers read `dp_rest::audit::Principal` (Uuid
+    // `actor_user_id`). Without this layer every protected request
+    // 500s with "Missing request extension". The bridge is a thin
+    // axum middleware that reads the upstream Principal, parses
+    // `subject` as Uuid, and attaches the downstream Principal.
+    //
+    // Layer order matters: bridge must run *inside* `with_principal`
+    // (i.e. attached to the inner router before wrapping), so by the
+    // time bridge runs, the SPI Principal is already in extensions.
+    let protected = protected.layer(axum::middleware::from_fn(bridge_principal));
     let protected = with_principal(protected, boxed_auth);
 
     // -----------------------------------------------------------------

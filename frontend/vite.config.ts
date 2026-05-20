@@ -90,7 +90,10 @@ export default defineConfig({
       : {
           "/auth": "http://localhost:8731",
           "/reports": "http://localhost:8731",
-          "/directory": "http://localhost:8731",
+          "/orgs": "http://localhost:8731",
+          "/users": "http://localhost:8731",
+          "/teams": "http://localhost:8731",
+          "/home-org": "http://localhost:8731",
           "/admin": "http://localhost:8731",
           "/health": "http://localhost:8731",
           "/openapi.json": "http://localhost:8731",
