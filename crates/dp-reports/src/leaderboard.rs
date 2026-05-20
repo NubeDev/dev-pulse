@@ -152,6 +152,19 @@ pub struct LeaderboardEnvelope {
     /// Pagination request (§6.5). Default is "page 1, default size".
     #[serde(default)]
     pub page: PageRequest,
+    /// Extra §15.7 metrics carried into each row's
+    /// [`LeaderboardContext::extras`] (ORG-REPORTS §6.3).
+    ///
+    /// Capped at [`LEADERBOARD_ALSO_COMPUTE_CAP`]; over-cap requests
+    /// fail at envelope resolution with
+    /// [`LeaderboardError::AlsoComputeTooLarge`]. Server-side sort and
+    /// pagination stay single-metric — `rank_by` is authoritative for
+    /// page boundaries and the §6.5 cursor — so changing
+    /// `also_compute` between requests must never drift which rows
+    /// land on which page. Empty by default; omitted from the wire
+    /// form when empty so the stage-3 shape stays stable.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub also_compute: Vec<MetricId>,
 }
 
 // ---------------------------------------------------------------------------
@@ -177,6 +190,14 @@ pub struct ResolvedLeaderboardEnvelope {
     pub subject: SubjectKind,
     /// `rank_by` echoed back.
     pub rank_by: MetricId,
+    /// `also_compute` echoed back (ORG-REPORTS §6.3). The wire-form
+    /// echo lets clients confirm which extra metrics they should
+    /// expect under each row's `context.extras`, and lets caches
+    /// key on the full (rank_by + extras) tuple. Omitted from the
+    /// wire form when empty so responses without extras keep their
+    /// stage-3 shape.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub also_compute: Vec<MetricId>,
 }
 
 /// Headline counters above the table (ORG-REPORTS §4).
@@ -303,6 +324,15 @@ pub struct LeaderboardResponse {
 // ---------------------------------------------------------------------------
 // §6.5 — pinned-cursor pagination
 // ---------------------------------------------------------------------------
+
+/// Cap on `also_compute` cardinality. ORG-REPORTS §6.3.
+///
+/// "Up to 5 §15.7 metrics per row" — beyond that the row's
+/// `context.extras` payload grows without bound on a hot path. The
+/// cap is enforced at envelope resolution via
+/// [`validate_also_compute`] so the SQL layer never has to defend
+/// against an unbounded fan-out.
+pub const LEADERBOARD_ALSO_COMPUTE_CAP: usize = 5;
 
 /// Default page size when the client omits `page.size`. ORG-REPORTS §6.5.
 pub const LEADERBOARD_PAGE_SIZE_DEFAULT: u32 = 25;
@@ -638,6 +668,14 @@ pub enum LeaderboardError {
         /// Server-side cap ([`LEADERBOARD_PAGE_SIZE_MAX`]).
         max: u32,
     },
+    /// `also_compute` exceeded [`LEADERBOARD_ALSO_COMPUTE_CAP`]. §6.3.
+    #[error("also_compute_too_large: len={len} cap={cap}")]
+    AlsoComputeTooLarge {
+        /// Requested `also_compute` length.
+        len: usize,
+        /// Server-side cap ([`LEADERBOARD_ALSO_COMPUTE_CAP`], = 5).
+        cap: usize,
+    },
     /// Window spec failed to resolve.
     #[error(transparent)]
     Resolve(#[from] ResolveError),
@@ -667,17 +705,37 @@ pub fn validate_subject_scope_combo(
     }
 }
 
+/// Validate the `also_compute` list against the §6.3 cap.
+///
+/// The cap is enforced at envelope resolution so the SQL layer
+/// never sees an over-sized extras payload — a future "compare
+/// these users" flow (§6.9) that passes `also_compute` from a UI
+/// dropdown gets a precise 400 instead of a quietly degraded query.
+/// Returns `Ok(())` on the empty list (the stage-3 shape).
+pub fn validate_also_compute(also_compute: &[MetricId]) -> Result<(), LeaderboardError> {
+    if also_compute.len() > LEADERBOARD_ALSO_COMPUTE_CAP {
+        return Err(LeaderboardError::AlsoComputeTooLarge {
+            len: also_compute.len(),
+            cap: LEADERBOARD_ALSO_COMPUTE_CAP,
+        });
+    }
+    Ok(())
+}
+
 /// Resolve a [`LeaderboardEnvelope`] at `now`, returning the
 /// [`ResolvedLeaderboardEnvelope`] echoed in the response.
 ///
 /// Stage 4 accepts every valid `(subject, scope_mode)` pair per
 /// ORG-REPORTS §2 and validates the `orgs` cardinality contract per
-/// scope mode.
+/// scope mode. Stage 7 additionally enforces the §6.3 `also_compute`
+/// cap; over-cap requests fail with
+/// [`LeaderboardError::AlsoComputeTooLarge`].
 pub fn resolve_leaderboard_envelope(
     env: &LeaderboardEnvelope,
     now: DateTime<Utc>,
 ) -> Result<ResolvedLeaderboardEnvelope, LeaderboardError> {
     validate_subject_scope_combo(env.subject, env.scope_mode)?;
+    validate_also_compute(&env.also_compute)?;
     match env.scope_mode {
         ScopeMode::SingleOrg => {
             if env.orgs.len() != 1 {
@@ -701,6 +759,7 @@ pub fn resolve_leaderboard_envelope(
         scope_mode: env.scope_mode,
         subject: env.subject,
         rank_by: env.rank_by,
+        also_compute: env.also_compute.clone(),
     })
 }
 
@@ -1221,6 +1280,7 @@ mod tests {
             rank_by: MetricId::Count(CountMetric::PullRequestsOpened),
             include_bots: false,
             page: PageRequest::default(),
+            also_compute: vec![],
         }
     }
 
@@ -1865,6 +1925,7 @@ mod tests {
             scope_mode: ScopeMode::SingleOrg,
             subject: SubjectKind::User,
             rank_by: MetricId::Count(CountMetric::PullRequestsOpened),
+            also_compute: vec![],
         }
     }
 
@@ -2181,6 +2242,243 @@ mod tests {
         assert_eq!(env.page, PageRequest::default());
         assert!(env.page.cursor.is_none());
         assert_eq!(env.page.size, 0); // → effective_page_size = default
+    }
+
+    // ----- Stage 7: §6.3 `also_compute` --------------------------------
+
+    /// Build an `also_compute` list of `n` distinct count metrics for
+    /// cap-boundary tests. We only need stable identity, not real
+    /// semantic distinctness — the validator is purely cardinality.
+    fn also_compute_of(n: usize) -> Vec<MetricId> {
+        let pool = [
+            MetricId::Count(CountMetric::PullRequestsOpened),
+            MetricId::Count(CountMetric::PullRequestsMerged),
+            MetricId::Count(CountMetric::PullRequestsReviewed),
+            MetricId::Count(CountMetric::IssuesOpened),
+            MetricId::Count(CountMetric::IssuesClosed),
+            MetricId::Count(CountMetric::CommitsAuthored),
+            MetricId::Count(CountMetric::ReviewComments),
+        ];
+        (0..n).map(|i| pool[i % pool.len()]).collect()
+    }
+
+    #[test]
+    fn also_compute_cap_is_five() {
+        // §6.3 nails the cap at 5 — surface it as a const so a future
+        // bump is a single, reviewable change rather than scattered
+        // magic numbers across REST / MCP / frontend.
+        assert_eq!(LEADERBOARD_ALSO_COMPUTE_CAP, 5);
+    }
+
+    #[test]
+    fn validate_also_compute_accepts_empty_and_up_to_cap() {
+        assert!(validate_also_compute(&[]).is_ok());
+        assert!(validate_also_compute(&also_compute_of(1)).is_ok());
+        assert!(validate_also_compute(&also_compute_of(LEADERBOARD_ALSO_COMPUTE_CAP)).is_ok());
+    }
+
+    #[test]
+    fn validate_also_compute_rejects_over_cap() {
+        // §6.3: anything beyond 5 must fail with the typed error so
+        // REST/MCP can return a precise 400.
+        let too_many = also_compute_of(LEADERBOARD_ALSO_COMPUTE_CAP + 1);
+        let err = validate_also_compute(&too_many).unwrap_err();
+        assert_eq!(
+            err,
+            LeaderboardError::AlsoComputeTooLarge {
+                len: LEADERBOARD_ALSO_COMPUTE_CAP + 1,
+                cap: LEADERBOARD_ALSO_COMPUTE_CAP,
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_envelope_enforces_also_compute_cap() {
+        // The cap must be checked at envelope resolution — not at the
+        // SQL layer — so an over-sized payload never reaches the store.
+        let mut env = sample_envelope();
+        env.also_compute = also_compute_of(LEADERBOARD_ALSO_COMPUTE_CAP + 1);
+        let err = resolve_leaderboard_envelope(&env, utc(2025, 6, 18, 12, 0, 0)).unwrap_err();
+        assert!(matches!(err, LeaderboardError::AlsoComputeTooLarge { .. }));
+    }
+
+    #[test]
+    fn resolve_envelope_echoes_also_compute_in_resolved_form() {
+        // §4 echo rule: the resolved envelope carries every input
+        // axis the response shape can depend on. Clients keying their
+        // cache on (rank_by + extras) need the echo.
+        let mut env = sample_envelope();
+        env.also_compute = also_compute_of(3);
+        let resolved = resolve_leaderboard_envelope(&env, utc(2025, 6, 18, 12, 0, 0)).unwrap();
+        assert_eq!(resolved.also_compute, env.also_compute);
+    }
+
+    #[test]
+    fn envelope_also_compute_round_trips_through_json() {
+        // Wire form: present when non-empty, omitted when empty so
+        // the stage-3 shape stays stable for clients that don't use
+        // the §6.3 escape hatch.
+        let mut env = sample_envelope();
+        assert!(env.also_compute.is_empty());
+        let json = serde_json::to_string(&env).unwrap();
+        assert!(
+            !json.contains("also_compute"),
+            "empty also_compute must be omitted: {json}",
+        );
+
+        env.also_compute = also_compute_of(2);
+        let json = serde_json::to_string(&env).unwrap();
+        assert!(json.contains("\"also_compute\""), "{json}");
+        let back: LeaderboardEnvelope = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.also_compute, env.also_compute);
+    }
+
+    #[test]
+    fn envelope_default_also_compute_is_empty_when_field_absent() {
+        // Backwards compat: a missing `also_compute` in the request
+        // JSON must deserialise as an empty list. A previously-shipped
+        // client that pre-dates §6.3 keeps working unchanged.
+        let json = r#"{
+            "window": { "label": "today", "tz": "UTC", "anchor": "utc" },
+            "scope_mode": "single_org",
+            "orgs": ["00000000-0000-0000-0000-000000000000"],
+            "subject": "user",
+            "rank_by": { "family": "count", "id": "pull_requests_opened" }
+        }"#;
+        let env: LeaderboardEnvelope = serde_json::from_str(json).unwrap();
+        assert!(env.also_compute.is_empty());
+    }
+
+    #[test]
+    fn context_extras_serialise_under_row_context() {
+        // §6.3: extras live under `row.context`, keyed by metric. A
+        // dropped key here would silently degrade the multi-metric UI
+        // to single-metric — locked in a test so a future
+        // restructuring of `LeaderboardContext` is loud.
+        let mut row = count_row(1, "u1", 10, 5);
+        row.context.extras.insert(
+            "reviews_given".into(),
+            serde_json::json!({ "value": 41 }),
+        );
+        let json = serde_json::to_string(&row).unwrap();
+        assert!(json.contains("\"context\""), "{json}");
+        assert!(
+            json.contains("\"reviews_given\":{\"value\":41}"),
+            "extras must serialise under context: {json}",
+        );
+    }
+
+    #[test]
+    fn paginated_sql_signature_is_independent_of_also_compute() {
+        // The pagination wrapper is purely a function of (subject,
+        // scope_mode, has_cursor) — `also_compute` cannot reach
+        // [`build_paginated_leaderboard_sql`] because pagination is
+        // single-metric by design. Locked here: the function has no
+        // also_compute parameter, the SQL string it emits has no
+        // reference to extras, and the bind-order constants stay at
+        // 7 / 9 slots.
+        let sql = build_paginated_leaderboard_sql(
+            SubjectKind::User,
+            ScopeMode::SingleOrg,
+            true,
+        )
+        .unwrap();
+        assert!(!sql.to_ascii_lowercase().contains("also_compute"), "{sql}");
+        assert!(!sql.to_ascii_lowercase().contains("extras"), "{sql}");
+        assert_eq!(LEADERBOARD_BIND_ORDER_PAGED.len(), 7);
+        assert_eq!(LEADERBOARD_BIND_ORDER_PAGED_WITH_CURSOR.len(), 9);
+    }
+
+    #[test]
+    fn page_boundary_cursor_is_invariant_under_also_compute_changes() {
+        // **The stage-7 invariant.** §6.3: "server-side sort and
+        // pagination are always on `rank_by`." Concretely: the next
+        // cursor is `(resolved_window_end, rank_by_value,
+        // subject_id)`. Adding, removing, or reordering `also_compute`
+        // metrics — and the `context.extras` payload they materialise
+        // into — must not change the cursor for the same page.
+        //
+        // A drift here would mean a UI that toggled a "show reviews
+        // alongside" affordance would silently see *different rows*
+        // on page 2, even though the rank order is unchanged. That's
+        // exactly the §11.4 trust violation the §6.3 single-metric
+        // pagination rule exists to prevent.
+        let window_end = utc(2025, 6, 16, 0, 0, 0);
+        let resolved = resolved_env_with_window_end(window_end);
+
+        // Page 1 with no extras.
+        let mut rows_a = vec![
+            count_row(1, "u1", 12, 5),
+            count_row(2, "u2", 7, 4),
+            count_row(3, "u3", 3, 2),
+        ];
+        let cursor_a = build_next_cursor(&resolved, &rows_a).unwrap();
+
+        // Same page, identical rank_by ordering, but every row now
+        // carries five §15.7 extras under `context.extras`. The
+        // rank_by value and subject_id of the last row are unchanged
+        // — and that's all the cursor consults.
+        for r in &mut rows_a {
+            for k in ["reviews_given", "issues_opened", "issues_closed", "commits", "comments"] {
+                r.context.extras.insert(
+                    k.into(),
+                    serde_json::json!({ "value": 999 }),
+                );
+            }
+        }
+        let cursor_b = build_next_cursor(&resolved, &rows_a).unwrap();
+        assert_eq!(
+            cursor_a, cursor_b,
+            "cursor must be invariant under also_compute / extras changes",
+        );
+
+        // And: the decoded triple really is the rank_by-and-id-only
+        // triple from §6.5, not a hash over the full row.
+        let decoded = PageCursor::decode(&cursor_a).unwrap();
+        assert_eq!(decoded.resolved_window_end, window_end);
+        assert_eq!(decoded.rank_by_value, 3);
+        assert_eq!(decoded.subject_id, "u3");
+    }
+
+    #[test]
+    fn page_boundary_validation_ignores_also_compute_on_envelope() {
+        // Concrete companion to the cursor-invariance test:
+        // [`validate_page_request`] consults only the resolved
+        // envelope's `resolved_window.end`. The cursor minted by a
+        // request *without* `also_compute` must still be honoured on
+        // a follow-up request *with* `also_compute` — and vice versa
+        // — because §6.3 promises page boundaries don't shift.
+        let window_end = utc(2025, 6, 16, 0, 0, 0);
+        let mut env = sample_envelope();
+        let resolved_no_extras =
+            resolve_leaderboard_envelope(&env, utc(2025, 6, 18, 12, 0, 0)).unwrap();
+
+        // Mint a cursor against the no-extras resolved envelope.
+        let cursor = PageCursor {
+            resolved_window_end: resolved_no_extras.resolved_window.end,
+            rank_by_value: 10,
+            subject_id: "u1".into(),
+        };
+        let req = PageRequest { size: 25, cursor: Some(cursor.encode()) };
+
+        // Now flip on `also_compute` and re-resolve at the same wall
+        // clock. The resolved window-end is the same, so the cursor
+        // must still validate cleanly.
+        env.also_compute = also_compute_of(5);
+        let resolved_with_extras =
+            resolve_leaderboard_envelope(&env, utc(2025, 6, 18, 12, 0, 0)).unwrap();
+        assert_eq!(
+            resolved_with_extras.resolved_window.end,
+            resolved_no_extras.resolved_window.end,
+        );
+        // For the assertion below we need the fixture-style resolved
+        // envelope shape (page-validation only looks at the window
+        // end); use the explicit constructor so the assertion is
+        // independent of any future fields.
+        let fixture = resolved_env_with_window_end(window_end);
+        assert_eq!(fixture.resolved_window.end, window_end);
+        let _ = validate_page_request(&req, &resolved_with_extras)
+            .expect("cursor minted without extras must still validate with extras present");
     }
 
     #[test]
