@@ -27,6 +27,8 @@ import { navigate, useRoute } from "../routes.js";
 
 import { ACTIVITY_KINDS } from "./activity-types.js";
 import { ReportShell, type PerKind } from "./report-shell.jsx";
+import { UserBreakdownTables } from "./user/user-breakdown-tables.jsx";
+import { useUserBreakdown } from "./user/use-user-breakdown.js";
 import {
   WindowPicker,
   FILTER_GRID_CLASS,
@@ -95,6 +97,32 @@ export function UserReportPage(): JSX.Element {
   });
   const orgs: ReadonlyArray<OrgDto> = orgsQuery.data ?? [];
 
+  // Repo directory — needed to label the per-repo breakdown table.
+  // The list endpoint is paginated; 500 is well above the realistic
+  // total for the deployments this UI targets and matches the cap
+  // used elsewhere in the workflow surface.
+  const reposQuery = useQuery({
+    queryKey: ["repos", "directory"],
+    queryFn: () =>
+      USE_MOCK
+        ? Promise.resolve({ rows: [], total: 0, limit: 0, offset: 0 })
+        : api.listRepos({ limit: 500 }),
+  });
+
+  const orgLabels = useMemo<Map<string, string>>(
+    () => new Map(orgs.map((o) => [o.id, o.login])),
+    [orgs],
+  );
+  const repoLabels = useMemo<
+    Map<string, { label: string; orgId?: string }>
+  >(() => {
+    const m = new Map<string, { label: string; orgId?: string }>();
+    for (const r of reposQuery.data?.rows ?? []) {
+      m.set(r.id, { label: r.slug, orgId: r.org_id });
+    }
+    return m;
+  }, [reposQuery.data]);
+
   const [orgId, setOrgId] = useState<string | null>(null);
 
   const usersQuery = useQuery({
@@ -151,6 +179,14 @@ export function UserReportPage(): JSX.Element {
   const dataAsOf: DataAsOf | null = firstSettled?.data?.data_as_of ?? null;
   const anyLoading = queries.some((q) => q.isPending);
 
+  const breakdown = useUserBreakdown({
+    userId: activeUserId,
+    params,
+    orgLabels,
+    repoLabels,
+    disabled: USE_MOCK,
+  });
+
   function selectUser(id: string): void {
     setUserId(id);
     navigate(`/reports/user/${id}`);
@@ -177,6 +213,16 @@ export function UserReportPage(): JSX.Element {
       lens={lens}
       onLensChange={setLens}
       subjectLabel={subjectLabel}
+      footer={
+        USE_MOCK ? null : (
+          <UserBreakdownTables
+            orgRows={breakdown.data.orgRows}
+            repoRows={breakdown.data.repoRows}
+            loading={breakdown.loading}
+            subjectLabel={subjectLabel}
+          />
+        )
+      }
       filters={
         <div className={FILTER_GRID_CLASS}>
           <div className="grid gap-1.5">

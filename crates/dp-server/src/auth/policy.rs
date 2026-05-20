@@ -117,6 +117,22 @@ pub fn register_dev_pulse_resources(registry: &StaticRegistry) {
          `read` covers `GET /me/app-install-banner`; the §8.4 write-gate runs inside \
          issue-mutation handlers (gated under their own resource).",
     ));
+    registry.register_spec(ResourceSpec::from_static(
+        "issues",
+        &["read", "write"],
+        Ownership::None,
+        "Issues",
+        "Issue read surface (`/issues`, `/issues/{id}`, `/me/queue`, inbox state) \
+         and the §8 write surface (create / patch / comment).",
+    ));
+    registry.register_spec(ResourceSpec::from_static(
+        "tags",
+        &["read", "write"],
+        Ownership::None,
+        "Tags",
+        "Per-user / shared tag taxonomy (SCOPE-PROJECTS §6). `write` covers \
+         create / rename / delete / assignment.",
+    ));
 }
 
 /// Load + compile the policy file, wrap it in

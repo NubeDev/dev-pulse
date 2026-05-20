@@ -7,6 +7,156 @@
 
 ---
 
+## 0. Progress log (2026-05-20)
+
+Slice 1 of the §8 plan landed, plus the first half of slice 2.
+The triage shell is now reachable at `#/workflow/triage` (also
+the default `#/workflow` redirect) and the old `Repos` / `Issues`
+pages are still mounted as siblings under the Workflow group in
+the sidebar.
+
+### Done
+
+**Backend (cargo build + tests green):**
+
+- Migration `crates/dp-store-pg/migrations/dp/0011_triage_spine.sql`
+  — adds `dp_issues.author` / `state_reason`, GIN indexes on
+  `labels` / `assignees`, and the new `dp_user_issue_state` table
+  (`user_id, issue_id, last_seen_version BIGINT, status TEXT
+  CHECK ('inbox','snoozed','done'), snoozed_until, updated_at`)
+  with partial indexes.
+- `dp-domain` — new `inbox.rs` (`InboxStatus`, `UserIssueState`,
+  `InboxIssueRow`); `IssueListFilter` extended with array
+  filters (`repo_ids`, `org_ids`, `assignees`, `labels`,
+  `author`, `state_reason`, `updated_since`, `untriaged_only`)
+  plus the four new `Store` methods (`list_inbox_issues`,
+  `count_inbox_issues`, `mark_issues_seen`, `set_inbox_state`).
+- `dp-store-pg` — implementations for all new methods; 15-bind
+  guarded SQL (`(cardinality($N::uuid[]) = 0 OR ... = ANY($N))`
+  + `($N::jsonb IS NULL OR labels @> $N)`); `row_to_inbox_issue_row`
+  decoder computes `unread = version > last_seen_version`.
+- `dp-rest` — `IssueDto.unread` (optional), `ListIssuesQuery`
+  with CSV array deserializers, `filter_from_query` helper,
+  `GET /me/queue` (`issues_read::me_queue`), new `inbox.rs`
+  exposing `POST /me/inbox/seen` (cap 200) and
+  `PATCH /me/inbox/{issue_id}`, both gated on `(issues, read)`.
+- `dp-server` — `inbox_router` merged into protected; also
+  registered the missing `issues` + `tags` resources in
+  `register_dev_pulse_resources` so the policy engine stops
+  returning `unknown_resource` for the new routes.
+
+**Frontend (`pnpm typecheck` + `make build` green):**
+
+- `frontend/src/api/client.ts` — extended `IssueDto` /
+  `IssueListItem` with optional `unread`, new
+  `InboxStatusSchema` / `UserIssueStateDtoSchema` /
+  `MarkSeenRequest` / `SetInboxStateRequest`,
+  `buildIssueListQs` helper, `sendNoContent` private,
+  `listMyQueue` / `markInboxSeen` / `setInboxState` methods.
+- `frontend/src/workflow/mocks.ts` — `mockInboxState` map +
+  `mockListMyQueue` / `mockMarkInboxSeen` / `mockSetInboxState`
+  fixtures.
+- `frontend/src/workflow/use-workflow-data.ts` — `useMyQueue`,
+  `useMarkInboxSeen` (silent failure), `useSetInboxState`,
+  plus `workflowKeys.myQueue`.
+- `frontend/src/workflow/issues-page.tsx` — added `view`
+  (`list` / `inbox` / `untriaged`) URL state, view toggle rail,
+  unread-dot column, inline Snooze 1d / Done buttons,
+  mark-seen-on-open, keyboard shortcuts (`j` `k` `Enter` `Esc`
+  `e` `h` `?`) + help dialog.
+- `frontend/src/workflow/triage-page.tsx` (new, ~570 lines) —
+  Linear-style 3-pane shell: left rail VIEWS
+  (`mine` / `untriaged` / `snoozed` / `all`) + Pinned repos,
+  middle dense `<ol>/<li>` with unread dots / state pills /
+  hover-revealed inbox actions, right peek panel (xl only)
+  embedding `IssueEditCard` inline (no Sheet flash), keyboard
+  parity with the issues page, help dialog.
+- `frontend/src/routes.ts` — `WorkflowTab` extended with
+  `triage` (now the default), `TriageView` +
+  `workflowTriageRoute(...)` helper.
+- `frontend/src/app.tsx` — `WorkflowPane` switch routes
+  `triage` → `<TriagePage />`.
+- `frontend/src/layout/app-shell.tsx` — `NAV_MAIN` exposes
+  Triage above Repos / Issues (IconInbox); the live inbox badge
+  follows `#/workflow/triage` (testid
+  `workflow-triage-inbox-badge`); `WORKFLOW_TITLE` carries
+  `triage: "Triage"`.
+- `frontend/src/components/nav-main.tsx` — `NavMainSubItem`
+  gains an optional `badge?: ReactNode` slot (testid
+  `nav-sub-badge`), right-aligned.
+- `frontend/vite.config.ts` — proxy table now forwards
+  `/issues`, `/repos`, `/me`, `/pins`, `/tags` to dp-server on
+  `:8731`. Without this the dev server returned the SPA
+  `index.html` for `/me/queue` and the client failed with
+  `Unexpected token '<', "<!doctype "... is not valid JSON`.
+
+### Verified
+
+- `cargo test -p dp-domain -p dp-rest -p dp-store-pg -p dp-server --lib` — all green.
+- `cd frontend && pnpm typecheck` — clean.
+- `make build` — clean.
+
+### TODO — pick up here
+
+**Backend (slice 2):**
+
+- [ ] Wire `crates/dp-rest/src/issues.rs` write handlers (POST
+      create, PATCH update, POST comment) — the §8.2 CAS helpers
+      (`acquire` / `commit` / `rollback`) exist but no router is
+      mounted yet; they need the octocrab GitHub round-trip and
+      `issues.write` gating (resource is now registered).
+- [ ] Timeline endpoint: `GET /issues/{id}/timeline` backed by
+      `dp_activity_events` + `dp_event_actors` so the peek panel
+      can stop pretending it has comments.
+- [ ] Sync visibility endpoints: per-repo last-synced-at +
+      reconciler-run summaries so the list can render the
+      "synced 4m ago" affordances from the §14.3 mock.
+- [ ] Tag-link surfaces in the issue list (the §6 saved-views
+      story leans on `dp_tag_links` joins; not yet exposed in
+      `IssueDto`).
+- [ ] OpenAPI: `me_queue` / `inbox` handlers are still absent
+      from `DevPulseApi`. Matches the existing `list_issues`
+      omission but should be closed before slice 3.
+
+**Frontend (slice 2 finish + slice 3):**
+
+- [ ] Command palette `⌘K` (§14.5) — jump-to repo / issue /
+      saved view; currently only `?` exists.
+- [ ] Snoozed view backing: `TriagePage::filterFor("snoozed")`
+      currently returns an empty synthetic page; needs a real
+      `GET /me/inbox?status=snoozed` (or a `status` filter on
+      `/me/queue`) and a wake-up affordance.
+- [ ] Group-by + sort dropdowns on the middle pane (the §14.3
+      "phoenix/api · 12 open · synced 4m ago" grouped rows from
+      the mock; right now the list is flat).
+- [ ] Saved views = pins/tags rendered as first-class entries in
+      the left rail with their own counts (§14.6). The Pinned
+      repos section exists; tags + count badges do not.
+- [ ] Resizable pane splitters (§14.1). Current shell uses a
+      fixed `grid-cols-[14rem_minmax(28rem,1fr)_minmax(28rem,32rem)]`.
+- [ ] Bulk actions on selection (`x` to toggle, then `e` / `h`
+      on a multi-select). Single-row actions only today.
+- [ ] Reports surface that finally pays back `dp_activity_events`
+      (the §1 promise — deferred to slice 3 in the PR plan).
+- [ ] Polish: dark-mode pass on the new TriagePage; the inline
+      peek panel uses tokens but hasn't been eyeballed against
+      the theme tokens used in `IssueEditCard`.
+
+**Tech debt found during the slice:**
+
+- The `dp-fetcher` test failures observed at the start of the
+  session were pre-existing local mods to
+  `crates/dp-fetcher/src/{client/mod.rs, reconciler/mod.rs,
+  reconciler/synth.rs}` — unrelated to triage but flagged as
+  "fixed" by the operator. Worth a follow-up to confirm CI is
+  green on `main`.
+- `PinDto` has no human-readable `label` field, so the left-rail
+  Pinned repos entries currently show `target_id.slice(0,8)` as
+  a placeholder. Either denormalize the repo slug onto the pin
+  row or do a client-side join against the repo list.
+
+---
+
 ## 1. TL;DR
 
 The drill-down I built ([frontend/src/workflow/repos-page.tsx](frontend/src/workflow/repos-page.tsx) →
