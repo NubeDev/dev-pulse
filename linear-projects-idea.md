@@ -98,13 +98,67 @@ the sidebar.
 
 ### TODO — pick up here
 
+**Backend (slice 1.5 — P0 bugs found in peer review):**
+
+- [ ] **Fix `list_inbox_issues` to actually return mine.** Today's
+      query returns "all open everywhere" rather than the
+      caller's identity-set. Until this lands, every screenshot
+      lies. Block on §3.0 identity-set semantics so we don't
+      rewrite the predicate twice.
+- [ ] **Unread must not count my own writes.** §3.8: split
+      `dp_issues.version` so unread compares against an
+      `external_version` that only bumps on reconciler-applied
+      changes — *not* on the caller's own CAS commits. Today
+      alice edits a row, walks away, comes back, and sees her
+      own edit as unread. Migration in §6.
+- [ ] **`POST /me/inbox/seen` body must carry the version the
+      client actually saw** (`[{ issue_id, version }]`), and the
+      server upserts `last_seen_version = LEAST(version_seen,
+      current_external_version)`. The current `[Uuid]` shape
+      races any write that lands between row-open and bump.
+
 **Backend (slice 2):**
 
-- [ ] Wire `crates/dp-rest/src/issues.rs` write handlers (POST
-      create, PATCH update, POST comment) — the §8.2 CAS helpers
-      (`acquire` / `commit` / `rollback`) exist but no router is
-      mounted yet; they need the octocrab GitHub round-trip and
-      `issues.write` gating (resource is now registered).
+- [ ] **Multi-identity model (NEW — see §3.0).** Add
+      `dp_user_identities(user_id, github_user_id, github_login,
+      linked_at, verified_via)` migration; backfill from the
+      existing `dp_users.github_id` primary identity. Extend
+      `GithubOrgsStamper` to stamp
+      `Principal.extra.github.{logins,user_ids,orgs}` (sets, not
+      scalars). Add `identities` resource to
+      `register_dev_pulse_resources`. Add endpoints:
+      `GET /me/identities`, `POST /me/identities/link/{start,
+      callback}`, `DELETE /me/identities/{github_user_id}` (refuse
+      last-identity removal), `POST /admin/users/{user_id}/identities`.
+      Add `dev-pulse link-identity` CLI for admin link.
+- [ ] **Tighten "My queue" to identity-set semantics.**
+      `list_inbox_issues` currently returns every open issue with
+      no `done`/`snoozed` row — i.e. it's "all open everywhere"
+      not "mine". Rewrite to: open AND
+      (`assignees ?| caller.github_logins` OR
+       `author = ANY(caller.github_logins)` OR
+       repo is in `dp_user_pins(kind='repo')` OR
+       repo is linked to a `dp_tags` row the caller owns/follows)
+      AND inbox status filter. The §5.4 SQL sketch is the target
+      shape.
+- [ ] **Start / due dates on issues (NEW — see §3.10).** Add
+      `dp_issue_dates` (per-issue, `start_date DATE`, `due_date
+      DATE`, both optional + check `start <= due`) and the
+      optional `dp_repo_project_link` table (Projects v2 board
+      node id + the two Date field node ids the operator picks
+      as Start / Due). Implement `PATCH /issues/{id}/dates`
+      (local-only write; fail-soft mirror to Projects v2 via
+      GraphQL `addProjectV2ItemById` +
+      `updateProjectV2ItemFieldValue` when the repo is linked).
+      Extend `IssueDto` with optional `start_date` / `due_date`.
+      Add `Due this week` + `Overdue` smart views and the list
+      `Due` column. **Defer the pull-back path** (Projects v2 →
+      `dp_issue_dates`) to slice 3 — slice 2 is push-only.
+      *Native-GitHub story*: plain issues have **no** date fields;
+      Milestones share one `due_on` across many issues; only
+      Projects v2 has per-issue dates and only via GraphQL. The
+      hybrid above keeps dates optional everywhere and lets
+      operators opt into mirror per repo.
 - [ ] Timeline endpoint: `GET /issues/{id}/timeline` backed by
       `dp_activity_events` + `dp_event_actors` so the peek panel
       can stop pretending it has comments.
@@ -120,6 +174,13 @@ the sidebar.
 
 **Frontend (slice 2 finish + slice 3):**
 
+- [ ] **Identity manager page** (`#/account/identities`, slice 2)
+      — list linked GitHub accounts with login + linked-at, "Link
+      another GitHub account" button (kicks off the OAuth
+      round-trip from §3.0.2), unlink confirm dialog. Surface the
+      live identity set in the user menu so operators can see "you
+      are alice-acme + alice + alice-oncall" without leaving the
+      page.
 - [ ] Command palette `⌘K` (§14.5) — jump-to repo / issue /
       saved view; currently only `?` exists.
 - [ ] Snoozed view backing: `TriagePage::filterFor("snoozed")`
@@ -230,6 +291,216 @@ been wrong.
 Everything below is what the "Triage" surface owns. Anything not
 listed stays out for the first three slices.
 
+### 3.0 User ↔ GitHub identity model (NEW)
+
+dev-pulse is a **multi-user operator console** (50+ devs across
+4 orgs in the reference deployment). The §3.2 smart views and
+the per-user inbox in §3.8 only make sense if "me" is well-defined
+— and "me" is **not** a single GitHub login.
+
+A real operator commonly has:
+
+- a **work** GitHub account (`alice-acme`) — member of `acme-co`,
+  `acme-platform`.
+- a **personal** GitHub account (`alice`) — member of `acme-oss`
+  and assigned to drive-by issues there.
+- a **bot / on-call** account (`alice-oncall`) used during
+  rotations.
+
+All three map to **one** dp-pulse user. Their My queue / Assigned
+/ Mentioned / Created views must union across the set, otherwise
+the inbox is a lie.
+
+#### 3.0.1 Schema (new tables, slice 2)
+
+```sql
+-- One dp-user can claim many GitHub identities.
+CREATE TABLE dp_user_identities (
+    user_id        UUID    NOT NULL REFERENCES dp_users(id) ON DELETE CASCADE,
+    github_user_id BIGINT  NOT NULL,           -- stable across renames
+    github_login   TEXT    NOT NULL,           -- denormalized for joins
+    is_primary     BOOLEAN NOT NULL DEFAULT FALSE,
+    linked_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    verified_via   TEXT    NOT NULL
+                     CHECK (verified_via IN ('oauth','admin_link','rotation')),
+    PRIMARY KEY (user_id, github_user_id),
+    UNIQUE (github_user_id)                    -- one GH account → one dp-user
+);
+CREATE INDEX dp_user_identities_login_idx ON dp_user_identities (github_login);
+-- Exactly one primary identity per dp-user.
+CREATE UNIQUE INDEX dp_user_identities_primary_idx
+  ON dp_user_identities (user_id) WHERE is_primary;
+
+-- §3.0.1.a Per-identity provenance on memberships so unlink can
+-- subtract *only* orgs no remaining identity still covers.
+CREATE TABLE dp_membership_identities (
+    user_id        UUID   NOT NULL,
+    org_id         UUID   NOT NULL REFERENCES dp_orgs(id) ON DELETE CASCADE,
+    github_user_id BIGINT NOT NULL,
+    observed_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, org_id, github_user_id),
+    FOREIGN KEY (user_id, github_user_id)
+      REFERENCES dp_user_identities (user_id, github_user_id) ON DELETE CASCADE
+);
+CREATE INDEX dp_membership_identities_org_idx
+  ON dp_membership_identities (org_id, user_id);
+```
+
+`dp_orgs` ↔ `dp_users` already exists via `dp_memberships`
+(`user_id, org_id, role, home_org, joined_at`). One dp-user can
+already belong to many orgs — that part is **not** new. What's
+new is the **multi-identity** layer above it, *plus* the
+`dp_membership_identities` provenance join so we can answer
+"does alice still reach `acme-co` after unlinking
+`alice-acme`?" without re-querying GitHub.
+
+**Single source of truth.** `dp_users.github_id` (the UNIQUE
+single-identity column on `0001_init.sql`) is **deprecated** by
+this change. Migration 0013 backfills `dp_user_identities` from
+it (one row per existing user, `is_primary = TRUE`,
+`verified_via = 'oauth'`) and migration 0014 (one release
+later, after every read site has migrated) drops the column.
+In the interim every read goes through
+`dp_user_identities WHERE is_primary` — no dual reads. The
+primary identity is mutable via
+`PATCH /me/identities/{github_user_id}/primary`.
+
+#### 3.0.2 Linking flow
+
+- **First login** → OAuth callback creates `dp_users` row +
+  primary `dp_user_identities` row (`is_primary = TRUE`). No
+  change from today's UX.
+- **Add identity** → operator clicks "Link another GitHub
+  account" in `#/account/identities`. Server inserts a row in
+  `dp_identity_link_pending(nonce UUID, session_id, dp_user_id,
+  expires_at)` and redirects to GitHub OAuth with `state =
+  nonce` (opaque; **never** the session id directly — see
+  §3.0.2.a). Callback consumes the nonce, verifies the session
+  still binds to the same dp-user, and inserts the new
+  `dp_user_identities` row. Reject if `github_user_id` already
+  claimed by a different dp-user (return 409 + audit
+  `IDENTITY_CLAIM_CONFLICT`).
+- **Admin link** (break-glass) → `dev-pulse link-identity
+  --user <uuid> --github-login <login>` for the CLI-seeded admin
+  to fix mis-attributions. Writes `verified_via = 'admin_link'`
+  *and* emits a high-visibility audit row that surfaces in the
+  target user's own audit log (so alice sees "your account was
+  linked to `alice-oncall` by admin bob at T"). The user can
+  one-click unlink an admin-linked identity without re-OAuth.
+- **Unlink** → `DELETE /me/identities/{github_user_id}`; refuse
+  if `is_primary` (operator must `PATCH .../primary` to another
+  identity first) or if it would leave the user with zero
+  identities. Drives §3.0.2.b membership subtraction.
+- **Transfer** (admin-only) →
+  `POST /admin/identities/{github_user_id}/transfer { to_user }`.
+  Moves the identity to another dp-user (covers "alice quit, bob
+  inherits `alice-oncall`" without unlink-then-link racing).
+
+##### 3.0.2.a OAuth `state` is a server-side nonce
+
+The link round-trip never puts the session id on the wire. The
+`state` parameter is an opaque UUID looked up server-side
+against `dp_identity_link_pending`; the row is consumed on
+callback and bound to the session via the cookie the browser
+still presents. This is the standard CSRF-safe OAuth pattern.
+
+##### 3.0.2.b Membership reconciliation (the load-bearing part)
+
+`dp_memberships` rows are **derived** from
+`dp_membership_identities` rows. The invariant:
+
+> A `dp_memberships(user_id, org_id)` row exists iff at least
+> one `dp_membership_identities` row exists for the same
+> `(user_id, org_id)`.
+
+Three transitions touch it:
+
+1. **Link / re-stamp identity `i`** — for each org `i` can
+   reach, INSERT `dp_membership_identities(user_id, org_id, i)`
+   (idempotent on PK). Then UPSERT `dp_memberships(user_id,
+   org_id)`.
+2. **Unlink identity `i`** — DELETE
+   `dp_membership_identities WHERE github_user_id = i` (ON
+   DELETE CASCADE from `dp_user_identities` already does this).
+   For each affected `(user_id, org_id)`, DELETE
+   `dp_memberships` *only if* no provenance rows remain.
+3. **Token expiry for `i`** — treated like a stamp returning
+   the empty org list for that identity: drop `i`'s provenance
+   rows, then collapse `dp_memberships` for any
+   now-unprovenanced `(user_id, org_id)`.
+
+With this, deleting an identity *cannot* silently revoke a
+user's access to orgs her other identities still cover, and the
+stamper's worst-case behaviour is "membership absent until next
+stamp" rather than "membership ambient and wrong."
+
+##### 3.0.2.c Re-stamping on identity change
+
+Linking, unlinking, transferring, or `PATCH .../primary` all
+invalidate the in-flight `Principal`. The link/unlink/transfer
+handlers append the affected `dp_user_id` to a `principal_dirty`
+table; the existing principal cache key includes the row's
+`updated_at` so the next request re-stamps before serving. No
+forced re-login.
+
+If `caller.github_logins = []` (a race during first OAuth or
+all identities revoked mid-session), the principal stamper
+**refuses to mint a principal** and the request returns 401
+`identity_set_empty`. The frontend handles this with a re-login
+prompt.
+
+#### 3.0.3 Principal stamping
+
+`Principal.extra.github` is extended at session-mint by the
+existing `GithubOrgsStamper` (see
+[crates/dp-server/src/auth/github_orgs.rs](crates/dp-server/src/auth/github_orgs.rs)):
+
+```jsonc
+{
+  "github": {
+    "logins":   ["alice-acme", "alice", "alice-oncall"], // identities
+    "user_ids": [12345678, 8765, 99887766],
+    "orgs":     ["acme-co", "acme-platform", "acme-oss"],
+    "in_allowed_org": true
+  }
+}
+```
+
+The org-gate policy rule still keys on `in_allowed_org`; nothing
+in the policy needs to know about the identity set.
+
+#### 3.0.4 Implications for the §3.2 smart views
+
+Every "me" predicate becomes a **set** match across identities:
+
+| View | Old (single login) | New (identity set) |
+|---|---|---|
+| `Assigned to me` | `assignees @> [caller.login]` | `assignees ?\| caller.github_logins` |
+| `Mentioned` | mention table `mentioned_login = caller.login` | `mentioned_login = ANY(caller.github_logins)` |
+| `Created by me` | `author = caller.login` | `author = ANY(caller.github_logins)` |
+| `My queue` | join on `(user_id, issue_id)` | unchanged — keyed on the **dp-user** uuid, not a GH login |
+
+The inbox table (`dp_user_issue_state`) is already keyed by
+`user_id UUID` so the union just falls out — `My queue` never
+needed a login. The other three views are the ones that get a
+plural rewrite.
+
+#### 3.0.5 Endpoint surface (slice 2)
+
+- `GET    /me/identities` — list linked GH identities.
+- `POST   /me/identities/link/start` → OAuth round-trip start
+  with `link_to_session = <session_id>`.
+- `POST   /me/identities/link/callback` → finishes link.
+- `DELETE /me/identities/{github_user_id}` — unlink (refuse
+  last-identity removal).
+- `POST   /admin/users/{user_id}/identities` (admin link),
+  gated on `admin.write`.
+
+All gated on a new `identities` resource (`read` / `write`),
+registered in
+[crates/dp-server/src/auth/policy.rs](crates/dp-server/src/auth/policy.rs#L61)
+the same way `issues` / `tags` just were.
+
 ### 3.1 Single landing page
 
 - Route: `#/workflow` (the legacy `#/workflow/repos` and
@@ -243,26 +514,54 @@ listed stays out for the first three slices.
 Each entry is one click → repopulates the list. The active view
 is reflected in the URL so links are shareable.
 
-- **Smart views** (server-resolved):
+- **Smart views** (server-resolved; "me" = the union of every
+  GitHub identity linked to the dp-user, per §3.0):
   - `★ My queue` — issues in the caller's **inbox** (see §3.8):
     open + version newer than `last_seen_version` + not snoozed
     + not marked done. Default landing. Carries an unread badge.
-  - `Assigned to me` — open issues `assignees @> [caller.login]`.
-  - `Untriaged` — open + no assignee + no labels, scoped to the
-    caller's orgs. The actual "triage" view that names the page.
+    Keyed on `dp_user_issue_state.user_id` — identity-set
+    agnostic.
+  - `Assigned to me` — open issues where `assignees` overlaps
+    `caller.github_logins` (any linked identity).
+  - `Untriaged` — open + no assignee + no labels + age ≥ 24h,
+    scoped to `caller.org_ids` from `dp_memberships` (the
+    authoritative source — survives token churn, unlike the
+    GitHub stamper's `orgs` list). The actual "triage" view that
+    names the page. The 24h floor drops just-opened issues whose
+    author is still typing.
   - `Mentioned` — issues whose body or whose comments mention
-    the caller. Backed by the §6 projection table; slice 3.
-  - `Created by me` — issues whose `author == caller.login`.
+    **any** of the caller's linked logins. Backed by the §6
+    projection table; slice 3.
+  - `Created by me` — issues whose `author` is any of
+    `caller.github_logins`.
 - **Pins** (per-user, ordered, capped at 20 per §13.5):
   - Repo pin → issues in that repo.
   - Tag pin → issues whose repo is linked to that tag.
 - **Tags** (org-scoped or team-scoped per §7.4):
   - Click a tag → issues whose repo is linked.
+- **Teams** (NEW — slice 2). `dp_memberships` already carries
+  team data. With 50 devs in 4 orgs the team is the actionable
+  unit, not the org:
+  - `My team's untriaged`
+  - `Assigned to anyone on my team`
+  - `Team @platform's WIP` (manager peek)
+
+  Rendered between Tags and Orgs. Each team entry shows open
+  count + stale count badges.
+- **People** (NEW — slice 2). Flat list of users in the
+  caller's orgs, each row showing `open / stale / last activity`.
+  Click → list filtered to that assignee. Sortable by stale
+  count. This is the "who's drowning, who has bandwidth" view
+  that lets a lead actually rebalance load without leaving the
+  page; without it, that question lives only in
+  `/reports/issues?metric=wip` and never gets asked.
 - **Orgs** — flat list of orgs the caller is a member of; click
   → org filter.
 
 Sidebar render cap of 50 (§13.5) applies after expanding pins +
-tags into rows.
+tags + teams + people into rows; People is collapsed by default
+with a "show all" reveal to keep the rail under the cap at
+50-dev scale.
 
 ### 3.3 List pane (center)
 
@@ -355,10 +654,21 @@ badge count, no `e` to mark done, no "new since I last looked".
 State lives in a new `dp_user_issue_state` table (§6) keyed on
 `(user_id, issue_id)`:
 
-- `last_seen_version BIGINT` — compared against `dp_issues.version`.
-  Row is **unread** when `version > last_seen_version`.
+- `last_seen_version BIGINT` — compared against
+  `dp_issues.external_version` (see *Own-write hazard* below).
+  Row is **unread** when `external_version > last_seen_version`.
 - `status TEXT` — `inbox` (default) | `snoozed` | `done`.
 - `snoozed_until TIMESTAMPTZ NULL` — wakes back into `inbox` when past.
+
+**Own-write hazard.** `dp_issues.version` bumps on *every* CAS,
+including the caller's own writes. If unread compared against
+`version` directly, alice would mark her own edit as unread the
+moment she walked away from the row. Fix: add
+`dp_issues.external_version BIGINT NOT NULL DEFAULT 0` (§6)
+that the **reconciler** bumps on remote-applied changes but the
+§8.2 commit path does **not**. Unread compares against
+`external_version`; the §8.2 CAS still uses `version` for
+concurrency control. Two counters, two different jobs.
 
 UX surfaces:
 
@@ -366,13 +676,26 @@ UX surfaces:
 - `e` marks the selected row(s) **done** (removes from inbox).
 - `h` snoozes selected row(s) (popover: "until tomorrow / next
   week / custom"). Snoozed rows are hidden from `My queue`.
-- Opening the peek auto-bumps `last_seen_version` to the row's
-  current `version`. (Same trick Linear uses.)
+- Opening the peek auto-bumps `last_seen_version` to the
+  `external_version` the **client actually saw** (not
+  server-current). Server upserts with `last_seen_version =
+  LEAST(version_seen, current_external_version)` so it never
+  advances past what the user observed — any write landing
+  between row-open and the seen-request stays unread.
+- **Bulk inbox actions** (slice 2): `mark-all-visible read`,
+  `snooze-all-visible 1d`, `done-all-visible`. Required for the
+  PTO-returner who comes back to inbox-2000; single-row UX is
+  unusable at that scale. Backed by `POST /me/inbox/seen`
+  (already bulk) and a new bulk variant of
+  `PATCH /me/inbox/{issue_id}` →
+  `POST /me/inbox/bulk { issue_ids: [Uuid], status, snoozed_until }`.
 
 New endpoints (slice 1):
 
-- `POST /me/inbox/seen` `{ issue_ids: [Uuid] }` → bulk-mark read.
+- `POST /me/inbox/seen` `{ entries: [{ issue_id, version }] }`
+  → bulk-mark read using the version the client actually saw.
 - `PATCH /me/inbox/{issue_id}` `{ status?, snoozed_until? }`.
+- `POST /me/inbox/bulk` (slice 2) — bulk status / snooze.
 
 Auth pair: `("issues", "read")` is enough; this is per-user UI
 state, not an issue mutation.
@@ -400,6 +723,133 @@ New endpoints (slice 2):
 - `GET /repos/{id}/sync-status` → `{ last_synced_at,
   last_attempt_at, last_error, queued }`.
 - `POST /repos/{id}/sync` → enqueues; idempotent if already queued.
+
+### 3.10 Dates on an issue (start / due) — NEW
+
+#### What GitHub gives us natively
+
+| Surface | Per-issue? | Read/write? | Notes |
+|---|---|---|---|
+| **Issue body / fields** | — | — | Plain issues have **no native start/due date fields**. The only dates on an issue itself are `created_at`, `updated_at`, `closed_at`. |
+| **Milestones** | shared | r/w via REST | `due_on TIMESTAMPTZ`, but per-milestone — every issue in the milestone shares the same date. Useful for sprint-level "ship by", useless for per-issue planning. |
+| **Projects (classic, v1)** | yes | r/w | Deprecated since Aug 2024 — do not build on it. |
+| **Projects v2** | yes | r/w via **GraphQL only** | Per-project **custom fields** including `Date` type. The Linear-equivalent of "due date on an issue" is *"a Projects v2 board has a `Due date` Date field, and the issue is added as an item to that project"*. This is what GitHub's own UI shows when you see a date column on an issue list — it is always a project field, never an issue field. |
+
+So: there is **no `issue.due_on` to round-trip**. To use
+"native GitHub" we have to (a) require a Projects v2 board per
+repo or per org and (b) talk GraphQL to read/write the date
+fields on each project item.
+
+#### Design — hybrid, dates always optional
+
+dev-pulse treats start/due as **first-class but optional**
+metadata that lives in **local state** by default, with an
+**opt-in mirror** to Projects v2 when a board is configured.
+Neither side blocks the other; the operator picks per repo
+whether to mirror, and the inbox still works with zero dates
+anywhere.
+
+##### Storage
+
+```sql
+-- Per-issue dates; either column may be NULL.
+-- One row per issue (NOT per user) — these are the issue's
+-- planning dates, not the caller's personal reminders.
+CREATE TABLE dp_issue_dates (
+    issue_id      UUID         PRIMARY KEY REFERENCES dp_issues(id) ON DELETE CASCADE,
+    start_date    DATE         NULL,
+    due_date      DATE         NULL,
+    set_by        UUID         NULL REFERENCES dp_users(id),
+    set_at        TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    -- Mirror bookkeeping (NULL when not mirrored)
+    gh_project_id      TEXT    NULL,   -- node id of the Projects v2 board
+    gh_item_id         TEXT    NULL,   -- node id of the issue's project-item
+    gh_start_field_id  TEXT    NULL,   -- node id of the Date field used as Start
+    gh_due_field_id    TEXT    NULL,   -- node id of the Date field used as Due
+    last_mirrored_at   TIMESTAMPTZ NULL,
+    mirror_error       TEXT    NULL,
+    CHECK (start_date IS NULL OR due_date IS NULL OR start_date <= due_date)
+);
+CREATE INDEX dp_issue_dates_due_idx   ON dp_issue_dates (due_date)
+    WHERE due_date IS NOT NULL;
+CREATE INDEX dp_issue_dates_start_idx ON dp_issue_dates (start_date)
+    WHERE start_date IS NOT NULL;
+```
+
+DATE (not TIMESTAMPTZ) because "due Tuesday" is a calendar
+concept, not an instant — matches how Projects v2 stores its
+`Date` field (no time, no tz).
+
+##### Per-repo mirror config (optional)
+
+```sql
+CREATE TABLE dp_repo_project_link (
+    repo_id            UUID  PRIMARY KEY REFERENCES dp_repos(id) ON DELETE CASCADE,
+    gh_project_id      TEXT  NOT NULL,   -- Projects v2 board node id
+    gh_start_field_id  TEXT  NULL,
+    gh_due_field_id    TEXT  NULL,
+    auto_add_items     BOOL  NOT NULL DEFAULT true,  -- add issue as project item on first date set
+    configured_by      UUID  NOT NULL REFERENCES dp_users(id),
+    configured_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+```
+
+If a row exists in `dp_repo_project_link` for the issue's repo,
+writes to `dp_issue_dates` enqueue a background mirror task
+that:
+
+1. Resolves / adds the issue as a Projects v2 item
+   (`addProjectV2ItemById` mutation).
+2. Updates the configured Date fields
+   (`updateProjectV2ItemFieldValue` mutation, one per field).
+3. Writes back `gh_item_id` + `last_mirrored_at` on success, or
+   `mirror_error` on failure (the local date stays — mirror is
+   best-effort, never blocking).
+
+If no row exists, dates are **local-only**. That's the default,
+and it's a complete experience — the operator just doesn't get
+the dates surfaced on github.com.
+
+##### Pull direction (Projects v2 → dp-pulse)
+
+The fetcher (slice 3, not slice 2) periodically reads project
+items for repos with a `dp_repo_project_link` and syncs the
+configured Date fields **into** `dp_issue_dates`. Last-writer
+wins, keyed on `set_at` vs `last_mirrored_at`. This lets the
+operator edit dates on github.com (e.g. on mobile) and have
+them flow back.
+
+##### Write semantics
+
+`PATCH /issues/{id}/dates` `{ start_date?, due_date? }` —
+either field may be `null` to clear. Auth `("issues", "write")`.
+Synchronous local upsert; enqueues mirror if linked. Returns
+`{ start_date, due_date, mirror: "local" | "queued" | "synced" | "error" }`.
+
+##### UI surfaces
+
+- **Peek panel**: two compact date pickers ("Start", "Due") under
+  the title row. Empty pill reads "Add date". Past-due rows get
+  a red badge on the row in the list pane.
+- **List pane**: a `Due` column (hidden by default, toggle via
+  `g d`); rows sortable by due_date asc with NULLs last.
+- **Smart views**: add `Due this week` and `Overdue` to the §3.2
+  rail (server-resolved on the new index).
+- **Inbox bump**: an issue assigned/created/mentioned to the
+  caller that goes past-due re-appears in `My queue` with
+  `status='inbox'` cleared from `done` — the snooze never
+  outlives the due date. (Done in the §3.8 inbox-state-set
+  trigger; see the `dp_user_issue_state` upsert path.)
+
+##### Auth & scope notes
+
+- Projects v2 mirror requires the GitHub App or PAT to hold
+  `projects: write` on the org. Surface the `app-install-banner`
+  treatment from §13.6 if missing — the local date still saves,
+  the mirror just fails-soft.
+- `dp_repo_project_link` is an admin-write surface (gated on the
+  same `admin.write` as the rest of §7); operators set it once
+  per repo and forget it.
 
 ---
 
@@ -477,27 +927,38 @@ GET /me/queue?limit=50&offset=0&state=open
                          //   `unread: bool` added per row
 ```
 
-Server semantics (one SQL with `UNION`, deduped on `id`,
-ordered by `updated_at DESC`):
+Server semantics — UNION over four arms, deduped on `id`,
+ordered by `(updated_at DESC, id DESC)`. "Me" expands to the
+full identity set per §3.0.4.
 
-1. Open issues where `assignees @> to_jsonb(ARRAY[caller.login])`
+1. Open issues where `assignees ?| caller.github_logins`
+   (any linked login is assigned)
 2. Open issues whose `repo_id` is in the caller's pinned repos
 3. Open issues whose `repo_id` is in `dp_tag_links` for any tag
    the caller has **pinned** (named explicitly to settle §10 Q1)
 4. Issues in the caller's **inbox**: rows where
    `dp_user_issue_state.status = 'inbox'` AND
-   `dp_issues.version > coalesce(last_seen_version, 0)` AND
-   `(snoozed_until IS NULL OR snoozed_until < now())`.
+   `dp_issues.external_version > coalesce(last_seen_version, 0)`
+   AND `(snoozed_until IS NULL OR snoozed_until < now())`.
+
+**Pagination & cost.** Each arm pushes `ORDER BY updated_at
+DESC, id DESC LIMIT $cap` before the UNION so a user with 100
+pinned repos doesn't scan 5k arm-2 rows just to slice 50. The
+outer query then re-orders + dedupes + LIMITs. Pagination is
+**keyset on `(updated_at, id)`**, not OFFSET — inbox UX never
+needs deep pagination and OFFSET at depth 950 is wasteful.
 
 LEFT JOIN `dp_user_issue_state` on `(caller.id, issue.id)` to
-project `unread = (version > coalesce(last_seen_version, 0))`.
+project `unread = (external_version > coalesce(last_seen_version, 0))`.
 
-Always AND with `org_id = ANY(caller.org_ids)` — the policy
-layer enforces per-row authz, but the SQL stays tight too.
+Always AND with `org_id = ANY(caller.org_ids)` (from
+`dp_memberships`, not the stamper's transient `orgs` list) — the
+policy layer enforces per-row authz, but the SQL stays tight too.
 
-Auth pair: `("issues", "read")`. Uses the existing
-`dp_issues_org_state_idx` for arm 1 and
-`dp_issues_repo_updated_idx` for arms 2 and 3.
+Auth pair: `("issues", "read")`. Needs a new covering index
+`dp_issues (updated_at DESC, id)` for the outer sort (the
+existing `_org_state_idx` and `_repo_updated_idx` cover the
+per-arm filters but not the cross-repo merge); added in §6.
 
 Add to [crates/dp-rest/src/issues_read.rs](crates/dp-rest/src/issues_read.rs)
 as `me_queue` handler; mount alongside the existing
@@ -642,10 +1103,10 @@ Metric definitions (v1 — all expressible against `dp_issues` +
 | Metric | Source | SQL shape |
 |---|---|---|
 | `throughput` | closed issues per bucket | `COUNT(*) FILTER (WHERE state='closed' AND closed_at BETWEEN $since AND $until) GROUP BY bucket` |
-| `lead_time` | open → close duration | `percentile_cont(0.5) WITHIN GROUP (ORDER BY closed_at - created_at)` per bucket |
-| `wip` | currently-open assigned | `COUNT(*) FILTER (WHERE state='open') GROUP BY assignee` |
-| `stale` | open + idle | `COUNT(*) FILTER (WHERE state='open' AND updated_at < now() - interval '30 days')` |
-| `untriaged` | open + no assignee + no label | `COUNT(*) FILTER (WHERE state='open' AND assignees='[]' AND labels='[]')` |
+| `lead_time` | open → close duration (seconds) | `percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (closed_at - created_at)))` per bucket |
+| `wip` | currently-open assigned, per-login | `SELECT a.login, COUNT(*) FROM dp_issues i CROSS JOIN LATERAL jsonb_array_elements_text(i.assignees) a(login) WHERE i.state='open' GROUP BY a.login`. *An issue with 2 assignees counts in both WIP buckets — intentional, surfaces shared load.* |
+| `stale` | open + idle ≥30d | `COUNT(*) FILTER (WHERE state='open' AND updated_at < now() - interval '30 days')` |
+| `untriaged` | open + no assignee + no label + age ≥24h | `COUNT(*) FILTER (WHERE state='open' AND jsonb_array_length(assignees) = 0 AND jsonb_array_length(labels) = 0 AND created_at < now() - interval '24 hours')` |
 
 Auth pair: `("issues", "read")`. Filter scope is always
 intersected with `caller.org_ids`.
@@ -677,8 +1138,22 @@ CREATE INDEX dp_issues_author_idx ON dp_issues (author);
 
 -- §5.5 state_reason filter (and §5.10 reporting). May already
 -- exist as JSONB-buried; promote to a column for indexing.
+-- Partial: state_reason is null on most rows and low-cardinality
+-- (completed / not_planned / reopened) so a partial index is
+-- much smaller without losing coverage.
 ALTER TABLE dp_issues ADD COLUMN state_reason TEXT NULL;
-CREATE INDEX dp_issues_state_reason_idx ON dp_issues (state_reason);
+CREATE INDEX dp_issues_state_reason_idx
+  ON dp_issues (state_reason) WHERE state_reason IS NOT NULL;
+
+-- §3.8 own-write hazard: split the version counter. `version`
+-- bumps on every CAS (reconciler + caller). `external_version`
+-- bumps only on reconciler-applied remote changes, so unread
+-- never flags the caller's own edits.
+ALTER TABLE dp_issues ADD COLUMN external_version BIGINT NOT NULL DEFAULT 0;
+UPDATE dp_issues SET external_version = version;  -- backfill
+
+-- §5.4 /me/queue cross-repo outer sort.
+CREATE INDEX dp_issues_updated_at_idx ON dp_issues (updated_at DESC, id);
 
 -- One-shot backfill for `author` and `state_reason` from the
 -- payload the fetcher already stored on the last sync. Cheap;
@@ -706,6 +1181,16 @@ CREATE TABLE dp_user_issue_state (
 CREATE INDEX dp_user_issue_state_inbox_idx
   ON dp_user_issue_state (user_id, status)
   WHERE status <> 'done';
+
+-- updated_at trigger (the column has DEFAULT now() at INSERT
+-- only; the app must not be trusted to set it on UPDATE).
+CREATE OR REPLACE FUNCTION dp_user_issue_state_touch()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN NEW.updated_at = now(); RETURN NEW; END;
+$$;
+CREATE TRIGGER dp_user_issue_state_touch_trg
+  BEFORE UPDATE ON dp_user_issue_state
+  FOR EACH ROW EXECUTE FUNCTION dp_user_issue_state_touch();
 ```
 
 ```sql
