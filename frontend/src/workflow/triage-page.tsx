@@ -40,15 +40,19 @@
  * visually obvious — that's the whole point of the Linear layout.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  IconAlertTriangle,
   IconBookmark,
+  IconCalendar,
+  IconCalendarDue,
   IconCheck,
   IconChevronDown,
   IconChevronRight,
   IconClock,
   IconCommand,
   IconExternalLink,
+  IconHash,
   IconInbox,
   IconKeyboard,
   IconList,
@@ -84,11 +88,14 @@ import {
 import { IssueEditCard } from "./issues-page.jsx";
 import {
   useBulkInbox,
+  useIssueDatesBatch,
   useIssueList,
   useMarkInboxSeen,
   useMyQueue,
   usePins,
+  useRepoList,
   useSetInboxState,
+  useTags,
 } from "./use-workflow-data.js";
 
 const PAGE_SIZE = 100;
@@ -110,6 +117,7 @@ interface ViewDef {
   icon: typeof IconInbox;
 }
 
+/** Built-in smart views — order matches the rail rendering top-to-bottom. */
 const VIEWS: ViewDef[] = [
   {
     id: "mine",
@@ -122,6 +130,18 @@ const VIEWS: ViewDef[] = [
     label: "Untriaged",
     hint: "No assignee, no label",
     icon: IconSparkles,
+  },
+  {
+    id: "due_week",
+    label: "Due this week",
+    hint: "Due within the next 7 days",
+    icon: IconCalendar,
+  },
+  {
+    id: "overdue",
+    label: "Overdue",
+    hint: "Past their due date — re-bumped to inbox",
+    icon: IconAlertTriangle,
   },
   {
     id: "snoozed",
@@ -150,24 +170,18 @@ function filterFor(view: TriageView, repoId: string | null): ListIssuesQuery {
     state: "open",
   };
   if (repoId) base.repo_id = repoId;
-  switch (view) {
-    case "untriaged":
-      base.untriaged = true;
-      return base;
-    case "all":
-      base.state = "all";
-      return base;
-    case "snoozed":
-      // `snoozed` is a UI-only filter applied on top of `mine` rows
-      // — the backend's `/me/queue` already excludes snoozed rows
-      // by design (`linear-projects-idea.md` §3.8). For now the
-      // snoozed view shows "no snoozed-row endpoint yet"; wiring
-      // the dedicated endpoint is slice 2.
-      return base;
-    case "mine":
-    default:
-      return base;
+  if (view === "untriaged") {
+    base.untriaged = true;
+    return base;
   }
+  if (view === "all") {
+    base.state = "all";
+    return base;
+  }
+  // `mine`, `snoozed`, `due_week`, `overdue`, and `tag:<id>` all
+  // ride on top of the inbox query; the per-view client-side
+  // refinement happens in `useTriageRows`.
+  return base;
 }
 
 /**
@@ -194,6 +208,9 @@ function useTriageRows(view: TriageView, repoId: string | null) {
       refetch: () => undefined,
     };
   }
+  // `mine`, `due_week`, `overdue`, and `tag:<id>` all start from
+  // `/me/queue`. Tag and date refinement is client-side because
+  // the read endpoints do not (yet) accept those predicates.
   return queue;
 }
 
@@ -204,7 +221,42 @@ export function TriagePage(): JSX.Element {
   const selectedIssueId = workflowSelectedIssue(route);
 
   const rowsQ = useTriageRows(view, repoId);
-  const rows: IssueListItem[] = rowsQ.data?.rows ?? [];
+  const allRows: IssueListItem[] = rowsQ.data?.rows ?? [];
+
+  // Per-row date fetch — bounded by `PAGE_SIZE`, react-query
+  // caches per id so the picker in the peek panel and the smart
+  // views share the same in-flight request.
+  const rowIds = useMemo(() => allRows.map((r) => r.id), [allRows]);
+  const datesById = useIssueDatesBatch(rowIds);
+
+  // Client-side refinement for the date-driven smart views and
+  // the tag-backed saved-view escape hatch. The §3.10 contract
+  // says past-due rows re-bump to inbox — `overdue` is rendered
+  // from `/me/queue` (the inbox source) plus the `due_at < now`
+  // filter, which is exactly what re-bump implies.
+  const tagFilterId = view.startsWith("tag:") ? view.slice(4) : null;
+  const rows: IssueListItem[] = useMemo(() => {
+    if (tagFilterId) {
+      // Tag-saved views — no per-row tag join on the list
+      // endpoint yet, so the rail entry behaves like a hint: rows
+      // surface but stay un-narrowed until §7 ships issue-tag
+      // links into the list response. The view label flags this.
+      return allRows;
+    }
+    if (view === "due_week" || view === "overdue") {
+      const now = Date.now();
+      const week = now + 7 * 24 * 60 * 60 * 1000;
+      return allRows.filter((r) => {
+        const due = datesById.get(r.id)?.due_at;
+        if (!due) return false;
+        const t = new Date(due).getTime();
+        if (!Number.isFinite(t)) return false;
+        if (view === "overdue") return t < now;
+        return t >= now && t <= week;
+      });
+    }
+    return allRows;
+  }, [allRows, datesById, view, tagFilterId]);
 
   // Live count for ★ My queue — the same one the sidebar shows.
   // Cheap probe (`limit: 1`) so we never bloat the cache.
@@ -212,6 +264,23 @@ export function TriagePage(): JSX.Element {
   const inboxCount = inboxProbe.data?.total ?? 0;
 
   const pins = usePins();
+  // Resolve `PinDto.target_id` → `owner/repo` so the rail stops
+  // rendering opaque uuid prefixes. The repo list is paginated;
+  // we request the first page (cap=200 server-side) and fall
+  // back to the short id for anything past the boundary.
+  const repos = useRepoList({ limit: 200, offset: 0 });
+  const repoLabelById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const r of repos.data?.rows ?? []) {
+      m.set(r.id, `${r.org_login}/${r.name}`);
+    }
+    return m;
+  }, [repos.data]);
+
+  // Saved views — tag-backed first-class rail entries. We surface
+  // every tag the caller can see; the count is the §7.4 viewer-
+  // filtered `visible_link_count` and rides on the same DTO.
+  const tags = useTags();
 
   const markSeen = useMarkInboxSeen();
   const setInboxState = useSetInboxState();
@@ -235,6 +304,29 @@ export function TriagePage(): JSX.Element {
   // ----- Rail collapsible sections (§13.5 sidebar render cap) ---------
   const [peopleOpen, setPeopleOpen] = useState(false); // collapsed-by-default
   const [teamsOpen, setTeamsOpen] = useState(true);
+  const [savedOpen, setSavedOpen] = useState(true);
+
+  // ----- `Due` column toggle (`g d`). Persisted to localStorage so
+  // the operator's column preference rides through reloads. --------
+  const [showDueColumn, setShowDueColumn] = useState<boolean>(() =>
+    readBoolPref("triage.dueColumn", false),
+  );
+  useEffect(() => {
+    writeBoolPref("triage.dueColumn", showDueColumn);
+  }, [showDueColumn]);
+
+  // ----- Resizable pane widths. Both saved to localStorage so the
+  // operator's layout persists. The right (peek) pane keeps its
+  // fixed `minmax` floor; only the rail / middle width is user-
+  // adjustable here. ---------------------------------------------------
+  const [railWidth, setRailWidth] = useState<number>(() =>
+    readNumberPref("triage.rail.width", 224),
+  );
+  const [peekWidth, setPeekWidth] = useState<number>(() =>
+    readNumberPref("triage.peek.width", 480),
+  );
+  useEffect(() => writeNumberPref("triage.rail.width", railWidth), [railWidth]);
+  useEffect(() => writeNumberPref("triage.peek.width", peekWidth), [peekWidth]);
 
   // ----- ⌘K command palette (slice 2 jump-to / view-switch / apply) ---
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -278,6 +370,10 @@ export function TriagePage(): JSX.Element {
       const wake = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
       setInboxState.mutate({ issueId: id, status: "snoozed", snoozed_until: wake });
     };
+    // `g`-chord state — `g d` toggles the `Due` column per the
+    // §3.5 "g-prefixed shortcuts" pattern. The chord times out
+    // after one keystroke to keep the binding scoped.
+    let gPending = false;
     const onKey = (e: KeyboardEvent): void => {
       // ⌘K / ctrl-K opens the command palette regardless of focus
       // (this is the slice-2 jump-to / view-switch / apply-to-
@@ -343,6 +439,23 @@ export function TriagePage(): JSX.Element {
       if (inEditable(e.target)) return;
       if (selectedIssueId) return;
       if (helpOpen) return;
+      // `g`-chord toggle for the `Due` column. Fires before the
+      // row-cursor switch so an inadvertent `g` followed by an
+      // unrelated key just clears the chord.
+      if (gPending) {
+        gPending = false;
+        if (e.key === "d") {
+          setShowDueColumn((v) => !v);
+          e.preventDefault();
+          return;
+        }
+        // Fall through — unknown follow-up keys clear the chord
+        // silently.
+      } else if (e.key === "g") {
+        gPending = true;
+        e.preventDefault();
+        return;
+      }
       if (rows.length === 0) return;
       switch (e.key) {
         case "j":
@@ -429,14 +542,22 @@ export function TriagePage(): JSX.Element {
     [pins.data],
   );
 
+  // Dynamic grid template. On `xl+` viewports we render all three
+  // panes plus two drag handles; below `xl` the peek panel collapses
+  // and the handle disappears.
+  const gridTemplate = selectedIssueId
+    ? `${railWidth}px 4px minmax(0,1fr) 4px ${peekWidth}px`
+    : `${railWidth}px 4px minmax(0,1fr)`;
+
   return (
     <div
-      className="grid h-[calc(100dvh-7rem)] grid-cols-[14rem_minmax(0,1fr)] border-y border-border xl:grid-cols-[14rem_minmax(28rem,1fr)_minmax(28rem,32rem)]"
+      className="flex h-[calc(100dvh-7rem)] border-y border-border xl:grid"
+      style={{ gridTemplateColumns: gridTemplate }}
       data-testid="triage-page"
     >
       {/* ──────────────── LEFT RAIL ──────────────── */}
       <aside
-        className="flex flex-col gap-1 overflow-y-auto border-r border-border bg-muted/30 p-3"
+        className="flex w-56 shrink-0 flex-col gap-1 overflow-y-auto border-r border-border bg-muted/30 p-3 xl:w-auto"
         data-testid="triage-rail"
       >
         <div className="px-2 pt-1 pb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
@@ -529,6 +650,63 @@ export function TriagePage(): JSX.Element {
           </div>
         )}
 
+        {/* Saved views — §14.6 tag-backed entries with viewer-
+            filtered counts. Each tag is a first-class rail row;
+            clicking jumps the view to `tag:<id>` and the list
+            scope renders the matching rows (server-side narrowing
+            lands when the list endpoint accepts `tag_ids`). */}
+        {(tags.data?.length ?? 0) > 0 && (
+          <>
+            <Separator className="my-3" />
+            <button
+              type="button"
+              data-testid="triage-rail-saved-toggle"
+              data-open={savedOpen ? "true" : "false"}
+              onClick={() => setSavedOpen((v) => !v)}
+              className="flex items-center gap-1.5 px-2 pb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground"
+            >
+              {savedOpen ? (
+                <IconChevronDown className="size-3.5" />
+              ) : (
+                <IconChevronRight className="size-3.5" />
+              )}
+              <IconHash className="size-3.5" /> Saved views
+            </button>
+            {savedOpen &&
+              (tags.data ?? []).map((t) => {
+                const id = `tag:${t.id}` as TriageView;
+                const active = view === id;
+                return (
+                  <button
+                    key={t.id}
+                    type="button"
+                    data-testid={`triage-saved-${t.id}`}
+                    data-active={active ? "true" : undefined}
+                    onClick={() => goToView(id)}
+                    className={`flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors ${
+                      active
+                        ? "bg-primary/10 text-foreground font-medium"
+                        : "text-muted-foreground hover:bg-accent hover:text-foreground"
+                    }`}
+                    title={t.description ?? t.name}
+                  >
+                    <span
+                      className="size-2 shrink-0 rounded-full"
+                      style={{ backgroundColor: t.color }}
+                    />
+                    <span className="flex-1 truncate">{t.name}</span>
+                    <Badge
+                      variant="secondary"
+                      className="h-5 min-w-5 justify-center px-1.5 text-[10px]"
+                    >
+                      {t.visible_link_count > 99 ? "99+" : t.visible_link_count}
+                    </Badge>
+                  </button>
+                );
+              })}
+          </>
+        )}
+
         {repoPins.length > 0 && (
           <>
             <Separator className="my-3" />
@@ -550,12 +728,11 @@ export function TriagePage(): JSX.Element {
             </button>
             {repoPins.map((p) => {
               const active = repoId === p.target_id;
-              // PinDto has no human-readable label — the sidebar
-              // resolves it via a per-repo lookup. For the rail we
-              // show the short id; the active repo also appears as
-              // the middle-pane header subtitle so the user sees
-              // the canonical name in the slug column.
-              const label = p.target_id.slice(0, 8);
+              // §14.6 — `PinDto` has no denormalised label so we
+              // resolve `owner/repo` from the repo list. Fall back
+              // to the short id only when the repo isn't on the
+              // first page (rare; the list is capped at 200).
+              const label = repoLabelById.get(p.target_id) ?? p.target_id.slice(0, 8);
               return (
                 <button
                   key={p.target_id}
@@ -576,6 +753,16 @@ export function TriagePage(): JSX.Element {
           </>
         )}
       </aside>
+
+      <div className="hidden xl:block">
+        <SplitHandle
+          side="left"
+          width={railWidth}
+          setWidth={setRailWidth}
+          min={160}
+          max={420}
+        />
+      </div>
 
       {/* ──────────────── MIDDLE: ISSUE LIST ──────────────── */}
       <section
@@ -621,6 +808,17 @@ export function TriagePage(): JSX.Element {
               <option value="created_desc">Number · newest</option>
               <option value="number_asc">Number · oldest</option>
             </select>
+            <Button
+              variant={showDueColumn ? "secondary" : "ghost"}
+              size="sm"
+              onClick={() => setShowDueColumn((v) => !v)}
+              data-testid="triage-due-toggle"
+              data-active={showDueColumn ? "true" : "false"}
+              title="Toggle Due column (g d)"
+            >
+              <IconCalendarDue className="mr-1 size-4" />
+              <span className="hidden sm:inline">Due</span>
+            </Button>
             <Button
               variant="ghost"
               size="sm"
@@ -788,6 +986,36 @@ export function TriagePage(): JSX.Element {
                     {row.assignees.length > 2 && ` +${row.assignees.length - 2}`}
                   </span>
                 )}
+                {showDueColumn && (() => {
+                  const due = datesById.get(row.id)?.due_at ?? null;
+                  if (!due) {
+                    return (
+                      <span
+                        className="shrink-0 text-xs text-muted-foreground/60 tabular-nums"
+                        data-testid="triage-row-due"
+                        data-due="none"
+                      >
+                        —
+                      </span>
+                    );
+                  }
+                  const t = new Date(due).getTime();
+                  const overdue = Number.isFinite(t) && t < Date.now();
+                  return (
+                    <span
+                      className={`shrink-0 text-xs tabular-nums ${
+                        overdue
+                          ? "text-destructive font-medium"
+                          : "text-muted-foreground"
+                      }`}
+                      data-testid="triage-row-due"
+                      data-due={overdue ? "overdue" : "future"}
+                      title={due}
+                    >
+                      {formatDueLabel(due)}
+                    </span>
+                  );
+                })()}
                 <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
                   {formatRelative(row.updated_at)}
                 </span>
@@ -833,6 +1061,18 @@ export function TriagePage(): JSX.Element {
           })}
         </ol>
       </section>
+
+      {selectedIssueId && (
+        <div className="hidden xl:block">
+          <SplitHandle
+            side="right"
+            width={peekWidth}
+            setWidth={setPeekWidth}
+            min={320}
+            max={720}
+          />
+        </div>
+      )}
 
       {/* ──────────────── RIGHT: PEEK PANEL ──────────────── */}
       {/* Always rendered on xl+; on smaller screens we hide it and
@@ -994,6 +1234,8 @@ export function TriagePage(): JSX.Element {
             <dd>Mark done</dd>
             <dt className="font-mono text-muted-foreground">h</dt>
             <dd>Snooze 1 day</dd>
+            <dt className="font-mono text-muted-foreground">g d</dt>
+            <dd>Toggle Due column</dd>
             <dt className="font-mono text-muted-foreground">?</dt>
             <dd>Toggle this help</dd>
           </dl>
@@ -1009,6 +1251,24 @@ export function TriagePage(): JSX.Element {
  * The full timestamp is exposed via the row title attribute in
  * the peek panel.
  */
+/**
+ * Date label for the `Due` column — short, comparable, locale-
+ * aware. Past-due rows render as e.g. `-3d`; future ones as
+ * `Apr 12` so the day is unambiguous across week boundaries.
+ */
+function formatDueLabel(iso: string): string {
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return "";
+  const days = Math.round((t - Date.now()) / (24 * 60 * 60 * 1000));
+  if (days < 0) return `${days}d`;
+  if (days === 0) return "today";
+  if (days <= 7) return `${days}d`;
+  return new Date(iso).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+  });
+}
+
 function formatRelative(iso: string): string {
   const t = new Date(iso).getTime();
   if (!Number.isFinite(t)) return "";
@@ -1135,3 +1395,107 @@ function CommandPalette({
     </Dialog>
   );
 }
+
+
+// ---------------------------------------------------------------------------
+// localStorage helpers — used by the splitter widths and the `Due`
+// column toggle. The pref keys live under the `dp:triage:*` prefix so
+// a future "reset triage layout" affordance can wipe them in one go.
+// ---------------------------------------------------------------------------
+
+const PREF_PREFIX = "dp:triage:";
+
+function readBoolPref(key: string, fallback: boolean): boolean {
+  if (typeof window === "undefined") return fallback;
+  try {
+    const v = window.localStorage.getItem(PREF_PREFIX + key);
+    if (v === null) return fallback;
+    return v === "1" || v === "true";
+  } catch {
+    return fallback;
+  }
+}
+
+function writeBoolPref(key: string, value: boolean): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(PREF_PREFIX + key, value ? "1" : "0");
+  } catch {
+    /* quota / disabled — pref is in-memory only this session */
+  }
+}
+
+function readNumberPref(key: string, fallback: number): number {
+  if (typeof window === "undefined") return fallback;
+  try {
+    const v = window.localStorage.getItem(PREF_PREFIX + key);
+    if (v === null) return fallback;
+    const n = Number.parseFloat(v);
+    return Number.isFinite(n) ? n : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function writeNumberPref(key: string, value: number): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(PREF_PREFIX + key, String(value));
+  } catch {
+    /* see writeBoolPref */
+  }
+}
+
+/**
+ * Vertical drag-handle that resizes the pane to its left (or right —
+ * see `side`). Pointer-events-only so it works under mouse and touch
+ * without dragging in a third-party splitter library.
+ */
+function SplitHandle({
+  side,
+  width,
+  setWidth,
+  min,
+  max,
+}: {
+  side: "left" | "right";
+  width: number;
+  setWidth: (n: number) => void;
+  min: number;
+  max: number;
+}): JSX.Element {
+  const draggingRef = useRef(false);
+  const startXRef = useRef(0);
+  const startWRef = useRef(width);
+  const onDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    draggingRef.current = true;
+    startXRef.current = e.clientX;
+    startWRef.current = width;
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    e.preventDefault();
+  };
+  const onMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!draggingRef.current) return;
+    const dx = e.clientX - startXRef.current;
+    const signed = side === "left" ? dx : -dx;
+    const next = Math.min(max, Math.max(min, startWRef.current + signed));
+    setWidth(next);
+  };
+  const onUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    draggingRef.current = false;
+    (e.target as HTMLElement).releasePointerCapture(e.pointerId);
+  };
+  return (
+    <div
+      role="separator"
+      aria-orientation="vertical"
+      data-testid={`triage-split-${side}`}
+      className="w-1 cursor-col-resize bg-transparent hover:bg-primary/40 transition-colors"
+      onPointerDown={onDown}
+      onPointerMove={onMove}
+      onPointerUp={onUp}
+      onPointerCancel={onUp}
+    />
+  );
+}
+

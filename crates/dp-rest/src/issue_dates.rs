@@ -31,7 +31,7 @@ use async_trait::async_trait;
 use axum::{
     extract::{Extension, Path, State},
     response::Json,
-    routing::patch,
+    routing::{get, patch},
     Router,
 };
 use chrono::{DateTime, Utc};
@@ -348,6 +348,49 @@ pub async fn patch_issue_dates(
     Ok(Json(IssueDatesDto::from(dates)))
 }
 
+/// `GET /issues/{id}/dates` — read the local `dp_issue_dates` row
+/// for an issue. Returns `200 { issue_id, start_at: null, due_at:
+/// null, … }` with all nullable fields set when no row exists, so
+/// the frontend can render the picker uniformly. Authorisation:
+/// the same `(issues, read)` pair the rest of the read surface uses
+/// — read-only and per-org, the picker is also visible to viewers
+/// who cannot write.
+#[utoipa::path(
+    get,
+    path = "/issues/{id}/dates",
+    params(("id" = Uuid, Path, description = "Issue id")),
+    responses(
+        (status = 200, description = "Local dates row (zero-valued when unset)", body = IssueDatesDto),
+        (status = 404, description = "No such issue"),
+    ),
+    tag = "issues",
+)]
+pub async fn get_issue_dates(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<IssueDatesDto>, ApiError> {
+    let issue = state
+        .store
+        .get_issue(id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound {
+            code: "issue_not_found",
+            message: format!("no issue with id {id}"),
+        })?;
+    match state.store.get_issue_dates(id).await? {
+        Some(d) => Ok(Json(IssueDatesDto::from(d))),
+        None => Ok(Json(IssueDatesDto {
+            issue_id: issue.id,
+            start_at: None,
+            due_at: None,
+            mirror_node_id: None,
+            mirror_synced_at: None,
+            mirror_error: None,
+            updated_at: issue.updated_at,
+        })),
+    }
+}
+
 /// The Projects v2 GraphQL surface needs an *issue* node id
 /// (`I_...`), not the numeric `dp_issues.github_id`. We do not
 /// currently persist the node id on `dp_issues`, so for now we
@@ -370,6 +413,15 @@ pub fn issue_dates_router(state: Arc<AppState>) -> Router {
     use starter_authz::with_permission;
     let inner: AppState = (*state).clone();
     Router::new()
+        // Read surface — gated on (issues, read) so viewers can see
+        // existing start/due dates on the §3.10 picker even without
+        // write access. The PATCH below keeps the (issues, write)
+        // gate intact.
+        .merge(with_permission(
+            Router::new().route("/issues/{id}/dates", get(get_issue_dates)),
+            "issues",
+            "read",
+        ))
         .merge(with_permission(
             Router::new().route("/issues/{id}/dates", patch(patch_issue_dates)),
             "issues",

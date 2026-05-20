@@ -105,17 +105,33 @@ export function workflowTabOf(route: string): WorkflowTab {
 /** Smart-view identifier inside the triage page
  *  (`linear-projects-idea.md` §3.5). Lives in the URL query as
  *  `?view=...` so a deep-linked rail selection round-trips. */
-export type TriageView = "mine" | "untriaged" | "all" | "snoozed";
+/** Smart-view identifier. The four built-ins plus two date-driven
+ *  views (`due_week` / `overdue`, §3.10) and a saved-view escape
+ *  hatch (`tag:<uuid>`, §14.6) that maps onto a single tag-backed
+ *  list. The `tag:<uuid>` form is opaque to the router — it falls
+ *  through to the runtime check in `triage-page.tsx`. */
+export type TriageView =
+  | "mine"
+  | "untriaged"
+  | "all"
+  | "snoozed"
+  | "due_week"
+  | "overdue"
+  | `tag:${string}`;
 
 /** Parse `#/workflow/triage?view=...` → the active smart view. */
 export function triageView(route: string): TriageView {
   const q = route.indexOf("?");
   if (q < 0) return "mine";
   const v = new URLSearchParams(route.slice(q + 1)).get("view");
+  if (!v) return "mine";
+  if (v.startsWith("tag:")) return v as TriageView;
   switch (v) {
     case "untriaged":
     case "all":
     case "snoozed":
+    case "due_week":
+    case "overdue":
       return v;
     case "mine":
     default:

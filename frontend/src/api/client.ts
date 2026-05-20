@@ -451,6 +451,30 @@ export const UpdateIssueRequestSchema = z.object({
 });
 export type UpdateIssueRequest = z.infer<typeof UpdateIssueRequestSchema>;
 
+// --- Issue dates (linear-projects-idea.md §3.10) -------------------------
+//
+// Local-first start / due dates with a best-effort Projects v2 mirror.
+// `start_at` / `due_at` are nullable on the wire and uniformly serialised
+// — clearing a side is just `{ start_at: null }`. The server returns the
+// canonical row on GET (zero-filled when no row exists) and PATCH.
+
+export const IssueDatesDtoSchema = z.object({
+  issue_id: uuid,
+  start_at: isoDateTime.nullable().optional(),
+  due_at: isoDateTime.nullable().optional(),
+  mirror_node_id: z.string().nullable().optional(),
+  mirror_synced_at: isoDateTime.nullable().optional(),
+  mirror_error: z.string().nullable().optional(),
+  updated_at: isoDateTime,
+});
+export type IssueDatesDto = z.infer<typeof IssueDatesDtoSchema>;
+
+export const PatchIssueDatesRequestSchema = z.object({
+  start_at: isoDateTime.nullable().optional(),
+  due_at: isoDateTime.nullable().optional(),
+});
+export type PatchIssueDatesRequest = z.infer<typeof PatchIssueDatesRequestSchema>;
+
 export const CreateCommentRequestSchema = z.object({
   expected_version: z.number().int(),
   body: z.string().min(1),
@@ -1122,6 +1146,30 @@ export class DevPulseApi {
       `/issues/${encodeURIComponent(id)}`,
       req,
       IssueDtoSchema,
+    );
+  }
+
+  /** `GET /issues/{id}/dates` — caller-readable §3.10 dates row.
+   *  Returns zero-filled fields when no row exists yet so the UI
+   *  picker never has to special-case "missing row". */
+  async getIssueDates(id: string): Promise<IssueDatesDto> {
+    return this.getJson(
+      `/issues/${encodeURIComponent(id)}/dates`,
+      IssueDatesDtoSchema,
+    );
+  }
+
+  /** `PATCH /issues/{id}/dates` — local upsert with best-effort
+   *  Projects v2 mirror. Pass `{ start_at: null }` to clear a side. */
+  async patchIssueDates(
+    id: string,
+    req: PatchIssueDatesRequest,
+  ): Promise<IssueDatesDto> {
+    return this.sendJson(
+      "PATCH",
+      `/issues/${encodeURIComponent(id)}/dates`,
+      req,
+      IssueDatesDtoSchema,
     );
   }
 

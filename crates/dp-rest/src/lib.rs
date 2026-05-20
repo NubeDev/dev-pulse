@@ -75,7 +75,8 @@ pub use issues::{
     sweep_pending_remote_timeouts, AcquireOutcome, AcquiredSlot, SweepReport,
 };
 pub use issue_dates::{
-    issue_dates_router, patch_issue_dates, IssueDatesDto, MirrorDatesOk, MirrorError,
+    get_issue_dates, issue_dates_router, patch_issue_dates, IssueDatesDto, MirrorDatesOk,
+    MirrorError,
     PatchIssueDatesRequest, ProjectV2MirrorBackend, UnconfiguredProjectV2Mirror,
 };
 pub use issues_write::{

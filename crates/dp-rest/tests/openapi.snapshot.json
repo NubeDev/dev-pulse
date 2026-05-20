@@ -471,6 +471,40 @@
       }
     },
     "/issues/{id}/dates": {
+      "get": {
+        "tags": [
+          "issues"
+        ],
+        "summary": "`GET /issues/{id}/dates` — read the local `dp_issue_dates` row\nfor an issue. Returns `200 { issue_id, start_at: null, due_at:\nnull, … }` with all nullable fields set when no row exists, so\nthe frontend can render the picker uniformly. Authorisation:\nthe same `(issues, read)` pair the rest of the read surface uses\n— read-only and per-org, the picker is also visible to viewers\nwho cannot write.",
+        "operationId": "get_issue_dates",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Issue id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Local dates row (zero-valued when unset)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssueDatesDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such issue"
+          }
+        }
+      },
       "patch": {
         "tags": [
           "issues"
