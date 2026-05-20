@@ -61,7 +61,7 @@ function mockAuthPlugin(): Plugin {
   };
 }
 
-// dp-server listens on :3000 in dev (see crates/dp-server). Proxy the
+// dp-server listens on :8731 in dev (Makefile BACK_PORT). Proxy the
 // REST surfaces (auth from starter-auth-users, reports/directory/admin
 // from dp-rest, plus /health and /openapi.json) so cookies + same-origin
 // work without backend CORS config — matches the notes example pattern.
@@ -81,18 +81,19 @@ export default defineConfig({
     },
   },
   server: {
-    port: 5173,
+    port: 8732,
+    strictPort: true,
     // In mock mode the middleware above handles /auth/*; only proxy
     // when talking to a real Rust backend.
     proxy: useMocks
       ? {}
       : {
-          "/auth": "http://localhost:3000",
-          "/reports": "http://localhost:3000",
-          "/directory": "http://localhost:3000",
-          "/admin": "http://localhost:3000",
-          "/health": "http://localhost:3000",
-          "/openapi.json": "http://localhost:3000",
+          "/auth": "http://localhost:8731",
+          "/reports": "http://localhost:8731",
+          "/directory": "http://localhost:8731",
+          "/admin": "http://localhost:8731",
+          "/health": "http://localhost:8731",
+          "/openapi.json": "http://localhost:8731",
         },
   },
 });

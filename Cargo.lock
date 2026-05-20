@@ -585,6 +585,7 @@ dependencies = [
  "async-trait",
  "axum",
  "clap",
+ "dp-domain",
  "dp-fetcher",
  "dp-server",
  "dp-store-pg",
@@ -604,6 +605,7 @@ dependencies = [
  "tokio",
  "toml",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

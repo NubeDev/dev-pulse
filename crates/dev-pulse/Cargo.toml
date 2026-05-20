@@ -17,6 +17,7 @@ path = "src/main.rs"
 dp-server   = { workspace = true }
 dp-fetcher  = { workspace = true }
 dp-store-pg = { workspace = true }
+dp-domain   = { workspace = true }
 
 # starter crates — `dev-pulse` (the bin) and `dp-server` are the two
 # crates allowed to import the starter composition pieces per the
@@ -46,7 +47,8 @@ prometheus  = { workspace = true }
 secrecy     = "0.10"
 serde       = { workspace = true }
 serde_json  = { workspace = true }
-sqlx        = { workspace = true, features = ["sqlite", "macros", "migrate"] }
+sqlx        = { workspace = true, features = ["sqlite", "postgres", "macros", "migrate", "uuid"] }
+uuid        = { workspace = true }
 tokio       = { workspace = true }
 toml        = "0.8"
 tracing     = { workspace = true }

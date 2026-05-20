@@ -7,8 +7,11 @@
 # of the CLI (migrate / fetch-now / backfill / claim).
 
 [server]
-listen = "127.0.0.1:8080"
-base_url = "http://localhost:8080"
+# The frontend's Vite dev server proxies /auth, /reports, /directory,
+# /admin, /health, /openapi.json to localhost:8731 — keep these in
+# sync with frontend/vite.config.ts and the Makefile's BACK_PORT.
+listen = "127.0.0.1:8731"
+base_url = "http://localhost:8731"
 default_return_to = "/"
 
 [postgres]
@@ -42,7 +45,32 @@ org_refresh_interval_secs = 3600
 # Scheduler ignores ticks while a previous one is still running, so
 # a missed deadline doesn't pile up.
 tick_interval_secs = 300
-# Set `true` once Phase 6 wires real GitHub App credentials into
-# the bin layer. Phase 4 ships with this `false` so the dormant
-# tick loop does not hammer the API with a token-less Client.
+# If `true` *and* `[github].token_ref` resolves to a non-empty value,
+# the reconciler tick loop runs on the schedule above. If the token
+# is missing, the bin force-overrides this to `false` and logs a
+# warning, so a misconfigured deployment doesn't hammer GitHub with
+# a token-less client.
 enable = false
+
+[github]
+# Fetcher-side GitHub credentials. Distinct from `[auth.github]`,
+# which is the *operator OAuth* config — this one is the token the
+# reconciler and backfill use to call the GitHub REST API.
+#
+# Per SCOPE §15.1 the v1 production path is a GitHub App. PAT is the
+# Phase 6 stepping stone: set `token_ref` to a `secret://` handle
+# pointing at a classic / fine-grained PAT to arm the fetcher today.
+# Leave commented out (or set to an empty string) to keep the
+# fetcher dormant.
+token_ref = "secret://github/pat"
+# REST API base URL. Override only for GitHub Enterprise or a
+# wiremock fixture; the public hostname is the default.
+# base_url = "https://api.github.com"
+#
+# Local per-run request budget — the operator-side fuse against a
+# runaway reconciler tick. After this many GitHub HTTP calls in a
+# single run, the wrapper returns `BudgetExhausted` and the run
+# stops cleanly. `0` disables the fuse (relies on GitHub's own
+# 5000 req/h primary bucket). Default 200 — bump once a deployment
+# knows its real per-tick cost.
+max_requests_per_run = 200

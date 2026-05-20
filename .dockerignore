@@ -1,0 +1,13 @@
+target
+node_modules
+frontend/node_modules
+frontend/dist
+frontend/test-results
+frontend/playwright-report
+frontend/.playwright
+.run
+.env
+.env.local
+config.local.toml
+.git
+runs

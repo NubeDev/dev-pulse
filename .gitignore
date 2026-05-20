@@ -3,6 +3,16 @@ Cargo.lock.bak
 *.swp
 .DS_Store
 
+# Local secrets — `secret://NAME` handles in config.toml resolve to
+# env vars; `.env` is the conventional way to seed them. See
+# .env.example for the keys; real values never go in git.
+.env
+.env.local
+
+# Makefile runtime — PID files, logs, and the local config copy.
+.run
+config.local.toml
+
 # frontend (Vite + pnpm). Ignore node_modules only — keep dist out of
 # git too via Vite's own outDir; we serve it from the Rust binary at
 # build time, not from version control.
@@ -14,3 +24,5 @@ frontend/dist
 frontend/test-results
 frontend/playwright-report
 frontend/.playwright
+auth.db-shm
+auth.db-wal

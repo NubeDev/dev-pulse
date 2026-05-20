@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: dev-pulse-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: dev-pulse
+      POSTGRES_PASSWORD: devpass
+      POSTGRES_DB: dev_pulse
+    ports:
+      - "5432:5432"
+    volumes:
+      - dev-pulse-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dev-pulse -d dev_pulse"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  dev-pulse-pgdata:

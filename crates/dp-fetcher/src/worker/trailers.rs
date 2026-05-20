@@ -76,12 +76,13 @@ pub fn parse_coauthors(message: &str) -> Vec<CoAuthor> {
 }
 
 fn strip_prefix_ci<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
-    if s.len() < prefix.len() {
-        return None;
-    }
-    let (head, tail) = s.split_at(prefix.len());
+    // `split_at` would panic if `prefix.len()` falls inside a
+    // multi-byte char (e.g. a commit message body containing `→`
+    // before the byte-count boundary). Use `get(..n)` which returns
+    // `None` instead of panicking on a non-char boundary.
+    let head = s.get(..prefix.len())?;
     if head.eq_ignore_ascii_case(prefix) {
-        Some(tail)
+        Some(&s[prefix.len()..])
     } else {
         None
     }

@@ -1,0 +1,65 @@
+# Full-stack compose for dev-pulse: postgres + backend + frontend.
+#
+# Build context is `..` (the parent directory) so the Rust workspace
+# and pnpm workspace can both reach the sibling `../starter` checkout.
+# Run from this directory:
+#
+#   docker compose up -d --build
+#
+# Then:
+#   frontend → http://localhost:8732
+#   backend  → http://localhost:8731
+#   postgres → localhost:5432  (user: dev-pulse / pw: devpass / db: dev_pulse)
+#
+# Secrets that the example config references via `secret://...` come
+# from the local `.env` file (see .env.example). Compose loads `.env`
+# from this directory automatically.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: dev-pulse-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: dev-pulse
+      POSTGRES_PASSWORD: devpass
+      POSTGRES_DB: dev_pulse
+    ports:
+      - "5432:5432"
+    volumes:
+      - dev-pulse-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dev-pulse -d dev_pulse"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ..
+      dockerfile: dev-pulse/Dockerfile.backend
+    container_name: dev-pulse-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      GITHUB_PAT: ${GITHUB_PAT:-}
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
+      OAUTH_GITHUB_CLIENT_SECRET: ${OAUTH_GITHUB_CLIENT_SECRET:-}
+    ports:
+      - "8731:8731"
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: dev-pulse/Dockerfile.frontend
+    container_name: dev-pulse-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "8732:80"
+
+volumes:
+  dev-pulse-pgdata:

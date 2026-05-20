@@ -36,6 +36,7 @@
 pub mod credentials;
 pub mod ratelimit;
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -124,6 +125,17 @@ pub enum ClientError {
     /// JWT minting / private-key parsing failed at construction.
     #[error(transparent)]
     Jwt(#[from] JwtError),
+    /// The local per-run request budget on this `Client` was hit
+    /// (operator-side fuse, not a GitHub-side limit). The caller
+    /// should stop the current run; another can start later. See
+    /// [`Client::with_budget`].
+    #[error("local request budget exhausted: made {made} of max {max}")]
+    BudgetExhausted {
+        /// Requests issued in this run before the fuse blew.
+        made: u64,
+        /// The configured ceiling.
+        max: u64,
+    },
 }
 
 /// The single GitHub HTTP client used by `dp-fetcher`. Cheap to
@@ -134,6 +146,24 @@ pub struct Client {
     /// We hold a tiny stub for the bin layer's diagnostics — the
     /// reconciler logs which installation it's calling against.
     installation_id: Option<u64>,
+    /// Total GitHub HTTP calls this `Client` has dispatched since
+    /// the last [`Client::reset_budget`]. Shared between clones —
+    /// the budget is a property of the underlying connection /
+    /// credential, not of an individual handle.
+    requests_made: Arc<AtomicU64>,
+    /// Optional ceiling enforced *before* each call. `None` = no
+    /// local fuse (rely solely on GitHub's `X-RateLimit-*` headers).
+    /// `Some(n)` = after `n` issued requests, every subsequent call
+    /// returns [`ClientError::BudgetExhausted`] until the caller
+    /// invokes [`Client::reset_budget`].
+    ///
+    /// This is the operator-side fuse the README + SCOPE §15.4 lean
+    /// on — GitHub's per-hour quota is 5000 against this PAT bucket,
+    /// but a runaway reconciler tick should not be allowed to spend
+    /// even half of that in one go. A typical setting is `max = 50`
+    /// for a check / smoke and `max = 500` for a real production
+    /// tick.
+    max_requests: Option<u64>,
 }
 
 impl Client {
@@ -164,6 +194,8 @@ impl Client {
         Ok(Self {
             inner: Arc::new(installed),
             installation_id: Some(creds.installation_id),
+            requests_made: Arc::new(AtomicU64::new(0)),
+            max_requests: None,
         })
     }
 
@@ -180,6 +212,8 @@ impl Client {
         Ok(Self {
             inner: Arc::new(crab),
             installation_id: None,
+            requests_made: Arc::new(AtomicU64::new(0)),
+            max_requests: None,
         })
     }
 
@@ -187,6 +221,37 @@ impl Client {
     /// for log/metric labels only — callers must not branch on it.
     pub fn installation_id(&self) -> Option<u64> {
         self.installation_id
+    }
+
+    /// Install a local per-run request ceiling. `Some(n)` enforces a
+    /// fuse: after `n` calls, every subsequent dispatch returns
+    /// [`ClientError::BudgetExhausted`] until [`Self::reset_budget`].
+    /// `None` removes the fuse (default).
+    ///
+    /// The ceiling is checked *before* the HTTP dispatch, so a tick
+    /// that would issue more calls than the budget allows stops at
+    /// exactly the budget — it does not race past by one.
+    pub fn with_budget(mut self, max: Option<u64>) -> Self {
+        self.max_requests = max;
+        self
+    }
+
+    /// Reset the per-run counter to zero. Called by the reconciler
+    /// at the start of each tick (and by the backfill driver at the
+    /// start of each batch) so the budget is per-run, not per-process.
+    pub fn reset_budget(&self) {
+        self.requests_made.store(0, Ordering::SeqCst);
+    }
+
+    /// Total GitHub HTTP calls issued since the last `reset_budget`.
+    /// Exposed for run-log telemetry.
+    pub fn requests_made(&self) -> u64 {
+        self.requests_made.load(Ordering::SeqCst)
+    }
+
+    /// The configured ceiling, if any.
+    pub fn max_requests(&self) -> Option<u64> {
+        self.max_requests
     }
 
     /// Conditional GET. If `etag` is supplied it is sent as
@@ -200,6 +265,18 @@ impl Client {
         path: &str,
         etag: Option<&str>,
     ) -> Result<Fetched<T>, ClientError> {
+        // Local fuse: check the budget *before* incrementing so we
+        // stop at exactly N, never N+1. The increment after the
+        // check is `fetch_add` so concurrent calls from cloned
+        // Clients can't both slip past the same boundary.
+        if let Some(max) = self.max_requests {
+            let made = self.requests_made.load(Ordering::SeqCst);
+            if made >= max {
+                return Err(ClientError::BudgetExhausted { made, max });
+            }
+        }
+        let _seq = self.requests_made.fetch_add(1, Ordering::SeqCst);
+
         let mut headers = HeaderMap::new();
         if let Some(tag) = etag {
             headers.insert(

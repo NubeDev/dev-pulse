@@ -62,6 +62,7 @@ use starter_observability::metrics::StandardMetrics;
 use starter_observability::tracing::Format;
 use starter_spi::auth::Authenticator;
 use tokio::sync::watch;
+use uuid::Uuid;
 
 use dp_server::auth::{
     config::GitHubAuthConfig, load_static_engine, register_dev_pulse_resources,
@@ -87,6 +88,64 @@ struct DevPulseConfig {
     auth: AuthSection,
     #[serde(default)]
     scheduler: SchedulerSection,
+    #[serde(default)]
+    github: GithubSection,
+}
+
+/// Fetcher-side GitHub credentials. Separate from `[auth.github]`,
+/// which is the *operator OAuth* config — this one is the token the
+/// reconciler / backfill use to call the GitHub REST API.
+///
+/// `token_ref` follows the same `secret://` / `file:` / literal
+/// handle syntax as the other secret fields. When unset (or resolves
+/// to an empty string), the fetcher builds a token-less placeholder
+/// Client and the scheduler stays dormant regardless of
+/// `[scheduler].enable` — `POST /admin/refresh` still answers but
+/// does no real work, which matches the pre-PAT Phase 4 behaviour.
+///
+/// Per SCOPE §15.1 the *production* path is a GitHub App, not a PAT
+/// — `token_ref` is the Phase 6 stepping stone that lets an operator
+/// drive the fetcher with a classic / fine-grained PAT until the App
+/// installation seam lands.
+#[derive(Debug, Deserialize)]
+struct GithubSection {
+    /// Secret handle for the fetcher's GitHub access token (PAT).
+    /// Optional; absent → dormant fetcher.
+    #[serde(default)]
+    token_ref: Option<String>,
+    /// REST API base URL. Override only for testing against a
+    /// GitHub Enterprise host or a wiremock fixture.
+    #[serde(default = "default_github_base_url")]
+    base_url: String,
+    /// Local per-run request budget — the operator-side fuse against
+    /// runaway reconciler ticks. After this many GitHub HTTP calls,
+    /// the wrapper returns `BudgetExhausted` and the run stops. `0`
+    /// disables the fuse (rely solely on GitHub's own quota). The
+    /// default is conservative — bump it once a deployment knows its
+    /// real per-tick cost.
+    #[serde(default = "default_max_requests_per_run")]
+    max_requests_per_run: u64,
+}
+
+fn default_max_requests_per_run() -> u64 {
+    // 200 is well below the 5000/h primary bucket per SCOPE §15.4 and
+    // covers a reconciler tick over ~30 repos at ~5 endpoints each
+    // with no pagination. Real production deployments should tune.
+    200
+}
+
+fn default_github_base_url() -> String {
+    "https://api.github.com".to_string()
+}
+
+impl Default for GithubSection {
+    fn default() -> Self {
+        Self {
+            token_ref: None,
+            base_url: default_github_base_url(),
+            max_requests_per_run: default_max_requests_per_run(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -185,11 +244,131 @@ async fn main() -> Result<()> {
                         .required(true)
                         .help("Path to the dev-pulse TOML config."),
                 ),
+        )
+        .subcommand(
+            Command::new("migrate")
+                .about(
+                    "Apply the dp-data Postgres migrations (and the \
+                     starter-auth-{users,oauth} SQLite migrations).",
+                )
+                .arg(
+                    Arg::new("config")
+                        .long("config")
+                        .required(true)
+                        .help("Path to the dev-pulse TOML config."),
+                ),
+        )
+        .subcommand(
+            Command::new("add-org")
+                .about(
+                    "Resolve a GitHub org (or user account) and upsert it \
+                     into dp_orgs so the reconciler will tick its repos.",
+                )
+                .arg(
+                    Arg::new("config")
+                        .long("config")
+                        .required(true)
+                        .help("Path to the dev-pulse TOML config."),
+                )
+                .arg(
+                    Arg::new("login")
+                        .required(true)
+                        .help("GitHub login (e.g. `nube-io` or `NubeDev`)."),
+                ),
+        )
+        .subcommand(
+            Command::new("add-repo")
+                .about(
+                    "Resolve a GitHub repo and upsert it (plus its owning \
+                     org if missing) so the reconciler will tick it.",
+                )
+                .arg(
+                    Arg::new("config")
+                        .long("config")
+                        .required(true)
+                        .help("Path to the dev-pulse TOML config."),
+                )
+                .arg(
+                    Arg::new("repo")
+                        .required(true)
+                        .help("`owner/repo` (e.g. `nube-io/dev-pulse`)."),
+                ),
+        )
+        .subcommand(
+            Command::new("create-admin")
+                .about(
+                    "Seed an email+password admin user in the auth.db \
+                     (break-glass / dev path — SCOPE §15.10). The \
+                     frontend's login form posts to /auth/login with \
+                     these credentials.",
+                )
+                .arg(
+                    Arg::new("config")
+                        .long("config")
+                        .required(true)
+                        .help("Path to the dev-pulse TOML config."),
+                )
+                .arg(
+                    Arg::new("email")
+                        .long("email")
+                        .required(true)
+                        .help("Operator email."),
+                )
+                .arg(
+                    Arg::new("password")
+                        .long("password")
+                        .required(true)
+                        .help("Operator password (min length from env / starter defaults)."),
+                ),
+        )
+        .subcommand(
+            Command::new("fetch-now")
+                .about(
+                    "Run one reconciler tick against the registered \
+                     targets and exit. No HTTP server, no OAuth setup \
+                     required — just the PAT + Postgres.",
+                )
+                .arg(
+                    Arg::new("config")
+                        .long("config")
+                        .required(true)
+                        .help("Path to the dev-pulse TOML config."),
+                ),
+        )
+        .subcommand(
+            Command::new("list-targets")
+                .about("List the orgs + repos registered for reconciler ticks.")
+                .arg(
+                    Arg::new("config")
+                        .long("config")
+                        .required(true)
+                        .help("Path to the dev-pulse TOML config."),
+                ),
+        )
+        .subcommand(
+            Command::new("check-github")
+                .about(
+                    "Resolve [github].token_ref from config + env and call \
+                     GitHub `GET /user` to confirm the credentials work.",
+                )
+                .arg(
+                    Arg::new("config")
+                        .long("config")
+                        .required(true)
+                        .help("Path to the dev-pulse TOML config."),
+                ),
         );
 
     let matches = app.get_matches();
     match matches.subcommand() {
         Some(("serve", sub)) => run_serve(sub).await,
+        Some(("migrate", sub)) => run_migrate(sub).await,
+        Some(("add-org", sub)) => run_add_org(sub).await,
+        Some(("add-repo", sub)) => run_add_repo(sub).await,
+        Some(("create-admin", sub)) => run_create_admin(sub).await,
+        Some(("fetch-now", sub)) => run_fetch_now(sub).await,
+        Some(("list-targets", sub)) => run_list_targets(sub).await,
+        Some(("check-github", sub)) => run_check_github(sub).await,
         _ => {
             tracing::info!(
                 "dev-pulse: no subcommand. Phase 6 wires `migrate`, `fetch-now`, `backfill`, `claim`."
@@ -212,6 +391,14 @@ async fn run_serve(matches: &ArgMatches) -> Result<()> {
     // Fail loudly if the `[auth.github]` block is unusable — operators
     // who forget `client_id` discover it at boot, not via mysterious
     // 403s once the first user tries to log in.
+    //
+    // Escape hatch for local development without a real GitHub OAuth
+    // App: putting any non-empty placeholder in `client_id` /
+    // `client_secret_ref` satisfies the validator. The OAuth login
+    // flow itself won't work (GitHub will 401 the callback), but the
+    // server boots, `POST /auth/login` (email+password) works, and
+    // every protected route can be exercised via a `dev-pulse
+    // create-admin`-seeded session.
     cfg.auth.github.validate().context("auth.github config")?;
 
     tracing::info!(
@@ -230,14 +417,7 @@ async fn run_serve(matches: &ArgMatches) -> Result<()> {
     let sqlite_pool = starter_store_sqlite::pool::connect(&cfg.auth_sqlite.url)
         .await
         .with_context(|| format!("connect sqlite: {}", cfg.auth_sqlite.url))?;
-    AUTH_USERS_MIGRATOR
-        .run(sqlite_pool.sqlx())
-        .await
-        .context("apply starter_auth_users migrations")?;
-    AUTH_OAUTH_MIGRATOR
-        .run(sqlite_pool.sqlx())
-        .await
-        .context("apply starter_auth_oauth migrations")?;
+    apply_auth_sqlite_migrations(&sqlite_pool).await?;
 
     let users = Arc::new(starter_auth_users::store::SqliteUserStore::new(
         sqlite_pool.clone(),
@@ -343,8 +523,38 @@ async fn run_serve(matches: &ArgMatches) -> Result<()> {
     // tick loop can build its own owned `Scheduler` (the API consumes
     // `self` on `run`, which means we can't share the AppState
     // `Arc<Scheduler>` with the loop).
-    let reconciler =
-        build_reconciler(store.clone()).context("build reconciler")?;
+    // Resolve the optional fetcher PAT (SCOPE §15.1 stepping stone —
+    // production path is GitHub App). Empty / missing → dormant
+    // fetcher: the placeholder client is built but `[scheduler].enable`
+    // is force-overridden to `false` below so we don't tick a
+    // token-less client against the API.
+    let github_token = match cfg.github.token_ref.as_deref() {
+        Some(handle) if !handle.is_empty() => Some(
+            resolve_secret(handle).context("resolve github.token_ref")?,
+        ),
+        _ => None,
+    };
+    let fetcher_armed = github_token
+        .as_ref()
+        .map(|t| !t.is_empty())
+        .unwrap_or(false);
+    let budget = (cfg.github.max_requests_per_run > 0)
+        .then_some(cfg.github.max_requests_per_run);
+    if let Some(b) = budget {
+        tracing::info!(budget = b, "github request budget per run");
+    } else {
+        tracing::warn!(
+            "github.max_requests_per_run = 0 — local fuse disabled, \
+             relying solely on GitHub-side rate limit"
+        );
+    }
+    let reconciler = build_reconciler(
+        store.clone(),
+        github_token,
+        &cfg.github.base_url,
+        budget,
+    )
+    .context("build reconciler")?;
     let scheduler = Arc::new(dp_fetcher::reconciler::Scheduler::new(
         reconciler.clone(),
         Duration::from_secs(cfg.scheduler.tick_interval_secs),
@@ -381,7 +591,14 @@ async fn run_serve(matches: &ArgMatches) -> Result<()> {
     // server, scheduler, and any reconciler tick stop together.
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-    let sched_handle = if cfg.scheduler.enable {
+    let sched_enabled = cfg.scheduler.enable && fetcher_armed;
+    if cfg.scheduler.enable && !fetcher_armed {
+        tracing::warn!(
+            "scheduler.enable=true but github.token_ref is empty — \
+             forcing scheduler dormant to avoid token-less API calls"
+        );
+    }
+    let sched_handle = if sched_enabled {
         // `Scheduler::run(self, …)` consumes the receiver — the
         // AppState's `Arc<Scheduler>` is for `try_trigger_now`
         // (which takes `&self`), so the tick loop gets its own
@@ -437,23 +654,482 @@ async fn run_serve(matches: &ArgMatches) -> Result<()> {
     Ok(())
 }
 
+// ---------------------------------------------------------------- check-github
+
+/// Minimal "does my PAT work" smoke. Runs the same code path the
+/// server uses (config parse → `resolve_secret` → octocrab Client →
+/// `GET /user`) and prints the resolved GitHub identity. Exits
+/// non-zero if any step fails so it's CI-friendly.
+async fn run_check_github(matches: &ArgMatches) -> Result<()> {
+    let cfg_path = matches
+        .get_one::<String>("config")
+        .ok_or_else(|| anyhow!("--config is required"))?;
+    let raw = std::fs::read_to_string(cfg_path)
+        .with_context(|| format!("read config: {cfg_path}"))?;
+    let cfg: DevPulseConfig = toml::from_str(&raw).context("parse config TOML")?;
+
+    let handle = cfg
+        .github
+        .token_ref
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow!("[github].token_ref is missing or empty in {cfg_path}"))?;
+    let token = resolve_secret(handle).context("resolve github.token_ref")?;
+    if token.is_empty() {
+        return Err(anyhow!(
+            "[github].token_ref {handle:?} resolved to an empty string \
+             (env var or file is set but empty)"
+        ));
+    }
+
+    println!("config       : {cfg_path}");
+    println!("token handle : {handle}");
+    println!("base_url     : {}", cfg.github.base_url);
+    println!("calling GET {}/user ...", cfg.github.base_url);
+
+    let budget = (cfg.github.max_requests_per_run > 0)
+        .then_some(cfg.github.max_requests_per_run);
+    let client = dp_fetcher::client::Client::with_personal_token(
+        SecretString::from(token),
+        &cfg.github.base_url,
+    )
+    .map_err(|e| anyhow!("build github client: {e}"))?
+    .with_budget(budget);
+    println!(
+        "budget       : {}",
+        budget
+            .map(|b| b.to_string())
+            .unwrap_or_else(|| "disabled".into())
+    );
+
+    #[derive(Debug, serde::Deserialize)]
+    struct GhUser {
+        login: String,
+        id: u64,
+        #[serde(default)]
+        name: Option<String>,
+        #[serde(rename = "type")]
+        kind: String,
+    }
+
+    match client
+        .get_conditional::<GhUser>("/user", None)
+        .await
+        .context("GET /user")?
+    {
+        dp_fetcher::client::Fetched::Ok { body, signal, .. } => {
+            println!("\nOK — GitHub answered:");
+            println!("  login : {}", body.login);
+            println!("  id    : {}", body.id);
+            println!("  name  : {}", body.name.as_deref().unwrap_or("(unset)"));
+            println!("  type  : {}", body.kind);
+            if let Some(s) = signal {
+                println!("\nrate limit signal: {s:?}");
+            }
+            Ok(())
+        }
+        dp_fetcher::client::Fetched::NotModified { .. } => {
+            // Won't happen for a no-etag GET, but cover the branch.
+            Err(anyhow!("unexpected 304 from /user"))
+        }
+    }
+}
+
+// ---------------------------------------------------------------- migrate / targets
+
+/// Parse the config + connect to the dp-data Postgres pool. Shared
+/// by every subcommand that touches the DB.
+async fn load_cfg_and_pool(cfg_path: &str) -> Result<(DevPulseConfig, starter_store_postgres::Pool)> {
+    let raw = std::fs::read_to_string(cfg_path)
+        .with_context(|| format!("read config: {cfg_path}"))?;
+    let cfg: DevPulseConfig = toml::from_str(&raw).context("parse config TOML")?;
+    let pool = starter_store_postgres::pool::connect(&cfg.postgres.url)
+        .await
+        .with_context(|| format!("connect postgres: {}", cfg.postgres.url))?;
+    Ok((cfg, pool))
+}
+
+/// Build a PAT-backed octocrab Client from the config, honouring the
+/// budget. Used by `add-org` / `add-repo` so a registration call also
+/// counts against the operator-side fuse.
+fn build_pat_client(cfg: &DevPulseConfig) -> Result<dp_fetcher::client::Client> {
+    let handle = cfg
+        .github
+        .token_ref
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow!("[github].token_ref is missing or empty"))?;
+    let token = resolve_secret(handle).context("resolve github.token_ref")?;
+    if token.is_empty() {
+        return Err(anyhow!(
+            "[github].token_ref {handle:?} resolved to an empty string"
+        ));
+    }
+    let budget = (cfg.github.max_requests_per_run > 0)
+        .then_some(cfg.github.max_requests_per_run);
+    dp_fetcher::client::Client::with_personal_token(
+        SecretString::from(token),
+        &cfg.github.base_url,
+    )
+    .map_err(|e| anyhow!("build github client: {e}"))
+    .map(|c| c.with_budget(budget))
+}
+
+async fn run_migrate(matches: &ArgMatches) -> Result<()> {
+    let cfg_path = matches
+        .get_one::<String>("config")
+        .ok_or_else(|| anyhow!("--config is required"))?;
+    let (cfg, pool) = load_cfg_and_pool(cfg_path).await?;
+
+    println!("postgres : {}", cfg.postgres.url);
+    print!("applying dp/* migrations ... ");
+    let mut m = starter_store_postgres::migrate::migrate(&pool);
+    for s in dp_store_pg::sources() {
+        m = m.with_source(s);
+    }
+    m.run().await.context("run dp migrations")?;
+    println!("ok");
+
+    // Auth sidecar SQLite — same migrations the `serve` body runs on
+    // boot, but materialised here so an operator can verify the file
+    // separately.
+    println!("sqlite   : {}", cfg.auth_sqlite.url);
+    let sqlite_pool = starter_store_sqlite::pool::connect(&cfg.auth_sqlite.url)
+        .await
+        .with_context(|| format!("connect sqlite: {}", cfg.auth_sqlite.url))?;
+    print!("applying starter_auth_users + starter_auth_oauth ... ");
+    apply_auth_sqlite_migrations(&sqlite_pool).await?;
+    println!("ok");
+    Ok(())
+}
+
+/// Run both auth-side SQLite migrators against the shared sidecar
+/// `auth.db`. Each is mounted as a named source via
+/// `starter_store_sqlite::migrate`, which gives each its own
+/// `_sqlx_migrations_<name>` progress table — without that
+/// namespacing, `auth_users` (4 migrations) and `auth_oauth` (3
+/// migrations) collide on a single `_sqlx_migrations` and the second
+/// to run fails with "migration N was previously applied but is
+/// missing in the resolved migrations".
+async fn apply_auth_sqlite_migrations(
+    pool: &starter_store_sqlite::Pool,
+) -> Result<()> {
+    starter_store_sqlite::migrate::migrate(pool)
+        .with_source(starter_store_sqlite::MigrationSource {
+            name: "starter_auth_users",
+            migrator: &AUTH_USERS_MIGRATOR,
+        })
+        .with_source(starter_store_sqlite::MigrationSource {
+            name: "starter_auth_oauth",
+            migrator: &AUTH_OAUTH_MIGRATOR,
+        })
+        .run()
+        .await
+        .context("apply starter_auth_{users,oauth} migrations")
+}
+
+/// Minimal projection of a GitHub `User` / `Organization` payload —
+/// `add-org` accepts either, because a single PAT user (e.g. NubeDev)
+/// is itself a valid owner of repos.
+#[derive(Debug, serde::Deserialize)]
+struct GhAccount {
+    id: i64,
+    login: String,
+    #[serde(default)]
+    name: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct GhRepo {
+    id: i64,
+    name: String,
+    owner: GhAccount,
+}
+
+async fn fetch_account(
+    client: &dp_fetcher::client::Client,
+    login: &str,
+) -> Result<GhAccount> {
+    // Try /orgs/{login} first; fall back to /users/{login}. Either
+    // gives us the id + login + display name we need.
+    match client
+        .get_conditional::<GhAccount>(&format!("/orgs/{login}"), None)
+        .await
+    {
+        Ok(dp_fetcher::client::Fetched::Ok { body, .. }) => return Ok(body),
+        Ok(dp_fetcher::client::Fetched::NotModified { .. }) => {
+            return Err(anyhow!("unexpected 304"))
+        }
+        Err(dp_fetcher::client::ClientError::Client { status: 404, .. }) => {
+            // not an org — fall through
+        }
+        Err(e) => return Err(anyhow!("GET /orgs/{login}: {e}")),
+    }
+    match client
+        .get_conditional::<GhAccount>(&format!("/users/{login}"), None)
+        .await
+        .with_context(|| format!("GET /users/{login}"))?
+    {
+        dp_fetcher::client::Fetched::Ok { body, .. } => Ok(body),
+        dp_fetcher::client::Fetched::NotModified { .. } => Err(anyhow!("unexpected 304")),
+    }
+}
+
+async fn run_add_org(matches: &ArgMatches) -> Result<()> {
+    let cfg_path = matches
+        .get_one::<String>("config")
+        .ok_or_else(|| anyhow!("--config is required"))?;
+    let login = matches.get_one::<String>("login").unwrap();
+    let (cfg, pool) = load_cfg_and_pool(cfg_path).await?;
+    let client = build_pat_client(&cfg)?;
+
+    println!("resolving GitHub account: {login}");
+    let acct = fetch_account(&client, login).await?;
+    println!(
+        "  github_id : {}\n  login     : {}\n  name      : {}",
+        acct.id,
+        acct.login,
+        acct.name.as_deref().unwrap_or("(unset)")
+    );
+
+    let store = dp_store_pg::PgStore::new(pool);
+    use dp_domain::Store as _;
+    let row = dp_domain::Org {
+        id: Uuid::new_v4(),
+        github_id: acct.id,
+        login: acct.login.clone(),
+        name: acct.name.clone(),
+    };
+    let saved = store
+        .upsert_org(&row)
+        .await
+        .with_context(|| format!("upsert_org {login}"))?;
+    println!("upserted org id = {}", saved.id);
+    Ok(())
+}
+
+async fn run_add_repo(matches: &ArgMatches) -> Result<()> {
+    let cfg_path = matches
+        .get_one::<String>("config")
+        .ok_or_else(|| anyhow!("--config is required"))?;
+    let spec = matches.get_one::<String>("repo").unwrap();
+    let (owner_login, repo_name) = spec.split_once('/').ok_or_else(|| {
+        anyhow!("expected `owner/repo`, got {spec:?}")
+    })?;
+
+    let (cfg, pool) = load_cfg_and_pool(cfg_path).await?;
+    let client = build_pat_client(&cfg)?;
+
+    println!("resolving GitHub repo: {spec}");
+    let repo = match client
+        .get_conditional::<GhRepo>(&format!("/repos/{owner_login}/{repo_name}"), None)
+        .await
+        .with_context(|| format!("GET /repos/{spec}"))?
+    {
+        dp_fetcher::client::Fetched::Ok { body, .. } => body,
+        dp_fetcher::client::Fetched::NotModified { .. } => return Err(anyhow!("unexpected 304")),
+    };
+    println!(
+        "  repo github_id  : {}\n  owner login     : {}\n  owner github_id : {}",
+        repo.id, repo.owner.login, repo.owner.id
+    );
+
+    let store = dp_store_pg::PgStore::new(pool);
+    use dp_domain::Store as _;
+    // Upsert the owner first so the FK on dp_repos.org_id holds.
+    let org_row = dp_domain::Org {
+        id: Uuid::new_v4(),
+        github_id: repo.owner.id,
+        login: repo.owner.login.clone(),
+        name: repo.owner.name.clone(),
+    };
+    let saved_org = store
+        .upsert_org(&org_row)
+        .await
+        .with_context(|| format!("upsert_org {}", repo.owner.login))?;
+    let repo_row = dp_domain::Repo {
+        id: Uuid::new_v4(),
+        org_id: saved_org.id,
+        github_id: repo.id,
+        name: repo.name.clone(),
+    };
+    let saved_repo = store
+        .upsert_repo(&repo_row)
+        .await
+        .with_context(|| format!("upsert_repo {spec}"))?;
+    println!("upserted repo id = {} (org id = {})", saved_repo.id, saved_org.id);
+    Ok(())
+}
+
+async fn run_list_targets(matches: &ArgMatches) -> Result<()> {
+    let cfg_path = matches
+        .get_one::<String>("config")
+        .ok_or_else(|| anyhow!("--config is required"))?;
+    let (_cfg, pool) = load_cfg_and_pool(cfg_path).await?;
+    let rows: Vec<(String, String, i64, i64)> = sqlx::query_as(
+        "SELECT o.login, r.name, o.github_id, r.github_id
+           FROM dp_repos r
+           JOIN dp_orgs  o ON o.id = r.org_id
+          ORDER BY o.login, r.name",
+    )
+    .fetch_all(pool.sqlx())
+    .await
+    .context("query dp_repos JOIN dp_orgs")?;
+    if rows.is_empty() {
+        println!("(no targets registered — `dev-pulse add-repo OWNER/REPO`)");
+        return Ok(());
+    }
+    println!("{:<24} {:<32} {:>12} {:>12}", "OWNER", "REPO", "ORG_GH_ID", "REPO_GH_ID");
+    for (owner, name, oid, rid) in rows {
+        println!("{:<24} {:<32} {:>12} {:>12}", owner, name, oid, rid);
+    }
+    Ok(())
+}
+
+async fn run_create_admin(matches: &ArgMatches) -> Result<()> {
+    let cfg_path = matches.get_one::<String>("config").unwrap();
+    let email = matches.get_one::<String>("email").unwrap();
+    let password = matches.get_one::<String>("password").unwrap();
+    let raw = std::fs::read_to_string(cfg_path)
+        .with_context(|| format!("read config: {cfg_path}"))?;
+    let cfg: DevPulseConfig = toml::from_str(&raw).context("parse config TOML")?;
+
+    let sqlite_pool = starter_store_sqlite::pool::connect(&cfg.auth_sqlite.url)
+        .await
+        .with_context(|| format!("connect sqlite: {}", cfg.auth_sqlite.url))?;
+    apply_auth_sqlite_migrations(&sqlite_pool).await?;
+
+    let users = starter_auth_users::store::SqliteUserStore::new(sqlite_pool);
+    match starter_auth_users::admin::create_admin(
+        &users,
+        email,
+        password,
+        starter_auth_users::Role::Admin,
+    )
+    .await
+    {
+        Ok(id) => {
+            println!("created admin user: {email}");
+            println!("  id   : {id}");
+            println!("  role : admin");
+            Ok(())
+        }
+        Err(starter_auth_users::admin::AdminError::Conflict) => {
+            println!("user already exists: {email} (no change)");
+            Ok(())
+        }
+        Err(e) => Err(anyhow!("create_admin: {e}")),
+    }
+}
+
+async fn run_fetch_now(matches: &ArgMatches) -> Result<()> {
+    let cfg_path = matches
+        .get_one::<String>("config")
+        .ok_or_else(|| anyhow!("--config is required"))?;
+    let (cfg, pool) = load_cfg_and_pool(cfg_path).await?;
+    let client = build_pat_client(&cfg)?;
+    let store = Arc::new(dp_store_pg::PgStore::new(pool.clone()));
+    let targets: Arc<dyn dp_fetcher::reconciler::TargetProvider> =
+        Arc::new(PgTargetProvider { pool });
+
+    let n = dp_fetcher::reconciler::TargetProvider::list_targets(&*targets)
+        .await
+        .map_err(|e| anyhow!("list targets: {e}"))?
+        .len();
+    println!(
+        "budget   : {}",
+        client
+            .max_requests()
+            .map(|b| b.to_string())
+            .unwrap_or_else(|| "disabled".into())
+    );
+    println!("targets  : {n}");
+    if n == 0 {
+        println!("(nothing to fetch — `dev-pulse add-repo OWNER/REPO` first)");
+        return Ok(());
+    }
+    client.reset_budget();
+    let reconciler = dp_fetcher::reconciler::Reconciler::new(
+        store,
+        Arc::new(client.clone()),
+        targets,
+    );
+    println!("ticking ...");
+    let stats = reconciler
+        .do_tick(dp_fetcher::reconciler::Scope::All)
+        .await
+        .map_err(|e| anyhow!("tick: {e}"))?;
+    println!("\ntick stats:");
+    println!("  items        : {}", stats.items);
+    println!("  errors       : {}", stats.errors);
+    println!("  partial      : {}", stats.partial);
+    println!("  github calls : {}", client.requests_made());
+    Ok(())
+}
+
+/// Reads dp_orgs + dp_repos and serves them as [`RepoTarget`]s on
+/// every reconciler tick. The query is cheap (joined PK lookups) so
+/// we don't bother caching at this layer — the reconciler ticks every
+/// few minutes, not every few seconds.
+struct PgTargetProvider {
+    pool: starter_store_postgres::Pool,
+}
+
+#[async_trait::async_trait]
+impl dp_fetcher::reconciler::TargetProvider for PgTargetProvider {
+    async fn list_targets(
+        &self,
+    ) -> Result<Vec<dp_fetcher::reconciler::RepoTarget>, dp_domain::StoreError> {
+        let rows: Vec<(Uuid, i64, String, Uuid, i64, String)> = sqlx::query_as(
+            "SELECT o.id, o.github_id, o.login, r.id, r.github_id, r.name
+               FROM dp_repos r
+               JOIN dp_orgs  o ON o.id = r.org_id
+              ORDER BY o.login, r.name",
+        )
+        .fetch_all(self.pool.sqlx())
+        .await
+        .map_err(|e| dp_domain::StoreError::Backend(Box::new(e)))?;
+        Ok(rows
+            .into_iter()
+            .map(|(org_id, og_id, owner, repo_id, rg_id, name)| {
+                dp_fetcher::reconciler::RepoTarget {
+                    org_id,
+                    org_github_id: og_id,
+                    owner_login: owner,
+                    repo_id,
+                    repo_github_id: rg_id,
+                    repo_name: name,
+                }
+            })
+            .collect())
+    }
+}
+
 // ---------------------------------------------------------------- helpers
 
 /// Build the [`dp_fetcher::reconciler::Reconciler`] the dev-pulse
-/// bin runs against. Phase 4 ships with an empty target list and a
-/// token-less Client — `POST /admin/refresh` completes instantly,
-/// the dormant tick loop wakes only on `shutdown`. Phase 6 wires
-/// the real GitHub App installation pair.
+/// bin runs against. When `token` is `Some(non_empty)` the Client is
+/// armed with a PAT (SCOPE §15.1 stepping stone) and the target list
+/// is still empty at this layer — targets come from Phase 6 install
+/// metadata. When `token` is `None`/empty, the Client is built with
+/// an empty token (placeholder) and the caller must keep the
+/// scheduler dormant; `POST /admin/refresh` completes instantly.
 fn build_reconciler(
     store: Arc<dp_store_pg::PgStore>,
+    token: Option<String>,
+    base_url: &str,
+    budget: Option<u64>,
 ) -> Result<Arc<dp_fetcher::reconciler::Reconciler>> {
-    let client = dp_fetcher::client::Client::with_personal_token(
-        SecretString::from(String::new()),
-        "https://api.github.com",
-    )
-    .map_err(|e| anyhow!("build placeholder github client: {e}"))?;
+    let secret = SecretString::from(token.unwrap_or_default());
+    let client = dp_fetcher::client::Client::with_personal_token(secret, base_url)
+        .map_err(|e| anyhow!("build github client: {e}"))?
+        .with_budget(budget);
+    // PgTargetProvider reads dp_orgs + dp_repos at every tick. Empty
+    // result is a valid state (no targets registered yet) — the
+    // reconciler will simply do nothing that tick. Operators add
+    // targets via `dev-pulse add-repo OWNER/REPO`.
     let targets: Arc<dyn dp_fetcher::reconciler::TargetProvider> =
-        Arc::new(dp_fetcher::reconciler::StaticTargets::new(Vec::new()));
+        Arc::new(PgTargetProvider { pool: store.pool().clone() });
     Ok(Arc::new(dp_fetcher::reconciler::Reconciler::new(
         store,
         Arc::new(client),

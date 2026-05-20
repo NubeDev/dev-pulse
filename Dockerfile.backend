@@ -1,0 +1,37 @@
+# Backend image for dev-pulse.
+#
+# Build context MUST be the PARENT directory containing both
+# `dev-pulse/` and `starter/` (workspace Cargo.toml references
+# `../starter/crates/...` via path deps). From the repo root:
+#
+#   docker build -f Dockerfile.backend -t dev-pulse-backend ..
+#
+# Or use the top-level docker-compose.yml which sets `context: ..`.
+
+FROM rust:1.83-slim-bookworm AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      pkg-config libssl-dev ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY starter   /src/starter
+COPY dev-pulse /src/dev-pulse
+
+WORKDIR /src/dev-pulse
+RUN cargo build -p dev-pulse --release
+
+# ---------------------------------------------------------------- runtime
+
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates libssl3 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /src/dev-pulse/target/release/dev-pulse /usr/local/bin/dev-pulse
+COPY --from=builder /src/dev-pulse/crates/dev-pulse/config.example.toml /etc/dev-pulse/config.toml
+
+EXPOSE 8731
+ENTRYPOINT ["/usr/local/bin/dev-pulse"]
+CMD ["serve", "--config", "/etc/dev-pulse/config.toml"]
