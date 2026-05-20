@@ -171,17 +171,154 @@ pub(crate) fn clamp_offset(v: Option<i64>) -> i64 {
 // Router
 // ---------------------------------------------------------------------------
 
+/// Wire envelope for `GET /repos/{id}/sync-status`. See
+/// `linear-projects-idea.md` §5.9. `queued` is `false` for now;
+/// the scheduler does not expose per-repo in-flight introspection
+/// so the badge UX treats "queued" as a transient client-side
+/// flag set after a successful POST.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct RepoSyncStatusDto {
+    /// When the last successful sync landed.
+    pub last_synced_at: Option<DateTime<Utc>>,
+    /// When the last attempt finished — same value as
+    /// `last_synced_at` until the migration grows an
+    /// `attempted_at` column.
+    pub last_attempt_at: Option<DateTime<Utc>>,
+    /// Last error, or `null` if the latest sync succeeded.
+    pub last_error: Option<String>,
+    /// `true` if the scheduler is in the middle of reconciling
+    /// this repo. Currently always `false` — see module comment.
+    pub queued: bool,
+}
+
+/// Wire envelope for `POST /repos/{id}/sync`. Always
+/// `{ "queued": true }` on the 202 reply.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct RepoSyncQueuedDto {
+    /// Sentinel — always `true`.
+    pub queued: bool,
+}
+
+/// `GET /repos/{id}/sync-status` — sync freshness badge data.
+/// Authorisation: `("repos", "read")`.
+#[utoipa::path(
+    get,
+    path = "/repos/{id}/sync-status",
+    params(("id" = Uuid, Path, description = "Repo id")),
+    responses(
+        (status = 200, description = "Sync freshness", body = RepoSyncStatusDto),
+        (status = 404, description = "No such repo"),
+    ),
+    tag = "repos",
+)]
+pub async fn get_repo_sync_status(
+    State(state): State<AppState>,
+    Extension(_principal): Extension<Principal>,
+    axum::extract::Path(id): axum::extract::Path<Uuid>,
+) -> Result<Json<RepoSyncStatusDto>, ApiError> {
+    if state.store.get_repo(id).await?.is_none() {
+        return Err(ApiError::NotFound {
+            code: "repo_not_found",
+            message: format!("no repo with id {id}"),
+        });
+    }
+    let s = state.store.get_repo_sync_status(id).await?.unwrap_or(
+        dp_domain::store::RepoSyncStatus {
+            last_synced_at: None,
+            last_attempt_at: None,
+            last_error: None,
+        },
+    );
+    Ok(Json(RepoSyncStatusDto {
+        last_synced_at: s.last_synced_at,
+        last_attempt_at: s.last_attempt_at,
+        last_error: s.last_error,
+        queued: false,
+    }))
+}
+
+/// `POST /repos/{id}/sync` — operator-triggered per-repo
+/// reconciler tick. Idempotent: if the scheduler is already
+/// running a tick the call coalesces and the body is still
+/// `{ "queued": true }` (the user's *intent* is queued even if
+/// the scheduler decided to coalesce against an in-flight run).
+/// Authorisation: `("repos", "sync")` — the one new auth pair in
+/// slice 2.
+#[utoipa::path(
+    post,
+    path = "/repos/{id}/sync",
+    params(("id" = Uuid, Path, description = "Repo id")),
+    responses(
+        (status = 202, description = "Sync queued", body = RepoSyncQueuedDto),
+        (status = 404, description = "No such repo"),
+        (status = 503, description = "Reconciler scheduler not configured in this deployment"),
+    ),
+    tag = "repos",
+)]
+pub async fn request_repo_sync(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    axum::extract::Path(id): axum::extract::Path<Uuid>,
+) -> Result<(axum::http::StatusCode, Json<RepoSyncQueuedDto>), ApiError> {
+    let repo = state.store.get_repo(id).await?.ok_or(ApiError::NotFound {
+        code: "repo_not_found",
+        message: format!("no repo with id {id}"),
+    })?;
+    let Some(scheduler) = state.scheduler.clone() else {
+        return Err(ApiError::BadRequest {
+            code: "reconciler_unavailable",
+            message: "reconciler scheduler not configured".to_string(),
+        });
+    };
+    // Spawn so the request returns 202 immediately; the scheduler
+    // coalesces against any in-flight tick. Errors from the tick
+    // are logged but never surface — the caller has already
+    // returned.
+    tokio::spawn(async move {
+        let scope = dp_fetcher::reconciler::Scope::Repo {
+            org_id: repo.org_id,
+            repo_id: repo.id,
+        };
+        if let Err(e) = scheduler.try_trigger_now(scope).await {
+            tracing::warn!(error = %e, repo_id = %repo.id, "per-repo sync trigger failed");
+        }
+    });
+    // Audit the *request* (the tick itself is async; the audit log
+    // captures operator intent, not the outcome). Failures here
+    // never block the 202 the caller already expects.
+    crate::audit::record(
+        state.store.as_ref(),
+        principal.actor_user_id,
+        crate::audit::REPO_SYNC_REQUESTED,
+        repo.id.to_string(),
+    )
+    .await
+    .ok();
+    Ok((
+        axum::http::StatusCode::ACCEPTED,
+        Json(RepoSyncQueuedDto { queued: true }),
+    ))
+}
+
 /// Build the repos router fragment. Same wrapping pattern as
 /// [`crate::directory::directory_router`] — `repos.read` is the
-/// authz pair the workflow gate matches on.
+/// authz pair the workflow gate matches on; the `POST
+/// /repos/{id}/sync` route is gated on the new `("repos", "sync")`
+/// pair (§5.9 — the one new auth pair in slice 2).
 pub fn repos_router(state: Arc<AppState>) -> Router {
     use starter_authz::with_permission;
     let inner: AppState = (*state).clone();
-    Router::new()
-        .merge(with_permission(
-            Router::new().route("/repos", get(list_repos)),
-            "repos",
-            "read",
-        ))
-        .with_state(inner)
+    let reads = with_permission(
+        Router::new()
+            .route("/repos", get(list_repos))
+            .route("/repos/{id}/sync-status", get(get_repo_sync_status)),
+        "repos",
+        "read",
+    );
+    let writes = with_permission(
+        Router::new().route("/repos/{id}/sync", axum::routing::post(request_repo_sync)),
+        "repos",
+        "sync",
+    );
+    Router::new().merge(reads).merge(writes).with_state(inner)
 }

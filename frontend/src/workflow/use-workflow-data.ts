@@ -22,18 +22,22 @@
  * exercise the reload UX without a backend.
  */
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   api,
   DpRestError,
   type AddPinRequest,
   type AppInstallBannerResponse,
+  type BulkInboxOp,
+  type BulkInboxResponse,
   type CreateCommentRequest,
   type CreateIssueRequest,
   type CreateTagRequest,
   type InboxStatus,
+  type IssueDatesDto,
   type IssueDto,
+  type PatchIssueDatesRequest,
   type IssueListResponse,
   type LinkBatchRequest,
   type LinkBatchResponse,
@@ -75,6 +79,7 @@ export const workflowKeys = {
   myTags: () => ["workflow", "my-tags"] as const,
   tag: (id: string) => ["workflow", "tag", id] as const,
   issue: (id: string) => ["workflow", "issue", id] as const,
+  issueDates: (id: string) => ["workflow", "issue-dates", id] as const,
   issues: (q: ListIssuesQuery) => ["workflow", "issues", q] as const,
   myQueue: (q: ListIssuesQuery) => ["workflow", "my-queue", q] as const,
   repos: (q: ListReposQuery) => ["workflow", "repos", q] as const,
@@ -359,6 +364,55 @@ export function useSetInboxState() {
   });
 }
 
+/**
+ * `POST /me/inbox/bulk` — one transition applied to a batch of
+ * issue ids (slice-2 §3.8 bulk actions). Invalidates `myQueue` so
+ * the rows disappear (or unread dots clear) on the next render.
+ *
+ * Mocked mode just routes the call back through the per-row
+ * helpers so the storybook / smoke harness exercises the same UI
+ * paths without a backend.
+ */
+export function useBulkInbox() {
+  const qc = useQueryClient();
+  return useMutation<
+    BulkInboxResponse,
+    Error,
+    { issueIds: string[]; op: BulkInboxOp; snoozedUntil?: string | null }
+  >({
+    mutationFn: async ({ issueIds, op, snoozedUntil }) => {
+      if (issueIds.length === 0) return { touched: 0 };
+      if (USE_MOCK) {
+        switch (op) {
+          case "mark_all_seen":
+            mockMarkInboxSeen(issueIds);
+            break;
+          case "snooze_all":
+            for (const id of issueIds) {
+              mockSetInboxState(id, "snoozed", snoozedUntil ?? null);
+            }
+            break;
+          case "done_all":
+            for (const id of issueIds) mockSetInboxState(id, "done", null);
+            break;
+          case "inbox_all":
+            for (const id of issueIds) mockSetInboxState(id, "inbox", null);
+            break;
+        }
+        return { touched: issueIds.length };
+      }
+      return api.bulkInbox({
+        issue_ids: issueIds,
+        op,
+        snoozed_until: snoozedUntil ?? null,
+      });
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["workflow", "my-queue"] });
+    },
+  });
+}
+
 /** Workflow master list pane — paginated repo list with
  *  open-issue counts + last-activity timestamps. */
 export function useRepoList(q: ListReposQuery) {
@@ -468,6 +522,99 @@ export function useCommentOnIssue(id: string) {
     },
     onSuccess: (updated) => {
       qc.setQueryData(workflowKeys.issue(updated.id), updated);
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Issue dates (linear-projects-idea.md §3.10)
+// ---------------------------------------------------------------------------
+
+/** Module-local in-memory mirror of `dp_issue_dates` keyed by
+ *  issue id. Backs the `USE_MOCK` short-circuit so the storybook /
+ *  smoke harness can exercise the §3.10 picker without a backend
+ *  and without coupling the hook to the test fixtures in `./mocks`. */
+const mockIssueDates = new Map<string, IssueDatesDto>();
+
+function mockGetIssueDates(id: string): IssueDatesDto {
+  const cached = mockIssueDates.get(id);
+  if (cached) return { ...cached };
+  return {
+    issue_id: id,
+    start_at: null,
+    due_at: null,
+    mirror_node_id: null,
+    mirror_synced_at: null,
+    mirror_error: null,
+    updated_at: new Date().toISOString(),
+  };
+}
+
+function mockPatchIssueDates(
+  id: string,
+  req: PatchIssueDatesRequest,
+): IssueDatesDto {
+  const prev = mockGetIssueDates(id);
+  const next: IssueDatesDto = {
+    ...prev,
+    start_at: req.start_at === undefined ? prev.start_at : req.start_at,
+    due_at: req.due_at === undefined ? prev.due_at : req.due_at,
+    updated_at: new Date().toISOString(),
+  };
+  mockIssueDates.set(id, next);
+  return next;
+}
+
+/** `GET /issues/{id}/dates` — fetch the local §3.10 row. Returned
+ *  fields are always present (zero-filled when no row exists). */
+export function useIssueDates(id: string | undefined) {
+  return useQuery<IssueDatesDto>({
+    queryKey: id ? workflowKeys.issueDates(id) : ["workflow", "issue-dates", "<none>"],
+    enabled: !!id,
+    queryFn: () => {
+      if (!id) throw new Error("issue id required");
+      if (USE_MOCK) return Promise.resolve(mockGetIssueDates(id));
+      return api.getIssueDates(id);
+    },
+  });
+}
+
+/** Batch variant — runs one `GET /issues/{id}/dates` query per id
+ *  through react-query's `useQueries`. Cached per id so two
+ *  consumers (the picker + the date-driven smart views) share the
+ *  same in-flight request. Returns a map keyed by issue id with
+ *  the resolved row (or `undefined` while loading); ids absent
+ *  from the input render as `undefined`. */
+export function useIssueDatesBatch(
+  issueIds: string[],
+): Map<string, IssueDatesDto | undefined> {
+  const results = useQueries({
+    queries: issueIds.map((id) => ({
+      queryKey: workflowKeys.issueDates(id),
+      queryFn: () => {
+        if (USE_MOCK) return Promise.resolve(mockGetIssueDates(id));
+        return api.getIssueDates(id);
+      },
+    })),
+  });
+  const out = new Map<string, IssueDatesDto | undefined>();
+  issueIds.forEach((id, i) => out.set(id, results[i]?.data));
+  return out;
+}
+
+/** `PATCH /issues/{id}/dates` — local upsert + best-effort Projects
+ *  v2 mirror. Mutation rethrows `DpRestError` so the form can
+ *  surface `invalid_date_window` / `writes_not_available_for_org`. */
+export function useUpdateIssueDates(id: string) {
+  const qc = useQueryClient();
+  return useMutation<IssueDatesDto, Error, PatchIssueDatesRequest>({
+    mutationFn: async (req) => {
+      if (USE_MOCK) return mockPatchIssueDates(id, req);
+      return api.patchIssueDates(id, req);
+    },
+    onSuccess: (next) => {
+      qc.setQueryData(workflowKeys.issueDates(next.issue_id), next);
+      void qc.invalidateQueries({ queryKey: ["workflow", "my-queue"] });
     },
   });
 }

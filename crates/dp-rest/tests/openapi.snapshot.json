@@ -213,6 +213,405 @@
         }
       }
     },
+    "/issues": {
+      "get": {
+        "tags": [
+          "issues"
+        ],
+        "summary": "`GET /issues` — paginated, filterable issue list. Ordered by\n`updated_at DESC` (matches GitHub's default \"recently updated\"\nview).",
+        "operationId": "list_issues",
+        "parameters": [
+          {
+            "name": "repo_id",
+            "in": "query",
+            "description": "Restrict to one repo",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "org_id",
+            "in": "query",
+            "description": "Restrict to one org",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "description": "open|closed|all (default open)",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "assignee",
+            "in": "query",
+            "description": "Assignee login (exact)",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Substring search on title",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size (1..=200, default 50)",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Page offset (default 0)",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated issue list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssueListResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "issues"
+        ],
+        "summary": "`POST /issues` — create a new GitHub issue.",
+        "description": "No CAS (there is no local row yet). Sequence:\n\n1. Resolve `repo_id -> (Org, Repo)`.\n2. §18.2 step 4 install-permission check.\n3. Call the backend's `create_issue`.\n4. Record the `issue.create` audit row (target = `repo_id#number`).\n\nThe fetcher / webhook receiver materialises the `dp_issues` row\non the next pass.",
+        "operationId": "create_issue",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateIssueRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Created GitHub-side; audit row written",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateIssueResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed at GitHub"
+          },
+          "403": {
+            "description": "Writes not available for the target org"
+          }
+        }
+      }
+    },
+    "/issues/{id}": {
+      "get": {
+        "tags": [
+          "issues"
+        ],
+        "summary": "`GET /issues/{id}` — single issue by id.",
+        "operationId": "get_issue_by_id",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Issue id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Issue detail",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssueDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such issue"
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "issues"
+        ],
+        "summary": "`PATCH /issues/{id}` — update an existing GitHub issue. Routes\nthe `state` transition (open/closed) to the `issue.close` /\n`issue.reopen` audit verbs; everything else is `issue.update`.",
+        "operationId": "patch_issue",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Issue id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchIssueRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Mutation committed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssueDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed at GitHub"
+          },
+          "403": {
+            "description": "Writes not available for the target org"
+          },
+          "409": {
+            "description": "Stale local version — UI should reload"
+          }
+        }
+      }
+    },
+    "/issues/{id}/comments": {
+      "post": {
+        "tags": [
+          "issues"
+        ],
+        "summary": "`POST /issues/{id}/comments` — append a comment. CAS-gated for\nsymmetry with PATCH so the UI's optimistic editor sees the same\nstale-version surface.",
+        "operationId": "create_comment",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Issue id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateCommentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Comment posted"
+          },
+          "400": {
+            "description": "Validation failed at GitHub"
+          },
+          "403": {
+            "description": "Writes not available for the target org"
+          },
+          "409": {
+            "description": "Stale local version — UI should reload"
+          }
+        }
+      }
+    },
+    "/issues/{id}/dates": {
+      "get": {
+        "tags": [
+          "issues"
+        ],
+        "summary": "`GET /issues/{id}/dates` — read the local `dp_issue_dates` row\nfor an issue. Returns `200 { issue_id, start_at: null, due_at:\nnull, … }` with all nullable fields set when no row exists, so\nthe frontend can render the picker uniformly. Authorisation:\nthe same `(issues, read)` pair the rest of the read surface uses\n— read-only and per-org, the picker is also visible to viewers\nwho cannot write.",
+        "operationId": "get_issue_dates",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Issue id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Local dates row (zero-valued when unset)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssueDatesDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such issue"
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "issues"
+        ],
+        "summary": "`PATCH /issues/{id}/dates` — see module docs for the four-step\nshape. Authorisation: `(issues, write)`.",
+        "operationId": "patch_issue_dates",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Issue id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchIssueDatesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Local upsert committed; mirror best-effort",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssueDatesDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "start_at must be <= due_at"
+          },
+          "403": {
+            "description": "Writes not available for the target org"
+          },
+          "404": {
+            "description": "No such issue"
+          }
+        }
+      }
+    },
+    "/issues/{id}/timeline": {
+      "get": {
+        "tags": [
+          "issues"
+        ],
+        "summary": "`GET /issues/{id}/timeline` — newest-first activity strip for\none issue. The lookup uses the §6 guarded expression index on\n`dp_activity_events` so the predicate is index-only even when\nthe parent repo has decades of accumulated history.",
+        "operationId": "get_issue_timeline",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Issue id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size (1..=200, default 50)",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Page offset (default 0)",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Newest-first timeline",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TimelineResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such issue"
+          }
+        }
+      }
+    },
     "/me/app-install-banner": {
       "get": {
         "tags": [
@@ -228,6 +627,112 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/AppInstallBannerResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/me/inbox/bulk": {
+      "post": {
+        "tags": [
+          "inbox"
+        ],
+        "summary": "`POST /me/inbox/bulk` — bulk inbox transitions\n(mark-all-seen / snooze-all / done-all / inbox-all). Used by the\nlist-header bulk action menu in the workbench. Audited under the\n`BULK_INBOX_*` vocabulary so the audit log can answer \"who did\nthe mass dismiss?\" without scanning the per-row writes.",
+        "operationId": "bulk_inbox",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BulkInboxRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Bulk transition applied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BulkInboxResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Batch too large / snooze without deadline"
+          }
+        }
+      }
+    },
+    "/me/inbox/seen": {
+      "post": {
+        "tags": [
+          "inbox"
+        ],
+        "summary": "`POST /me/inbox/seen` — bulk-mark issues read. Idempotent. The\nstore upserts one `dp_user_issue_state` row per id, setting\n`last_seen_version` from `dp_issues.version` (so the UI never\nhas to know the version itself).",
+        "description": "Returns `204 No Content` on success.",
+        "operationId": "mark_seen",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MarkSeenRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Issues marked seen"
+          },
+          "400": {
+            "description": "Too many issue ids in one batch"
+          }
+        }
+      }
+    },
+    "/me/inbox/{issue_id}": {
+      "patch": {
+        "tags": [
+          "inbox"
+        ],
+        "summary": "`PATCH /me/inbox/{issue_id}` — set inbox status / snooze.",
+        "description": "The body's `status` and `snoozed_until` are written verbatim;\nsee [`SetInboxStateRequest`] for the consistency contract.\n\nReturns the resulting row so the UI can confirm without a\nsecond round-trip.",
+        "operationId": "set_inbox_state",
+        "parameters": [
+          {
+            "name": "issue_id",
+            "in": "path",
+            "description": "Issue id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetInboxStateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Updated inbox row",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserIssueStateDto"
                 }
               }
             }
@@ -377,6 +882,160 @@
         }
       }
     },
+    "/me/queue": {
+      "get": {
+        "tags": [
+          "issues"
+        ],
+        "summary": "`GET /me/queue` — the caller's inbox. The default landing view\nfor the triage page (`linear-projects-idea.md` §3.8 / §5.4).",
+        "description": "Returns issues that the caller has not dismissed (`status <>\n'done'`) and that are not currently snoozed (`status <>\n'snoozed' OR snoozed_until < now()`). Rows that have never\nbeen touched surface as default-state (\"inbox\", unread until\nthe user opens the peek panel).\n\nAccepts the same filter set as `GET /issues` so the smart-view\nrail can pre-narrow (\"My queue · phoenix only\", etc.).\n\nEach row carries an `unread` boolean — `true` when\n`dp_issues.version > last_seen_version`. The frontend renders\nan indicator and uses `POST /me/inbox/seen` to clear it when\nthe user opens the row in the peek panel.",
+        "operationId": "me_queue",
+        "parameters": [
+          {
+            "name": "repo_id",
+            "in": "query",
+            "description": "Restrict to one repo",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "repo_ids",
+            "in": "query",
+            "description": "Comma-separated repo ids",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "org_id",
+            "in": "query",
+            "description": "Restrict to one org",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "org_ids",
+            "in": "query",
+            "description": "Comma-separated org ids",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "description": "open|closed|all (default open)",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "assignees",
+            "in": "query",
+            "description": "Comma-separated assignee logins (AND)",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "labels",
+            "in": "query",
+            "description": "Comma-separated labels (AND)",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "author",
+            "in": "query",
+            "description": "Author login",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state_reason",
+            "in": "query",
+            "description": "completed|not_planned|reopened",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "updated_since",
+            "in": "query",
+            "description": "RFC3339 lower bound",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "untriaged",
+            "in": "query",
+            "description": "Restrict to rows with no assignee and no label",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Substring search on title",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size (1..=200, default 50)",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Page offset (default 0)",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Caller's inbox queue",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssueListResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/me/tags": {
       "get": {
         "tags": [
@@ -479,6 +1138,86 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ReportResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed"
+          }
+        }
+      }
+    },
+    "/reports/issues": {
+      "get": {
+        "tags": [
+          "reports"
+        ],
+        "summary": "`GET /reports/issues` — §5.10 aggregate metrics over\n`dp_issues`. Authorisation: `(\"issues\", \"read\")`. The filter\nscope is intersected with the caller's `org_ids` at the\nhandler boundary.",
+        "operationId": "issues_report",
+        "parameters": [
+          {
+            "name": "metric",
+            "in": "query",
+            "description": "throughput | lead_time | wip | stale | untriaged",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "group_by",
+            "in": "query",
+            "description": "repo | org | assignee | week | day",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "description": "RFC3339 inclusive lower bound",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "description": "RFC3339 exclusive upper bound",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "org_id",
+            "in": "query",
+            "description": "Comma-separated org ids",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "repo_id",
+            "in": "query",
+            "description": "Comma-separated repo ids",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Bucketed issue metrics",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesReportResponse"
                 }
               }
             }
@@ -593,6 +1332,189 @@
           },
           "400": {
             "description": "Validation failed"
+          }
+        }
+      }
+    },
+    "/repos": {
+      "get": {
+        "tags": [
+          "repos"
+        ],
+        "summary": "`GET /repos` — paginated repo list with open-issue counts. Reads\nonly; not audited (low-sensitivity directory traversal, same\nrationale as `GET /users` in [`crate::directory`]).",
+        "operationId": "list_repos",
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "query",
+            "description": "Restrict to one org",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Substring search on `org/name`",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size (1..=200, default 50)",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Page offset (default 0)",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated repo list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoListResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/repos/{id}/sync": {
+      "post": {
+        "tags": [
+          "repos"
+        ],
+        "summary": "`POST /repos/{id}/sync` — operator-triggered per-repo\nreconciler tick. Idempotent: if the scheduler is already\nrunning a tick the call coalesces and the body is still\n`{ \"queued\": true }` (the user's *intent* is queued even if\nthe scheduler decided to coalesce against an in-flight run).\nAuthorisation: `(\"repos\", \"sync\")` — the one new auth pair in\nslice 2.",
+        "operationId": "request_repo_sync",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Repo id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Sync queued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoSyncQueuedDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such repo"
+          },
+          "503": {
+            "description": "Reconciler scheduler not configured in this deployment"
+          }
+        }
+      }
+    },
+    "/repos/{id}/sync-status": {
+      "get": {
+        "tags": [
+          "repos"
+        ],
+        "summary": "`GET /repos/{id}/sync-status` — sync freshness badge data.\nAuthorisation: `(\"repos\", \"read\")`.",
+        "operationId": "get_repo_sync_status",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Repo id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Sync freshness",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoSyncStatusDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such repo"
+          }
+        }
+      }
+    },
+    "/repos/{repo_id}/issues/{number}": {
+      "get": {
+        "tags": [
+          "issues"
+        ],
+        "summary": "`GET /repos/{repo_id}/issues/{number}` — single issue via the\ncanonical deep-link shape audit log entries already record.",
+        "operationId": "get_issue_by_number",
+        "parameters": [
+          {
+            "name": "repo_id",
+            "in": "path",
+            "description": "Repo id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "number",
+            "in": "path",
+            "description": "Repo-relative issue number",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Issue detail",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssueDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such issue"
           }
         }
       }
@@ -1133,6 +2055,61 @@
           }
         }
       },
+      "BulkInboxOp": {
+        "type": "string",
+        "description": "Operation kind for [`BulkInboxRequest`]. One of mark-seen, snooze,\ndone, or restore-to-inbox — the four bulk actions the workbench\nexposes from the list header.",
+        "enum": [
+          "mark_all_seen",
+          "snooze_all",
+          "done_all",
+          "inbox_all"
+        ]
+      },
+      "BulkInboxRequest": {
+        "type": "object",
+        "description": "Body for `POST /me/inbox/bulk`. One operation applied to a batch\nof issue ids.",
+        "required": [
+          "issue_ids",
+          "op"
+        ],
+        "properties": {
+          "issue_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "`dp_issues.id` rows to touch. Capped at [`SEEN_BATCH_CAP`]."
+          },
+          "op": {
+            "$ref": "#/components/schemas/BulkInboxOp",
+            "description": "Which transition to apply."
+          },
+          "snoozed_until": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Required for `snooze_all`; ignored otherwise."
+          }
+        }
+      },
+      "BulkInboxResponse": {
+        "type": "object",
+        "description": "Response from `POST /me/inbox/bulk`.",
+        "required": [
+          "touched"
+        ],
+        "properties": {
+          "touched": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Number of `dp_user_issue_state` rows touched (inserted +\nupdated). For `mark_all_seen` this is the upsert count from\nthe underlying `mark_issues_seen` call and is reported as the\nlength of the request batch (the store does not surface the\nrow count for that path today).",
+            "minimum": 0
+          }
+        }
+      },
       "CountRow": {
         "type": "object",
         "description": "One aggregated count row. The `key` is stringified so the same\nshape works for UUID group-bys (`User`, `Team`, `Repo`, `Org`) and\ntime-bucket group-bys (`Day`, `Week`, `Month` — RFC3339 instants).",
@@ -1149,6 +2126,71 @@
           "key": {
             "type": "string",
             "description": "The bucket key, formatted as a string."
+          }
+        }
+      },
+      "CreateCommentRequest": {
+        "type": "object",
+        "description": "Body for POST `/issues/{id}/comments`.",
+        "required": [
+          "expected_version",
+          "body"
+        ],
+        "properties": {
+          "body": {
+            "type": "string",
+            "description": "Comment body (Markdown)."
+          },
+          "expected_version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "CAS token (same semantics as [`PatchIssueRequest`])."
+          }
+        }
+      },
+      "CreateIssueRequest": {
+        "type": "object",
+        "description": "Body for `POST /issues`. The repo to mutate is named explicitly\n(there is no canonical row yet to derive it from).",
+        "required": [
+          "repo_id",
+          "title"
+        ],
+        "properties": {
+          "body": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional body (Markdown)."
+          },
+          "repo_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Internal repo id the new issue belongs to."
+          },
+          "title": {
+            "type": "string",
+            "description": "Issue title; required by GitHub."
+          }
+        }
+      },
+      "CreateIssueResponse": {
+        "type": "object",
+        "description": "Acknowledgement body for `POST /issues`. Returns the GitHub-side\nnumber GitHub assigned (so the UI can deep-link immediately) and\nechoes the actor's `repo_id` for symmetry with PATCH responses.",
+        "required": [
+          "repo_id",
+          "number"
+        ],
+        "properties": {
+          "number": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Repo-relative issue number GitHub assigned."
+          },
+          "repo_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Echoed parent repo id."
           }
         }
       },
@@ -1354,6 +2396,297 @@
           }
         }
       },
+      "InboxStatusDto": {
+        "type": "string",
+        "description": "Wire form of [`InboxStatus`]. Lower-case to match the SQL form\ndeclared in migration 0011.",
+        "enum": [
+          "inbox",
+          "snoozed",
+          "done"
+        ]
+      },
+      "IssueDatesDto": {
+        "type": "object",
+        "description": "Response body — the canonical post-upsert row. Mirrors\n[`IssueDates`] one-for-one so the UI can render the freshly\nstamped `updated_at` plus the most recent mirror outcome\n(`mirror_synced_at` / `mirror_error`) without a second read.",
+        "required": [
+          "issue_id",
+          "updated_at"
+        ],
+        "properties": {
+          "due_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Due instant, or `null`."
+          },
+          "issue_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Echoed `dp_issues.id`."
+          },
+          "mirror_error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Verbatim error from the most recent failed mirror attempt;\n`null` when the latest attempt succeeded or no attempt has\nrun yet (e.g. the repo has no project link)."
+          },
+          "mirror_node_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Projects v2 item node id, when mirroring has ever\nsucceeded for this row."
+          },
+          "mirror_synced_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Wall-clock the most recent mirror attempt succeeded;\n`null` until the first success."
+          },
+          "start_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Start instant, or `null`."
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "`updated_at` on the local row."
+          }
+        }
+      },
+      "IssueDto": {
+        "type": "object",
+        "description": "Full issue projection. Matches the shape the frontend's\n`IssueDto` already declared (`api/client.ts`) so the existing\n§8.3 detail pane wires up without DTO shape changes.",
+        "required": [
+          "id",
+          "repo_id",
+          "org_id",
+          "number",
+          "title",
+          "state",
+          "labels",
+          "assignees",
+          "version",
+          "updated_at"
+        ],
+        "properties": {
+          "assignees": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Assignee logins."
+          },
+          "body": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Body, when present."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Internal id."
+          },
+          "labels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Labels as strings."
+          },
+          "milestone": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Milestone title, when set."
+          },
+          "number": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Repo-relative issue number."
+          },
+          "org_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Parent org id."
+          },
+          "repo_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Parent repo id."
+          },
+          "state": {
+            "$ref": "#/components/schemas/IssueStateDto",
+            "description": "State."
+          },
+          "title": {
+            "type": "string",
+            "description": "Title."
+          },
+          "unread": {
+            "type": "boolean",
+            "description": "Per-caller unread flag — `true` when the issue's `version`\nis newer than what the caller has marked seen. Only the\n`/me/queue` endpoint populates this with a meaningful value;\nevery other endpoint emits `false`. Defaults to `false` so\nolder frontend clients that ignore the field render rows\nthe same as before."
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Last update."
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "§8 CAS token."
+          }
+        }
+      },
+      "IssueListResponse": {
+        "type": "object",
+        "description": "Paginated envelope mirroring `RepoListResponse`.",
+        "required": [
+          "rows",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Echoed limit."
+          },
+          "offset": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Echoed offset."
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/IssueDto"
+            },
+            "description": "Issues on this page."
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Total matching the filter, ignoring pagination."
+          }
+        }
+      },
+      "IssuePatch": {
+        "type": "object",
+        "description": "Field-level patch the PATCH handler forwards to GitHub. Every\nfield is optional — only `Some(_)` lanes are sent to GitHub. The\ncaller is the source of truth on what to mutate; the handler\nperforms no field-vs-field consistency checks.",
+        "properties": {
+          "assignees": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Replacement assignee logins. `None` leaves assignees\nuntouched."
+          },
+          "body": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "New body (omitted when not changing; explicit `null` clears)."
+          },
+          "labels": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Replacement label list. `None` leaves labels untouched."
+          },
+          "state": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "New state — `\"open\"` or `\"closed\"`. The handler routes this\nto the `issue.close` / `issue.reopen` audit verbs."
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "New title (omitted when not changing)."
+          }
+        }
+      },
+      "IssueStateDto": {
+        "type": "string",
+        "description": "Wire form of [`IssueState`]. Lower-case to match GitHub's wire\nform (`\"open\"` / `\"closed\"`).",
+        "enum": [
+          "open",
+          "closed"
+        ]
+      },
+      "IssuesReportResponse": {
+        "type": "object",
+        "description": "Envelope for `GET /reports/issues`.",
+        "required": [
+          "rows",
+          "total"
+        ],
+        "properties": {
+          "rows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/IssuesReportRow"
+            },
+            "description": "Bucketed rows, sorted by bucket asc."
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Total number of buckets."
+          }
+        }
+      },
+      "IssuesReportRow": {
+        "type": "object",
+        "description": "Row in the issues-report envelope.",
+        "required": [
+          "bucket",
+          "value",
+          "count"
+        ],
+        "properties": {
+          "bucket": {
+            "type": "string",
+            "description": "Bucket label (repo id, org id, assignee login, or ISO date)."
+          },
+          "count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Row count contributing to the value (useful for medians)."
+          },
+          "value": {
+            "type": "number",
+            "format": "double",
+            "description": "Metric value — count for throughput/wip/stale/untriaged,\nmedian seconds for lead_time."
+          }
+        }
+      },
       "LinkBatchRequest": {
         "type": "object",
         "description": "Body for `POST /tags/{id}/links` — batch link.",
@@ -1409,6 +2742,23 @@
             "type": "string",
             "format": "uuid",
             "description": "Linked target id, per [`kind`](Self::kind)."
+          }
+        }
+      },
+      "MarkSeenRequest": {
+        "type": "object",
+        "description": "Body for `POST /me/inbox/seen`. The server marks every listed\nissue as read up to its current `version`. Empty list is a\nno-op (`204`). Capped at 200 ids per request to keep the\nSQL bind size sane — clients with more than that should\npage their reads via the list endpoint anyway.",
+        "required": [
+          "issue_ids"
+        ],
+        "properties": {
+          "issue_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "`dp_issues.id` rows to mark seen."
           }
         }
       },
@@ -1482,6 +2832,50 @@
             "description": "Display name, if set."
           }
         }
+      },
+      "PatchIssueDatesRequest": {
+        "type": "object",
+        "description": "Body for `PATCH /issues/{id}/dates`. Both fields are optional —\n`null` (or omitted) clears that side. The schema CHECK guards\n`start_at <= due_at`; the handler surfaces violations as\n`400 invalid_date_window`.",
+        "properties": {
+          "due_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "New due instant (inclusive). Omit / `null` to clear."
+          },
+          "start_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "New start instant (inclusive). Omit / `null` to clear."
+          }
+        }
+      },
+      "PatchIssueRequest": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/IssuePatch",
+            "description": "Field-level changes."
+          },
+          {
+            "type": "object",
+            "required": [
+              "expected_version"
+            ],
+            "properties": {
+              "expected_version": {
+                "type": "integer",
+                "format": "int64",
+                "description": "CAS token — the `dp_issues.version` the UI rendered the form\nagainst. The §18.2 step 5 CAS misses if this is stale, and\nthe handler returns `409 stale_local_version`."
+              }
+            }
+          }
+        ],
+        "description": "Body for PATCH `/issues/{id}`."
       },
       "PinDto": {
         "type": "object",
@@ -1605,6 +2999,138 @@
           }
         }
       },
+      "RepoListResponse": {
+        "type": "object",
+        "description": "Paginated envelope. Carries `total` so the UI can render\n`Showing X–Y of Z` without a second round-trip.",
+        "required": [
+          "rows",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Echoed back so the client can confirm what it asked for."
+          },
+          "offset": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Echoed back so the client can confirm what it asked for."
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RepoSummaryDto"
+            },
+            "description": "Repos on this page."
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Total matching the filter, ignoring pagination."
+          }
+        }
+      },
+      "RepoSummaryDto": {
+        "type": "object",
+        "description": "Row in `GET /repos`. Carries the join from `dp_orgs` so callers\ndon't have to round-trip for `org_login`, plus the two counters\nthe workflow list pane renders inline.",
+        "required": [
+          "id",
+          "org_id",
+          "org_login",
+          "name",
+          "slug",
+          "open_issue_count"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Internal repo id."
+          },
+          "last_activity_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Most recent issue `updated_at`; `null` if the repo has no\nissues yet."
+          },
+          "name": {
+            "type": "string",
+            "description": "Repo name (no `owner/` prefix)."
+          },
+          "open_issue_count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Number of open issues in this repo."
+          },
+          "org_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Parent org id."
+          },
+          "org_login": {
+            "type": "string",
+            "description": "Parent org login (joined from `dp_orgs`)."
+          },
+          "slug": {
+            "type": "string",
+            "description": "`org_login/name` for convenience."
+          }
+        }
+      },
+      "RepoSyncQueuedDto": {
+        "type": "object",
+        "description": "Wire envelope for `POST /repos/{id}/sync`. Always\n`{ \"queued\": true }` on the 202 reply.",
+        "required": [
+          "queued"
+        ],
+        "properties": {
+          "queued": {
+            "type": "boolean",
+            "description": "Sentinel — always `true`."
+          }
+        }
+      },
+      "RepoSyncStatusDto": {
+        "type": "object",
+        "description": "Wire envelope for `GET /repos/{id}/sync-status`. See\n`linear-projects-idea.md` §5.9. `queued` is `false` for now;\nthe scheduler does not expose per-repo in-flight introspection\nso the badge UX treats \"queued\" as a transient client-side\nflag set after a successful POST.",
+        "required": [
+          "queued"
+        ],
+        "properties": {
+          "last_attempt_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the last attempt finished — same value as\n`last_synced_at` until the migration grows an\n`attempted_at` column."
+          },
+          "last_error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Last error, or `null` if the latest sync succeeded."
+          },
+          "last_synced_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the last successful sync landed."
+          },
+          "queued": {
+            "type": "boolean",
+            "description": "`true` if the scheduler is in the middle of reconciling\nthis repo. Currently always `false` — see module comment."
+          }
+        }
+      },
       "ReportResponse": {
         "type": "object",
         "description": "The envelope every report handler returns. `rows` is left as\n[`serde_json::Value`] so the same struct serves the five report\nshapes without forcing a per-handler enum — the OpenAPI doc\ndescribes each handler's `rows` schema via per-route `body =\n<Concrete>` overrides (added when the aggregator lands).",
@@ -1651,6 +3177,31 @@
             "type": "string",
             "format": "uuid",
             "description": "User to flip home org for."
+          }
+        }
+      },
+      "SetInboxStateRequest": {
+        "type": "object",
+        "description": "Body for `PATCH /me/inbox/{issue_id}`. Either field may be\nabsent; an empty body leaves the row untouched (still upserted\nat default values if it did not exist).\n\nConsistency between `status` and `snoozed_until` is the caller's\nresponsibility — the server does not refuse `status = Inbox`\nwith `snoozed_until = Some(_)` so the UI can clear the snooze\nby setting the status alone without a second round-trip.",
+        "properties": {
+          "snoozed_until": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "New snooze deadline. Use explicit `null` to clear."
+          },
+          "status": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/InboxStatusDto",
+                "description": "New status (defaults to existing value when absent — for a\nfresh row this means [`InboxStatusDto::Inbox`])."
+              }
+            ]
           }
         }
       },
@@ -1856,6 +3407,70 @@
           }
         }
       },
+      "TimelineEntryDto": {
+        "type": "object",
+        "description": "Wire form of an issue-timeline row. The shape mirrors §5.6 —\nthe peek panel renders this as a vertical activity strip.",
+        "required": [
+          "id",
+          "kind",
+          "ts",
+          "payload_summary"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "`dp_activity_events.id`."
+          },
+          "kind": {
+            "type": "string",
+            "description": "Event kind (`issue_opened` / `issue_closed` / `issue_comment`)."
+          },
+          "payload_summary": {
+            "type": "string",
+            "description": "One-line summary, e.g. `\"commented: looks good\"`."
+          },
+          "ts": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Source timestamp."
+          }
+        }
+      },
+      "TimelineResponse": {
+        "type": "object",
+        "description": "Paginated envelope for `GET /issues/{id}/timeline`.",
+        "required": [
+          "rows",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Echoed limit."
+          },
+          "offset": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Echoed offset."
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TimelineEntryDto"
+            },
+            "description": "Newest-first rows."
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Total matching the filter, ignoring pagination."
+          }
+        }
+      },
       "UnlinkBatchRequest": {
         "type": "object",
         "description": "Body for `DELETE /tags/{id}/links` — batch unlink. Same\n`(kind, target_id)` shape as link — IDs are resolved on the\nserver inside the same transaction so a partial unlink is\nimpossible.",
@@ -1971,6 +3586,45 @@
           "user": {
             "$ref": "#/components/schemas/UserDto",
             "description": "The user row (already pseudonymised if previously deleted)."
+          }
+        }
+      },
+      "UserIssueStateDto": {
+        "type": "object",
+        "description": "One row in the inbox state table. Echoed back by the\nPATCH handler so the UI can confirm the write without a\nfollow-up GET.",
+        "required": [
+          "issue_id",
+          "last_seen_version",
+          "status",
+          "updated_at"
+        ],
+        "properties": {
+          "issue_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "FK to `dp_issues.id`."
+          },
+          "last_seen_version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Highest `dp_issues.version` the caller has marked seen."
+          },
+          "snoozed_until": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Wake-up instant for snoozed rows. `None` for inbox / done."
+          },
+          "status": {
+            "$ref": "#/components/schemas/InboxStatusDto",
+            "description": "Tri-state status."
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Last write to this row."
           }
         }
       }

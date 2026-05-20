@@ -38,8 +38,10 @@ pub mod audit;
 pub mod directory;
 pub mod error;
 pub mod inbox;
+pub mod issue_dates;
 pub mod issues;
 pub mod issues_read;
+pub mod issues_write;
 pub mod openapi;
 pub mod pins;
 pub mod reports;
@@ -64,19 +66,32 @@ pub use directory::{
 };
 pub use error::ApiError;
 pub use inbox::{
-    inbox_router, mark_seen, set_inbox_state, InboxStatusDto, MarkSeenRequest,
-    SetInboxStateRequest, UserIssueStateDto, SEEN_BATCH_CAP,
+    bulk_inbox, inbox_router, mark_seen, set_inbox_state, BulkInboxOp, BulkInboxRequest,
+    BulkInboxResponse, InboxStatusDto, MarkSeenRequest, SetInboxStateRequest, UserIssueStateDto,
+    SEEN_BATCH_CAP,
 };
 pub use issues::{
     acquire_issue_mutation_slot, commit_issue_mutation, rollback_issue_mutation,
     sweep_pending_remote_timeouts, AcquireOutcome, AcquiredSlot, SweepReport,
 };
+pub use issue_dates::{
+    get_issue_dates, issue_dates_router, patch_issue_dates, IssueDatesDto, MirrorDatesOk,
+    MirrorError,
+    PatchIssueDatesRequest, ProjectV2MirrorBackend, UnconfiguredProjectV2Mirror,
+};
+pub use issues_write::{
+    create_comment, create_issue, issues_write_router, patch_issue, CreateCommentRequest,
+    CreateIssueRequest, CreateIssueResponse, IssuePatch, IssueWriteBackend, IssueWriteError,
+    PatchIssueRequest, UnconfiguredIssueWriter,
+};
 pub use issues_read::{
-    get_issue_by_id, get_issue_by_number, issues_read_router, list_issues, me_queue, IssueDto,
-    IssueListResponse, IssueStateDto, ListIssuesQuery, StateFilter,
+    get_issue_by_id, get_issue_by_number, get_issue_timeline, issues_read_router, list_issues,
+    me_queue, IssueDto, IssueListResponse, IssueStateDto, ListIssuesQuery, StateFilter,
+    TimelineEntryDto, TimelineQuery, TimelineResponse,
 };
 pub use repos::{
-    list_repos, repos_router, ListReposQuery, RepoListResponse, RepoSummaryDto,
+    get_repo_sync_status, list_repos, repos_router, request_repo_sync, ListReposQuery,
+    RepoListResponse, RepoSummaryDto, RepoSyncQueuedDto, RepoSyncStatusDto,
 };
 pub use openapi::DevPulseApi;
 pub use pins::{
@@ -84,8 +99,9 @@ pub use pins::{
     PinKindDto, ReorderRequest, PIN_CAP,
 };
 pub use reports::{
-    freshness_report, home_org_split_report, org_report, reports_router, team_report,
-    user_report, CountRow, DataAsOfDto, HomeOrgSplitRow, ReportQuery, ReportResponse,
+    freshness_report, home_org_split_report, issues_report, org_report, reports_router,
+    team_report, user_report, CountRow, DataAsOfDto, HomeOrgSplitRow, IssuesReportQuery,
+    IssuesReportResponse, IssuesReportRow, ReportQuery, ReportResponse,
 };
 pub use state::AppState;
 pub use tags::{

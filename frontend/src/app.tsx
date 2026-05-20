@@ -16,6 +16,7 @@ import { ProtectedRoute } from "./auth/protected-route.jsx";
 import { ErrorBoundary } from "./components/error-boundary.jsx";
 import { NotFoundPage } from "./components/not-found.jsx";
 import { AppShell } from "./layout/app-shell.jsx";
+import { IdentitiesPage } from "./account/identities-page.jsx";
 import { AdminUsersPage } from "./admin/users-page.jsx";
 import { RefreshPage } from "./admin/refresh-page.jsx";
 import { RunsPage } from "./admin/runs-page.jsx";
@@ -33,6 +34,7 @@ import { IssuesPage } from "./workflow/issues-page.jsx";
 import { ReposPage } from "./workflow/repos-page.jsx";
 import { TriagePage } from "./workflow/triage-page.jsx";
 import {
+  accountTabOf,
   adminTabOf,
   directoryTabOf,
   isKnownRoute,
@@ -41,6 +43,7 @@ import {
   sectionOf,
   useRoute,
   workflowTabOf,
+  type AccountTab,
   type AdminTab,
   type DirectoryTab,
   type ReportTab,
@@ -103,7 +106,7 @@ function SectionPane({
   section,
   route,
 }: {
-  section: "reports" | "directory" | "admin" | "workflow";
+  section: "reports" | "directory" | "admin" | "workflow" | "account";
   route: string;
 }): JSX.Element {
   switch (section) {
@@ -115,6 +118,15 @@ function SectionPane({
       return <AdminPane tab={adminTabOf(route)} />;
     case "workflow":
       return <WorkflowPane tab={workflowTabOf(route)} />;
+    case "account":
+      return <AccountPane tab={accountTabOf(route)} />;
+  }
+}
+
+function AccountPane({ tab }: { tab: AccountTab }): JSX.Element {
+  switch (tab) {
+    case "identities":
+      return <IdentitiesPage />;
   }
 }
 

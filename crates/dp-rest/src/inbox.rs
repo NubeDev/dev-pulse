@@ -218,6 +218,143 @@ pub async fn set_inbox_state(
 }
 
 // ---------------------------------------------------------------------------
+// Bulk endpoint (slice 2)
+// ---------------------------------------------------------------------------
+
+/// Operation kind for [`BulkInboxRequest`]. One of mark-seen, snooze,
+/// done, or restore-to-inbox — the four bulk actions the workbench
+/// exposes from the list header.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum BulkInboxOp {
+    /// Mark every listed issue as read up to its current version.
+    /// Equivalent to a bulk `POST /me/inbox/seen` call.
+    MarkAllSeen,
+    /// Snooze every listed issue. `snoozed_until` is required.
+    SnoozeAll,
+    /// Dismiss every listed issue (`status = done`).
+    DoneAll,
+    /// Restore every listed issue to the inbox; clears any snooze.
+    InboxAll,
+}
+
+/// Body for `POST /me/inbox/bulk`. One operation applied to a batch
+/// of issue ids.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+pub struct BulkInboxRequest {
+    /// `dp_issues.id` rows to touch. Capped at [`SEEN_BATCH_CAP`].
+    pub issue_ids: Vec<Uuid>,
+    /// Which transition to apply.
+    pub op: BulkInboxOp,
+    /// Required for `snooze_all`; ignored otherwise.
+    #[serde(default)]
+    pub snoozed_until: Option<DateTime<Utc>>,
+}
+
+/// Response from `POST /me/inbox/bulk`.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct BulkInboxResponse {
+    /// Number of `dp_user_issue_state` rows touched (inserted +
+    /// updated). For `mark_all_seen` this is the upsert count from
+    /// the underlying `mark_issues_seen` call and is reported as the
+    /// length of the request batch (the store does not surface the
+    /// row count for that path today).
+    pub touched: u64,
+}
+
+/// `POST /me/inbox/bulk` — bulk inbox transitions
+/// (mark-all-seen / snooze-all / done-all / inbox-all). Used by the
+/// list-header bulk action menu in the workbench. Audited under the
+/// `BULK_INBOX_*` vocabulary so the audit log can answer "who did
+/// the mass dismiss?" without scanning the per-row writes.
+#[utoipa::path(
+    post,
+    path = "/me/inbox/bulk",
+    request_body = BulkInboxRequest,
+    responses(
+        (status = 200, description = "Bulk transition applied", body = BulkInboxResponse),
+        (status = 400, description = "Batch too large / snooze without deadline"),
+    ),
+    tag = "inbox",
+)]
+pub async fn bulk_inbox(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    Json(body): Json<BulkInboxRequest>,
+) -> Result<Json<BulkInboxResponse>, ApiError> {
+    if body.issue_ids.len() > SEEN_BATCH_CAP {
+        return Err(ApiError::BadRequest {
+            code: "bulk_batch_too_large",
+            message: format!(
+                "{} ids exceeds the per-request cap of {SEEN_BATCH_CAP}",
+                body.issue_ids.len()
+            ),
+        });
+    }
+    if matches!(body.op, BulkInboxOp::SnoozeAll) && body.snoozed_until.is_none() {
+        return Err(ApiError::BadRequest {
+            code: "snooze_without_deadline",
+            message: "snooze_all requires snoozed_until".into(),
+        });
+    }
+
+    let (touched, verb) = match body.op {
+        BulkInboxOp::MarkAllSeen => {
+            state
+                .store
+                .mark_issues_seen(principal.actor_user_id, &body.issue_ids)
+                .await?;
+            (body.issue_ids.len() as u64, crate::audit::BULK_INBOX_SEEN)
+        }
+        BulkInboxOp::SnoozeAll => {
+            let n = state
+                .store
+                .set_inbox_state_bulk(
+                    principal.actor_user_id,
+                    &body.issue_ids,
+                    InboxStatus::Snoozed,
+                    body.snoozed_until,
+                )
+                .await?;
+            (n, crate::audit::BULK_INBOX_SNOOZE)
+        }
+        BulkInboxOp::DoneAll => {
+            let n = state
+                .store
+                .set_inbox_state_bulk(
+                    principal.actor_user_id,
+                    &body.issue_ids,
+                    InboxStatus::Done,
+                    None,
+                )
+                .await?;
+            (n, crate::audit::BULK_INBOX_DONE)
+        }
+        BulkInboxOp::InboxAll => {
+            let n = state
+                .store
+                .set_inbox_state_bulk(
+                    principal.actor_user_id,
+                    &body.issue_ids,
+                    InboxStatus::Inbox,
+                    None,
+                )
+                .await?;
+            (n, crate::audit::BULK_INBOX_INBOX)
+        }
+    };
+
+    // Audit target carries the row count so the log can answer "how
+    // big was the mass action?" without re-deriving from siblings.
+    let target = format!("count={touched}");
+    crate::audit::record(state.store.as_ref(), principal.actor_user_id, verb, target)
+        .await
+        .ok(); // audit failures never block the inbox response
+
+    Ok(Json(BulkInboxResponse { touched }))
+}
+
+// ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
 
@@ -232,6 +369,7 @@ pub fn inbox_router(state: Arc<AppState>) -> Router {
         .merge(with_permission(
             Router::new()
                 .route("/me/inbox/seen", post(mark_seen))
+                .route("/me/inbox/bulk", post(bulk_inbox))
                 .route("/me/inbox/{issue_id}", patch(set_inbox_state)),
             "issues",
             "read",

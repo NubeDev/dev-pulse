@@ -90,6 +90,47 @@ pub const ISSUE_CLOSE: &str = "issue.close";
 pub const ISSUE_REOPEN: &str = "issue.reopen";
 /// `issue.comment` — `POST /repos/{owner}/{repo}/issues/{n}/comments`.
 pub const ISSUE_COMMENT: &str = "issue.comment";
+/// `issue.dates_update` — `PATCH /issues/{id}/dates` (§3.10).
+/// Local-first; the optional GraphQL mirror is best-effort and
+/// emits no separate audit verb.
+pub const ISSUE_DATES_UPDATE: &str = "issue.dates_update";
+/// `identity.add` — operator linked an additional GitHub identity
+/// (or other external login) to a `dp_users` row (slice 2 identity
+/// reconciliation).
+pub const IDENTITY_ADD: &str = "identity.add";
+/// `identity.remove` — operator unlinked a secondary identity from
+/// a `dp_users` row.
+pub const IDENTITY_REMOVE: &str = "identity.remove";
+/// `identity.verify` — caller verified ownership of a pending
+/// identity claim (e.g. via OAuth round-trip).
+pub const IDENTITY_VERIFY: &str = "identity.verify";
+/// `identity.merge` — two `dp_users` rows reconciled into one
+/// canonical identity record.
+pub const IDENTITY_MERGE: &str = "identity.merge";
+/// `date.set` — slice-2 alias-style verb for the dates surface
+/// (`PATCH /issues/{id}/dates`). The original handler records
+/// [`ISSUE_DATES_UPDATE`]; [`DATE_SET`] is the vocabulary entry the
+/// audit-vocabulary table in the workbench docs refers to and is
+/// reserved for future bulk / Projects-v2 pull-back paths that do
+/// not match the per-issue verb shape.
+pub const DATE_SET: &str = "date.set";
+/// `repo.sync_requested` — operator-triggered per-repo reconciler
+/// tick (`POST /repos/{id}/sync`).
+pub const REPO_SYNC_REQUESTED: &str = "repo.sync_requested";
+/// `inbox.bulk_seen` — bulk variant of [`POST /me/inbox/seen`]
+/// invoked via the slice-2 `POST /me/inbox/bulk` endpoint with
+/// `op = mark_all_seen`. Audit target carries the result count.
+pub const BULK_INBOX_SEEN: &str = "inbox.bulk_seen";
+/// `inbox.bulk_snooze` — bulk snooze (`POST /me/inbox/bulk` with
+/// `op = snooze_all`). Audit target carries `(count, until)`.
+pub const BULK_INBOX_SNOOZE: &str = "inbox.bulk_snooze";
+/// `inbox.bulk_done` — bulk dismiss (`POST /me/inbox/bulk` with
+/// `op = done_all`).
+pub const BULK_INBOX_DONE: &str = "inbox.bulk_done";
+/// `inbox.bulk_inbox` — bulk restore-to-inbox (`POST /me/inbox/bulk`
+/// with `op = inbox_all`). Clears any snooze deadline.
+pub const BULK_INBOX_INBOX: &str = "inbox.bulk_inbox";
+
 /// `issue.pending_remote_timeout` — emitted by the §8.5 sweeper
 /// when a `dp_issues.pending_remote` flag has lingered past
 /// `issues.pending_remote_timeout_secs`. The audit target carries

@@ -14,8 +14,11 @@
 use std::sync::Arc;
 
 use dp_domain::store::Store;
+use dp_fetcher::reconciler::Scheduler;
 
 use crate::app_permissions::GitHubAppConfig;
+use crate::issue_dates::{ProjectV2MirrorBackend, UnconfiguredProjectV2Mirror};
+use crate::issues_write::{IssueWriteBackend, UnconfiguredIssueWriter};
 
 /// Application state shared across every dp-rest handler.
 #[derive(Clone)]
@@ -29,6 +32,30 @@ pub struct AppState {
     /// `GET /me/app-install-banner` handler. Held as `Arc` for
     /// cheap clone across handlers.
     pub github_app: Arc<GitHubAppConfig>,
+    /// GitHub I/O backend for the §8 issue write surface. The
+    /// per-verb handlers (POST `/issues`, PATCH `/issues/{id}`,
+    /// POST `/issues/{id}/comments`) call into this trait between
+    /// the §8.2 step 5 CAS and the step 7 commit. Held as an `Arc`
+    /// so cloning the state is cheap.
+    ///
+    /// The default — [`UnconfiguredIssueWriter`] — refuses every
+    /// call with a `Server { status: 503 }` error so deployments
+    /// that have not wired a real backend fail loudly instead of
+    /// silently bypassing GitHub. Wire a production backend via
+    /// [`AppState::with_issue_writer`] from the bin layer.
+    pub issue_writer: Arc<dyn IssueWriteBackend>,
+    /// Reconciler scheduler — used by `POST /repos/{id}/sync` to
+    /// hand-trigger a per-repo reconciler tick. `None` in test
+    /// builds and the §5.9 handler degrades to "queued: false" /
+    /// 503 in that case.
+    pub scheduler: Option<Arc<Scheduler>>,
+    /// Projects v2 GraphQL mirror backend used by
+    /// `PATCH /issues/{id}/dates` (§3.10). The default —
+    /// [`UnconfiguredProjectV2Mirror`] — declines every call so
+    /// deployments that have not wired a real mirror simply skip
+    /// the best-effort enqueue / spawn entirely; the local
+    /// upsert remains authoritative.
+    pub projectv2_mirror: Arc<dyn ProjectV2MirrorBackend>,
 }
 
 impl AppState {
@@ -39,7 +66,35 @@ impl AppState {
         Self {
             store,
             github_app: Arc::new(GitHubAppConfig::default()),
+            issue_writer: Arc::new(UnconfiguredIssueWriter),
+            scheduler: None,
+            projectv2_mirror: Arc::new(UnconfiguredProjectV2Mirror),
         }
+    }
+
+    /// Override the Projects v2 mirror backend. Bin layer wires
+    /// this from the GraphQL transport; tests pass a fake.
+    pub fn with_projectv2_mirror(
+        mut self,
+        mirror: Arc<dyn ProjectV2MirrorBackend>,
+    ) -> Self {
+        self.projectv2_mirror = mirror;
+        self
+    }
+
+    /// Wire a reconciler scheduler so `POST /repos/{id}/sync` can
+    /// hand-trigger a tick. Bin layer calls this; tests can leave
+    /// it unset and the handler returns 503.
+    pub fn with_scheduler(mut self, scheduler: Arc<Scheduler>) -> Self {
+        self.scheduler = Some(scheduler);
+        self
+    }
+
+    /// Override the issue-write backend. Bin layer wires this with
+    /// the octocrab-backed implementation; tests pass a fake.
+    pub fn with_issue_writer(mut self, writer: Arc<dyn IssueWriteBackend>) -> Self {
+        self.issue_writer = writer;
+        self
     }
 
     /// Override the GitHub App config. Used by the bin layer and

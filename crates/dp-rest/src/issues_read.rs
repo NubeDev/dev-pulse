@@ -240,6 +240,15 @@ pub struct ListIssuesQuery {
     /// with no assignees and no labels.
     #[serde(default)]
     pub untriaged: bool,
+
+    /// Keyset cursor for `/me/queue` — wire form
+    /// `"<rfc3339_updated_at>,<uuid>"`. The server emits the next
+    /// page strictly older than this `(updated_at, id)` pair. The
+    /// `GET /issues` handler ignores this field. Backed by the
+    /// covering index `dp_issues_updated_at_idx` introduced in
+    /// migration `0013_triage_timeline_and_sync.sql`.
+    #[serde(default)]
+    pub after: Option<String>,
 }
 
 /// Deserialize a query-string field of the shape `a,b,c` into
@@ -341,7 +350,24 @@ fn filter_from_query(q: &ListIssuesQuery) -> IssueListFilter {
         state_reason: q.state_reason.clone().filter(|s| !s.is_empty()),
         updated_since: q.updated_since,
         untriaged_only: q.untriaged,
+        keyset_after: q
+            .after
+            .as_deref()
+            .and_then(parse_keyset_cursor),
     }
+}
+
+/// Parse a keyset cursor — wire form
+/// `"<rfc3339_updated_at>,<uuid>"`. Invalid cursors fall through
+/// to `None` so a malformed `?after=` parameter just resets to
+/// the first page rather than 400-ing.
+fn parse_keyset_cursor(s: &str) -> Option<(DateTime<Utc>, Uuid)> {
+    let (ts_str, id_str) = s.split_once(',')?;
+    let ts = DateTime::parse_from_rfc3339(ts_str.trim())
+        .ok()?
+        .with_timezone(&Utc);
+    let id = Uuid::parse_str(id_str.trim()).ok()?;
+    Some((ts, id))
 }
 
 /// `GET /me/queue` — the caller's inbox. The default landing view
@@ -466,6 +492,116 @@ pub async fn get_issue_by_number(
 }
 
 // ---------------------------------------------------------------------------
+// Timeline (§5.6)
+// ---------------------------------------------------------------------------
+
+/// Wire form of an issue-timeline row. The shape mirrors §5.6 —
+/// the peek panel renders this as a vertical activity strip.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct TimelineEntryDto {
+    /// `dp_activity_events.id`.
+    pub id: Uuid,
+    /// Event kind (`issue_opened` / `issue_closed` / `issue_comment`).
+    pub kind: String,
+    /// Source timestamp.
+    pub ts: DateTime<Utc>,
+    /// One-line summary, e.g. `"commented: looks good"`.
+    pub payload_summary: String,
+}
+
+/// Paginated envelope for `GET /issues/{id}/timeline`.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct TimelineResponse {
+    /// Newest-first rows.
+    pub rows: Vec<TimelineEntryDto>,
+    /// Total matching the filter, ignoring pagination.
+    pub total: i64,
+    /// Echoed limit.
+    pub limit: i64,
+    /// Echoed offset.
+    pub offset: i64,
+}
+
+/// Query string for `GET /issues/{id}/timeline`.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct TimelineQuery {
+    /// Page size; clamped 1..=200, default 50.
+    #[serde(default)]
+    pub limit: Option<i64>,
+    /// Page offset, 0-based.
+    #[serde(default)]
+    pub offset: Option<i64>,
+}
+
+/// `GET /issues/{id}/timeline` — newest-first activity strip for
+/// one issue. The lookup uses the §6 guarded expression index on
+/// `dp_activity_events` so the predicate is index-only even when
+/// the parent repo has decades of accumulated history.
+#[utoipa::path(
+    get,
+    path = "/issues/{id}/timeline",
+    params(
+        ("id"     = Uuid,        Path,  description = "Issue id"),
+        ("limit"  = Option<i64>, Query, description = "Page size (1..=200, default 50)"),
+        ("offset" = Option<i64>, Query, description = "Page offset (default 0)"),
+    ),
+    responses(
+        (status = 200, description = "Newest-first timeline", body = TimelineResponse),
+        (status = 404, description = "No such issue"),
+    ),
+    tag = "issues",
+)]
+pub async fn get_issue_timeline(
+    State(state): State<AppState>,
+    Extension(_principal): Extension<Principal>,
+    Path(id): Path<Uuid>,
+    Query(q): Query<TimelineQuery>,
+) -> Result<Json<TimelineResponse>, ApiError> {
+    let issue = state.store.get_issue(id).await?.ok_or(ApiError::NotFound {
+        code: "issue_not_found",
+        message: format!("no issue with id {id}"),
+    })?;
+    let limit = clamp_limit(q.limit);
+    let offset = clamp_offset(q.offset);
+    let rows = state
+        .store
+        .list_events_for_issue(issue.repo_id, issue.number, limit, offset)
+        .await?;
+    let total = state
+        .store
+        .count_events_for_issue(issue.repo_id, issue.number)
+        .await?;
+    Ok(Json(TimelineResponse {
+        rows: rows
+            .into_iter()
+            .map(|r| TimelineEntryDto {
+                id: r.id,
+                kind: format!("{:?}", r.kind)
+                    .chars()
+                    .flat_map(|c| {
+                        if c.is_uppercase() {
+                            // Convert CamelCase → snake_case
+                            let mut v = vec!['_'];
+                            v.extend(c.to_lowercase());
+                            v
+                        } else {
+                            vec![c]
+                        }
+                    })
+                    .collect::<String>()
+                    .trim_start_matches('_')
+                    .to_string(),
+                ts: r.ts,
+                payload_summary: r.payload_summary,
+            })
+            .collect(),
+        total,
+        limit,
+        offset,
+    }))
+}
+
+// ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
 
@@ -479,6 +615,7 @@ pub fn issues_read_router(state: Arc<AppState>) -> Router {
             Router::new()
                 .route("/issues", get(list_issues))
                 .route("/issues/{id}", get(get_issue_by_id))
+                .route("/issues/{id}/timeline", get(get_issue_timeline))
                 .route("/repos/{repo_id}/issues/{number}", get(get_issue_by_number))
                 .route("/me/queue", get(me_queue)),
             "issues",

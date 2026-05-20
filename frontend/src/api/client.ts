@@ -451,6 +451,30 @@ export const UpdateIssueRequestSchema = z.object({
 });
 export type UpdateIssueRequest = z.infer<typeof UpdateIssueRequestSchema>;
 
+// --- Issue dates (linear-projects-idea.md §3.10) -------------------------
+//
+// Local-first start / due dates with a best-effort Projects v2 mirror.
+// `start_at` / `due_at` are nullable on the wire and uniformly serialised
+// — clearing a side is just `{ start_at: null }`. The server returns the
+// canonical row on GET (zero-filled when no row exists) and PATCH.
+
+export const IssueDatesDtoSchema = z.object({
+  issue_id: uuid,
+  start_at: isoDateTime.nullable().optional(),
+  due_at: isoDateTime.nullable().optional(),
+  mirror_node_id: z.string().nullable().optional(),
+  mirror_synced_at: isoDateTime.nullable().optional(),
+  mirror_error: z.string().nullable().optional(),
+  updated_at: isoDateTime,
+});
+export type IssueDatesDto = z.infer<typeof IssueDatesDtoSchema>;
+
+export const PatchIssueDatesRequestSchema = z.object({
+  start_at: isoDateTime.nullable().optional(),
+  due_at: isoDateTime.nullable().optional(),
+});
+export type PatchIssueDatesRequest = z.infer<typeof PatchIssueDatesRequestSchema>;
+
 export const CreateCommentRequestSchema = z.object({
   expected_version: z.number().int(),
   body: z.string().min(1),
@@ -597,6 +621,33 @@ export interface SetInboxStateRequest {
   status?: InboxStatus;
   snoozed_until?: string | null;
 }
+
+/** Operation kind for [`BulkInboxRequest`] — one of the four §3.8
+ *  list-header bulk actions (mark-all-seen / snooze-all / done-all
+ *  / inbox-all). Names match the snake_case wire form. */
+export const BulkInboxOpSchema = z.enum([
+  "mark_all_seen",
+  "snooze_all",
+  "done_all",
+  "inbox_all",
+]);
+export type BulkInboxOp = z.infer<typeof BulkInboxOpSchema>;
+
+/** Body for `POST /me/inbox/bulk`. `snoozed_until` is required for
+ *  `snooze_all` and ignored otherwise. Capped at 200 ids per
+ *  request (server-enforced). */
+export interface BulkInboxRequest {
+  issue_ids: string[];
+  op: BulkInboxOp;
+  snoozed_until?: string | null;
+}
+
+/** Response from `POST /me/inbox/bulk`. `touched` is the number of
+ *  `dp_user_issue_state` rows the server upserted. */
+export const BulkInboxResponseSchema = z.object({
+  touched: z.number().int().nonnegative(),
+});
+export type BulkInboxResponse = z.infer<typeof BulkInboxResponseSchema>;
 
 /**
  * Serialise a [`ListIssuesQuery`] into a `?key=value` query string
@@ -1055,6 +1106,19 @@ export class DevPulseApi {
     );
   }
 
+  /** `POST /me/inbox/bulk` — bulk inbox transitions
+   *  (mark-all-seen / snooze-all / done-all / inbox-all) per §3.8.
+   *  Skips the round-trip when `issue_ids` is empty. */
+  async bulkInbox(req: BulkInboxRequest): Promise<BulkInboxResponse> {
+    if (req.issue_ids.length === 0) return { touched: 0 };
+    return this.sendJson(
+      "POST",
+      "/me/inbox/bulk",
+      req,
+      BulkInboxResponseSchema,
+    );
+  }
+
   /** `GET /repos` — paginated repo list with open-issue counts. */
   async listRepos(q: ListReposQuery = {}): Promise<RepoListResponse> {
     const params = new URLSearchParams();
@@ -1082,6 +1146,30 @@ export class DevPulseApi {
       `/issues/${encodeURIComponent(id)}`,
       req,
       IssueDtoSchema,
+    );
+  }
+
+  /** `GET /issues/{id}/dates` — caller-readable §3.10 dates row.
+   *  Returns zero-filled fields when no row exists yet so the UI
+   *  picker never has to special-case "missing row". */
+  async getIssueDates(id: string): Promise<IssueDatesDto> {
+    return this.getJson(
+      `/issues/${encodeURIComponent(id)}/dates`,
+      IssueDatesDtoSchema,
+    );
+  }
+
+  /** `PATCH /issues/{id}/dates` — local upsert with best-effort
+   *  Projects v2 mirror. Pass `{ start_at: null }` to clear a side. */
+  async patchIssueDates(
+    id: string,
+    req: PatchIssueDatesRequest,
+  ): Promise<IssueDatesDto> {
+    return this.sendJson(
+      "PATCH",
+      `/issues/${encodeURIComponent(id)}/dates`,
+      req,
+      IssueDatesDtoSchema,
     );
   }
 

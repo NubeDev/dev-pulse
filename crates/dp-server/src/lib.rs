@@ -82,8 +82,8 @@ use dp_domain::store::Store;
 use dp_fetcher::reconciler::Scheduler;
 use dp_fetcher::webhook::{self, WebhookMetrics, WebhookSecretSource, WebhookState};
 use dp_rest::{
-    admin_router, app_permissions_router, directory_router, inbox_router, issues_read_router,
-    pins_router, repos_router, reports_router,
+    admin_router, app_permissions_router, directory_router, inbox_router, issue_dates_router,
+    issues_read_router, issues_write_router, pins_router, repos_router, reports_router,
     tags_router, AdminState, AppState as RestAppState, DevPulseApi,
 };
 
@@ -235,7 +235,9 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
     // composes into the `ServerBuilder<()>` accumulator below.
     // -----------------------------------------------------------------
     let rest_state = Arc::new(
-        RestAppState::new(store.clone()).with_github_app(github_app.clone()),
+        RestAppState::new(store.clone())
+            .with_github_app(github_app.clone())
+            .with_scheduler(scheduler.clone()),
     );
     let admin_state = Arc::new(AdminState::new(scheduler.clone(), store.clone()));
 
@@ -245,6 +247,16 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
     let tags = tags_router(rest_state.clone());
     let repos = repos_router(rest_state.clone());
     let issues_read = issues_read_router(rest_state.clone());
+    // SCOPE §18 / SCOPE-PROJECTS §8 — the issue write surface.
+    // Gated on `(issues, write)` inside the router fragment; the
+    // default `UnconfiguredIssueWriter` on `AppState` refuses every
+    // call until the bin layer wires an octocrab-backed backend.
+    let issues_write = issues_write_router(rest_state.clone());
+    // §3.10 — start / due date upsert + best-effort Projects v2
+    // mirror. Gated on `(issues, write)`; the local upsert is
+    // synchronous and the mirror task is spawned and recorded
+    // out-of-band on `dp_issue_dates.mirror_error`.
+    let issue_dates = issue_dates_router(rest_state.clone());
     let inbox = inbox_router(rest_state.clone());
     // SCOPE-PROJECTS §13.6 — banner + write-gate live in the same
     // dp-rest module; the router fragment registers
@@ -261,6 +273,8 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
         .merge(tags)
         .merge(repos)
         .merge(issues_read)
+        .merge(issues_write)
+        .merge(issue_dates)
         .merge(inbox)
         .merge(github_app_routes)
         .merge(admin);

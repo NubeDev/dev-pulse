@@ -109,6 +109,22 @@ pub enum ApiError {
         manage_url: Option<String>,
     },
 
+    /// SCOPE §18.3 / §8.3 — the optimistic CAS in the issue write
+    /// path missed because the caller's `expected_version` is
+    /// behind the local row. The body carries the *current*
+    /// `dp_issues.version` so the UI can re-GET the issue and
+    /// re-prompt the user with the merged state. Mapped to `409`
+    /// with the stable code `stale_local_version`.
+    #[error("stale_local_version (current_version = {current_version})")]
+    StaleLocalVersion {
+        /// Internal issue id the CAS targeted; the UI re-GETs by id.
+        issue_id: uuid::Uuid,
+        /// The local `dp_issues.version` observed *after* the CAS
+        /// miss — what the UI should treat as the new expected
+        /// version on its retry.
+        current_version: i64,
+    },
+
     /// Per-item validation failure inside a batch request. Used by
     /// the `POST /tags/{id}/links` / `DELETE /tags/{id}/links`
     /// transactional batch path (SCOPE-PROJECTS §7.5): the whole
@@ -177,6 +193,19 @@ struct BatchErrorBody<'a> {
     error: &'a str,
     code: &'a str,
     items: &'a [BatchItemError],
+}
+
+/// Body shape for the §8.3 `stale_local_version` 409. Carries the
+/// current `dp_issues.version` (so the UI's next CAS uses it as
+/// `expected_version`) and the issue id (so the UI can re-GET the
+/// row to refresh the form without a second round-trip lookup).
+/// Wire-stable.
+#[derive(Serialize)]
+struct StaleLocalVersionBody<'a> {
+    error: &'a str,
+    code: &'a str,
+    issue_id: uuid::Uuid,
+    current_version: i64,
 }
 
 /// Body shape for the §8.4 `writes_not_available_for_org` 403.
@@ -250,6 +279,19 @@ impl IntoResponse for ApiError {
                     code,
                     org_login,
                     manage_url: manage_url.as_deref(),
+                }),
+            )
+                .into_response(),
+            ApiError::StaleLocalVersion {
+                issue_id,
+                current_version,
+            } => (
+                StatusCode::CONFLICT,
+                Json(StaleLocalVersionBody {
+                    error: "stale_local_version",
+                    code: "stale_local_version",
+                    issue_id: *issue_id,
+                    current_version: *current_version,
                 }),
             )
                 .into_response(),

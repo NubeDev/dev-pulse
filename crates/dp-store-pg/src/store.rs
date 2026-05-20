@@ -36,7 +36,15 @@ use dp_domain::pin::{Pin, PinKind};
 use dp_domain::repo::Repo;
 use dp_domain::issue::{Issue, IssueState, RepoSummary};
 use dp_domain::issue_mutation::{IssueMutation, IssueMutationOp, IssueMutationResult};
-use dp_domain::store::{EventActorRow, IssueListFilter, PendingRemoteIssue, RepoListFilter, Store, StoreError};
+use dp_domain::event::EventKind;
+use dp_domain::issue_dates::{
+    IssueDates, ProjectV2MirrorTask, ProjectV2MirrorTaskKind, RepoProjectLink,
+};
+use dp_domain::store::{
+    EventActorRow, IssueDatesMirrorOutcome, IssueListFilter, IssueMetric, IssueMetricGroupBy,
+    IssueMetricRow, IssueMetricsFilter, IssueTimelineRow, PendingRemoteIssue, RepoListFilter,
+    RepoSyncStatus, Store, StoreError,
+};
 use dp_domain::team::Team;
 use dp_domain::user::User;
 use dp_domain::webhook::WebhookDelivery;
@@ -178,6 +186,36 @@ fn labels_or_assignees_json(values: &[String]) -> Option<JsonValue> {
             .map(|s| JsonValue::String(s.clone()))
             .collect(),
     ))
+}
+
+/// One-line `payload_summary` for issue-timeline rows. The text
+/// is intentionally compact — the frontend prepends an icon /
+/// actor list, so we just describe the change. Falls back to the
+/// kind label if the payload doesn't carry an obvious summary
+/// field.
+fn summarise_timeline_payload(kind: EventKind, payload: &JsonValue) -> String {
+    match kind {
+        EventKind::IssueOpened => "opened the issue".to_string(),
+        EventKind::IssueClosed => match payload.get("state_reason").and_then(|v| v.as_str()) {
+            Some("not_planned") => "closed as not planned".to_string(),
+            Some("completed") => "closed as completed".to_string(),
+            _ => "closed the issue".to_string(),
+        },
+        EventKind::IssueComment => {
+            let body = payload
+                .get("body")
+                .and_then(|v| v.as_str())
+                .or_else(|| payload.get("body_excerpt").and_then(|v| v.as_str()))
+                .unwrap_or("");
+            let trimmed: String = body.chars().take(120).collect();
+            if trimmed.is_empty() {
+                "commented".to_string()
+            } else {
+                format!("commented: {trimmed}")
+            }
+        }
+        _ => format!("{:?}", kind),
+    }
 }
 
 fn row_to_issue(r: &sqlx::postgres::PgRow) -> Result<Issue, StoreError> {
@@ -876,7 +914,9 @@ impl Store for PgStore {
                AND ($13::text  IS NULL OR i.state_reason = $13)
                AND ($14::timestamptz IS NULL OR i.updated_at >= $14)
                AND (NOT $15::bool OR (i.assignees = '[]'::jsonb AND i.labels = '[]'::jsonb))
-             ORDER BY i.updated_at DESC
+               AND ($17::timestamptz IS NULL
+                    OR (i.updated_at, i.id) < ($17::timestamptz, $18::uuid))
+             ORDER BY i.updated_at DESC, i.id DESC
              LIMIT $6 OFFSET $7",
         )
         .bind(filter.repo_id)
@@ -895,6 +935,8 @@ impl Store for PgStore {
         .bind(filter.updated_since)
         .bind(filter.untriaged_only)
         .bind(user_id)
+        .bind(filter.keyset_after.map(|(ts, _)| ts))
+        .bind(filter.keyset_after.map(|(_, id)| id))
         .fetch_all(self.pool.sqlx())
         .await
         .map_err(map_sqlx)?;
@@ -1017,6 +1059,43 @@ impl Store for PgStore {
         row_to_user_issue_state(&row)
     }
 
+    async fn set_inbox_state_bulk(
+        &self,
+        user_id: Uuid,
+        issue_ids: &[Uuid],
+        status: InboxStatus,
+        snoozed_until: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<u64, StoreError> {
+        if issue_ids.is_empty() {
+            return Ok(0);
+        }
+        // Done / Inbox ignore the snooze deadline (Inbox clears it;
+        // Done has no wake target). Only Snoozed carries it through.
+        let effective_snooze = match status {
+            InboxStatus::Snoozed => snoozed_until,
+            InboxStatus::Inbox | InboxStatus::Done => None,
+        };
+        let res = sqlx::query(
+            "INSERT INTO dp_user_issue_state
+                 (user_id, issue_id, last_seen_version, status, snoozed_until, updated_at)
+             SELECT $1, i.id, 0, $3, $4, now()
+               FROM dp_issues i
+              WHERE i.id = ANY($2::uuid[])
+             ON CONFLICT (user_id, issue_id) DO UPDATE
+                 SET status        = EXCLUDED.status,
+                     snoozed_until = EXCLUDED.snoozed_until,
+                     updated_at    = now()",
+        )
+        .bind(user_id)
+        .bind(issue_ids)
+        .bind(status.as_str())
+        .bind(effective_snooze)
+        .execute(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        Ok(res.rows_affected())
+    }
+
     async fn record_audit_log(&self, entry: &AuditEntry) -> Result<(), StoreError> {
         sqlx::query(
             "INSERT INTO dp_audit_log (id, actor_user_id, action, target, at) \
@@ -1031,6 +1110,216 @@ impl Store for PgStore {
         .await
         .map_err(map_sqlx)?;
         Ok(())
+    }
+
+    // ---- issue timeline (triage slice 2 — §5.6) ------------------
+
+    async fn list_events_for_issue(
+        &self,
+        repo_id: Uuid,
+        number: i64,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<IssueTimelineRow>, StoreError> {
+        // The §6 guarded expression index on dp_activity_events
+        // ensures the cast cannot raise on malformed rows — the
+        // `payload ? 'number' AND payload->>'number' ~ '^[0-9]+$'`
+        // predicate is repeated in the WHERE clause verbatim so
+        // the planner picks the partial expression index.
+        let rows = sqlx::query(
+            "SELECT id, kind, ts, payload
+             FROM dp_activity_events
+             WHERE repo_id = $1
+               AND kind = ANY(ARRAY['issue_opened','issue_closed','issue_comment']::text[])
+               AND payload ? 'number'
+               AND payload->>'number' ~ '^[0-9]+$'
+               AND (payload->>'number')::int = $2
+             ORDER BY ts DESC, id DESC
+             LIMIT $3 OFFSET $4",
+        )
+        .bind(repo_id)
+        .bind(number)
+        .bind(limit.max(1))
+        .bind(offset.max(0))
+        .fetch_all(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for r in rows.iter() {
+            let id: Uuid = r.try_get("id").map_err(map_sqlx)?;
+            let kind_text: String = r.try_get("kind").map_err(map_sqlx)?;
+            let ts: DateTime<Utc> = r.try_get("ts").map_err(map_sqlx)?;
+            let payload: JsonValue = r.try_get("payload").map_err(map_sqlx)?;
+            let kind: EventKind = serde_json::from_value(JsonValue::String(kind_text.clone()))
+                .map_err(|e| StoreError::Invalid(format!("unknown event kind {kind_text}: {e}")))?;
+            let payload_summary = summarise_timeline_payload(kind, &payload);
+            out.push(IssueTimelineRow {
+                id,
+                kind,
+                ts,
+                payload_summary,
+            });
+        }
+        Ok(out)
+    }
+
+    async fn count_events_for_issue(
+        &self,
+        repo_id: Uuid,
+        number: i64,
+    ) -> Result<i64, StoreError> {
+        let (count,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*)::bigint
+             FROM dp_activity_events
+             WHERE repo_id = $1
+               AND kind = ANY(ARRAY['issue_opened','issue_closed','issue_comment']::text[])
+               AND payload ? 'number'
+               AND payload->>'number' ~ '^[0-9]+$'
+               AND (payload->>'number')::int = $2",
+        )
+        .bind(repo_id)
+        .bind(number)
+        .fetch_one(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        Ok(count)
+    }
+
+    // ---- repo sync status (triage slice 2 — §5.9) -----------------
+
+    async fn get_repo_sync_status(
+        &self,
+        repo_id: Uuid,
+    ) -> Result<Option<RepoSyncStatus>, StoreError> {
+        // Synthesise per-repo freshness from dp_fetch_cursors. The
+        // table carries one row per (org, repo, resource_kind);
+        // newest `updated_at` is the most recent successful pull.
+        let row: Option<(Option<DateTime<Utc>>,)> = sqlx::query_as(
+            "SELECT MAX(updated_at)
+             FROM dp_fetch_cursors
+             WHERE repo_id = $1",
+        )
+        .bind(repo_id)
+        .fetch_optional(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        match row {
+            Some((Some(ts),)) => Ok(Some(RepoSyncStatus {
+                last_synced_at: Some(ts),
+                last_attempt_at: Some(ts),
+                last_error: None,
+            })),
+            _ => Ok(Some(RepoSyncStatus {
+                last_synced_at: None,
+                last_attempt_at: None,
+                last_error: None,
+            })),
+        }
+    }
+
+    // ---- issue metrics (triage slice 2 — §5.10) -------------------
+
+    async fn issue_metrics(
+        &self,
+        filter: &IssueMetricsFilter,
+    ) -> Result<Vec<IssueMetricRow>, StoreError> {
+        // Common scope: caller-supplied org / repo id sets are
+        // applied as `= ANY(...)` so an empty slice = "no
+        // restriction". The §5.10 SQL shapes are spelled out
+        // inline so the planner sees a stable shape per metric.
+        let bucket_sql = match (filter.metric, filter.group_by) {
+            // `wip` group-by is fixed to assignee (§5.10).
+            (IssueMetric::Wip, _) => "assignee_login",
+            (_, IssueMetricGroupBy::Repo) => "i.repo_id::text",
+            (_, IssueMetricGroupBy::Org) => "i.org_id::text",
+            (_, IssueMetricGroupBy::Assignee) => "assignee_login",
+            (_, IssueMetricGroupBy::Week) => {
+                "to_char(date_trunc('week', coalesce(i.closed_at, i.updated_at)), 'YYYY-MM-DD')"
+            }
+            (_, IssueMetricGroupBy::Day) => {
+                "to_char(date_trunc('day', coalesce(i.closed_at, i.updated_at)), 'YYYY-MM-DD')"
+            }
+        };
+
+        // The §5.10 corrected SQL — see header comments in
+        // linear-projects-idea.md §5.10:
+        //
+        //   * `wip`         uses `CROSS JOIN LATERAL jsonb_array_elements_text(assignees)`
+        //   * `untriaged`   uses `jsonb_array_length(...) = 0`
+        //   * `lead_time`   uses `EXTRACT(EPOCH FROM (closed_at - created_at))`
+        let (select_clause, from_extra, where_extra) = match filter.metric {
+            IssueMetric::Throughput => (
+                "COUNT(*)::float8 AS value, COUNT(*)::bigint AS cnt",
+                "",
+                "i.state = 'closed' AND ($3::timestamptz IS NULL OR i.closed_at >= $3)
+                 AND ($4::timestamptz IS NULL OR i.closed_at < $4)",
+            ),
+            IssueMetric::LeadTime => (
+                "COALESCE(percentile_cont(0.5) WITHIN GROUP (
+                     ORDER BY EXTRACT(EPOCH FROM (i.closed_at - i.created_at))
+                 ), 0)::float8 AS value,
+                 COUNT(*)::bigint AS cnt",
+                "",
+                "i.state = 'closed' AND i.closed_at IS NOT NULL
+                 AND ($3::timestamptz IS NULL OR i.closed_at >= $3)
+                 AND ($4::timestamptz IS NULL OR i.closed_at < $4)",
+            ),
+            IssueMetric::Wip => (
+                "COUNT(*)::float8 AS value, COUNT(*)::bigint AS cnt",
+                "CROSS JOIN LATERAL jsonb_array_elements_text(i.assignees) AS assignee_login",
+                "i.state = 'open'",
+            ),
+            IssueMetric::Stale => (
+                "COUNT(*)::float8 AS value, COUNT(*)::bigint AS cnt",
+                "",
+                "i.state = 'open' AND i.updated_at < now() - interval '30 days'",
+            ),
+            IssueMetric::Untriaged => (
+                "COUNT(*)::float8 AS value, COUNT(*)::bigint AS cnt",
+                "",
+                "i.state = 'open'
+                 AND jsonb_array_length(i.assignees) = 0
+                 AND jsonb_array_length(i.labels)    = 0",
+            ),
+        };
+
+        let sql = format!(
+            "SELECT {bucket} AS bucket, {select}
+             FROM dp_issues i
+             {from_extra}
+             WHERE (cardinality($1::uuid[]) = 0 OR i.org_id  = ANY($1::uuid[]))
+               AND (cardinality($2::uuid[]) = 0 OR i.repo_id = ANY($2::uuid[]))
+               AND {where_extra}
+             GROUP BY bucket
+             ORDER BY bucket",
+            bucket = bucket_sql,
+            select = select_clause,
+            from_extra = from_extra,
+            where_extra = where_extra,
+        );
+
+        let rows = sqlx::query(&sql)
+            .bind(&filter.org_ids)
+            .bind(&filter.repo_ids)
+            .bind(filter.since)
+            .bind(filter.until)
+            .fetch_all(self.pool.sqlx())
+            .await
+            .map_err(map_sqlx)?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for r in rows.iter() {
+            let bucket: String = r.try_get("bucket").map_err(map_sqlx)?;
+            let value: f64 = r.try_get("value").map_err(map_sqlx)?;
+            let count: i64 = r.try_get("cnt").map_err(map_sqlx)?;
+            out.push(IssueMetricRow {
+                bucket,
+                value,
+                count,
+            });
+        }
+        Ok(out)
     }
 
     // ---- events + actors ------------------------------------------
@@ -1874,6 +2163,199 @@ impl Store for PgStore {
         out.sort_by_key(|d| d.received_at);
         Ok(out)
     }
+
+    // ---- issue dates (triage slice 2 — §3.10) --------------------
+
+    async fn get_issue_dates(
+        &self,
+        issue_id: Uuid,
+    ) -> Result<Option<IssueDates>, StoreError> {
+        let row = sqlx::query(
+            r#"SELECT issue_id, start_at, due_at, mirror_node_id,
+                      mirror_synced_at, mirror_error, updated_at
+                 FROM dp_issue_dates WHERE issue_id = $1"#,
+        )
+        .bind(issue_id)
+        .fetch_optional(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        Ok(row.map(|r| row_to_issue_dates(&r)).transpose()?)
+    }
+
+    async fn upsert_issue_dates(
+        &self,
+        issue_id: Uuid,
+        start_at: Option<DateTime<Utc>>,
+        due_at: Option<DateTime<Utc>>,
+    ) -> Result<IssueDates, StoreError> {
+        // The CHECK on the table guards start <= due; surface a
+        // violation as Invalid so the handler can return 400
+        // rather than a generic backend error.
+        let row = sqlx::query(
+            r#"
+            INSERT INTO dp_issue_dates (issue_id, start_at, due_at, updated_at)
+            VALUES ($1, $2, $3, now())
+            ON CONFLICT (issue_id) DO UPDATE
+              SET start_at  = EXCLUDED.start_at,
+                  due_at    = EXCLUDED.due_at,
+                  updated_at = now()
+            RETURNING issue_id, start_at, due_at, mirror_node_id,
+                      mirror_synced_at, mirror_error, updated_at
+            "#,
+        )
+        .bind(issue_id)
+        .bind(start_at)
+        .bind(due_at)
+        .fetch_one(self.pool.sqlx())
+        .await
+        .map_err(|e| match &e {
+            sqlx::Error::Database(db)
+                if db.constraint().is_some()
+                    && db.message().contains("dp_issue_dates_check") =>
+            {
+                invalid("start_at must be <= due_at")
+            }
+            _ => map_sqlx(e),
+        })?;
+        row_to_issue_dates(&row)
+    }
+
+    async fn record_issue_dates_mirror_result(
+        &self,
+        issue_id: Uuid,
+        outcome: IssueDatesMirrorOutcome<'_>,
+    ) -> Result<(), StoreError> {
+        match outcome {
+            IssueDatesMirrorOutcome::Success { node_id } => {
+                sqlx::query(
+                    r#"UPDATE dp_issue_dates
+                          SET mirror_node_id   = COALESCE($2, mirror_node_id),
+                              mirror_synced_at = now(),
+                              mirror_error     = NULL
+                        WHERE issue_id = $1"#,
+                )
+                .bind(issue_id)
+                .bind(node_id)
+                .execute(self.pool.sqlx())
+                .await
+                .map_err(map_sqlx)?;
+            }
+            IssueDatesMirrorOutcome::Failure { error } => {
+                sqlx::query(
+                    r#"UPDATE dp_issue_dates
+                          SET mirror_error = $2
+                        WHERE issue_id = $1"#,
+                )
+                .bind(issue_id)
+                .bind(error)
+                .execute(self.pool.sqlx())
+                .await
+                .map_err(map_sqlx)?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn get_repo_project_link(
+        &self,
+        repo_id: Uuid,
+    ) -> Result<Option<RepoProjectLink>, StoreError> {
+        let row = sqlx::query(
+            r#"SELECT repo_id, project_node_id, start_field_node_id, due_field_node_id
+                 FROM dp_repo_project_link WHERE repo_id = $1"#,
+        )
+        .bind(repo_id)
+        .fetch_optional(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        Ok(row.map(|r| {
+            Ok::<_, StoreError>(RepoProjectLink {
+                repo_id: r.try_get("repo_id").map_err(map_sqlx)?,
+                project_node_id: r.try_get("project_node_id").map_err(map_sqlx)?,
+                start_field_node_id: r
+                    .try_get("start_field_node_id")
+                    .map_err(map_sqlx)?,
+                due_field_node_id: r.try_get("due_field_node_id").map_err(map_sqlx)?,
+            })
+        })
+        .transpose()?)
+    }
+
+    async fn enqueue_projectv2_mirror_task(
+        &self,
+        issue_id: Uuid,
+        repo_id: Uuid,
+        kind: ProjectV2MirrorTaskKind,
+        payload: serde_json::Value,
+    ) -> Result<(), StoreError> {
+        sqlx::query(
+            r#"INSERT INTO dp_projectv2_mirror_tasks
+                   (issue_id, repo_id, kind, payload)
+               VALUES ($1, $2, $3, $4)"#,
+        )
+        .bind(issue_id)
+        .bind(repo_id)
+        .bind(kind.as_str())
+        .bind(payload)
+        .execute(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        Ok(())
+    }
+
+    async fn claim_projectv2_mirror_tasks(
+        &self,
+        max: i64,
+    ) -> Result<Vec<ProjectV2MirrorTask>, StoreError> {
+        let rows = sqlx::query(
+            r#"SELECT id, issue_id, repo_id, kind, payload, attempts,
+                      last_error, enqueued_at, processed_at
+                 FROM dp_projectv2_mirror_tasks
+                WHERE processed_at IS NULL
+             ORDER BY enqueued_at ASC
+                LIMIT $1
+                FOR UPDATE SKIP LOCKED"#,
+        )
+        .bind(max)
+        .fetch_all(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        rows.iter().map(row_to_projectv2_mirror_task).collect()
+    }
+}
+
+fn row_to_issue_dates(r: &sqlx::postgres::PgRow) -> Result<IssueDates, StoreError> {
+    Ok(IssueDates {
+        issue_id: r.try_get("issue_id").map_err(map_sqlx)?,
+        start_at: r.try_get("start_at").map_err(map_sqlx)?,
+        due_at: r.try_get("due_at").map_err(map_sqlx)?,
+        mirror_node_id: r.try_get("mirror_node_id").map_err(map_sqlx)?,
+        mirror_synced_at: r.try_get("mirror_synced_at").map_err(map_sqlx)?,
+        mirror_error: r.try_get("mirror_error").map_err(map_sqlx)?,
+        updated_at: r.try_get("updated_at").map_err(map_sqlx)?,
+    })
+}
+
+fn row_to_projectv2_mirror_task(
+    r: &sqlx::postgres::PgRow,
+) -> Result<ProjectV2MirrorTask, StoreError> {
+    let kind_s: String = r.try_get("kind").map_err(map_sqlx)?;
+    let kind = match kind_s.as_str() {
+        "mirror_dates" => ProjectV2MirrorTaskKind::MirrorDates,
+        "pull_back" => ProjectV2MirrorTaskKind::PullBack,
+        other => return Err(invalid(format!("unknown mirror task kind: {other}"))),
+    };
+    Ok(ProjectV2MirrorTask {
+        id: r.try_get("id").map_err(map_sqlx)?,
+        issue_id: r.try_get("issue_id").map_err(map_sqlx)?,
+        repo_id: r.try_get("repo_id").map_err(map_sqlx)?,
+        kind,
+        payload: r.try_get::<JsonValue, _>("payload").map_err(map_sqlx)?,
+        attempts: r.try_get("attempts").map_err(map_sqlx)?,
+        last_error: r.try_get("last_error").map_err(map_sqlx)?,
+        enqueued_at: r.try_get("enqueued_at").map_err(map_sqlx)?,
+        processed_at: r.try_get("processed_at").map_err(map_sqlx)?,
+    })
 }
 
 fn issue_mutation_op_to_text(op: IssueMutationOp) -> &'static str {

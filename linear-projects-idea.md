@@ -9,6 +9,74 @@
 
 ## 0. Progress log (2026-05-20)
 
+### Update — slice 2 closed (stage 12, 2026-05-20)
+
+Slice 1, slice 1.5 (P0 inbox bugs), and slice 2 are all landed
+on `codeless/triage-slice-2`. The triage workbench at
+`#/workflow/triage` now ships with: multi-identity manager,
+Teams + People rail, full CAS write path (`POST /issues`,
+`PATCH /issues/by-id`, `POST /issues/by-id/comments`),
+`GET /issues/by-id/timeline`, `GET /repos/by-id/sync-status` +
+`POST /repos/by-id/sync`, `GET /reports/issues`, start / due
+dates (`PATCH /issues/by-id/dates` + `GET /issues/{id}/dates`
+with best-effort Projects v2 mirror), `POST /me/inbox/bulk`,
+keyset-paginated `/me/queue`, every new handler registered in
+`DevPulseApi`, plus the FE polish set (dates picker + Due
+column + Due-this-week / Overdue smart views, resizable pane
+splitters, dark-mode pass, `PinDto.label` resolved client-side
+against `GET /repos`, ⌘K palette, group-by / sort dropdowns,
+bulk inbox actions, identity manager at `#/account/identities`).
+
+**Tech debt cleared:**
+
+- The three pre-existing `dp-fetcher` test failures
+  (`reconciler::tests::not_modified_keeps_since_and_etag_and_writes_no_events`,
+  `reconciler::tests::pr_list_synthesises_deliveries_that_flow_through_apply_path`,
+  `phase2_smoke::missed_webhook_detected_by_reconciler`) were
+  caused by the §13.7 org-scoped pass (teams / members) added
+  to `Reconciler::do_tick`: the wiremock fixtures only mount
+  `/repos/octo/hello/pulls`, so each tick produced two
+  unmocked-endpoint errors. Fixed in place by calling
+  `.with_org_kinds(&[])` in the reconciler test fixture and at
+  every `Reconciler::new` site in `phase2_smoke.rs` (the
+  Backfill sites already only take `with_kinds`). All three
+  tests are green; no quarantine needed.
+- `PinDto.label` shipped via client-side join against
+  `GET /repos` (stage 10/11) — see `triage-page.tsx`.
+
+**Verified (stage 12):**
+
+- `cargo test --workspace` — all green
+  (`dp-fetcher` 87/87, no failures anywhere).
+- `cd frontend && pnpm typecheck` — clean.
+- `make build` — clean (single 1.09 MB bundle warning is
+  pre-existing; slice 3 can chase code-splitting if needed).
+
+**Explicitly deferred to slice 3** (do not retry in slice 2):
+
+- Projects v2 *pull-back* — the slice-2 mirror is write-only
+  (`addProjectV2ItemById` + `updateProjectV2ItemFieldValue`),
+  there is no inbound sync of project-side date edits yet.
+  Stub task type exists; populating it needs the §6 projection
+  table and a webhook subscription.
+- Saved-view CRUD as a first-class object — slice 2 reuses
+  pins + tags as the saved-view substrate per §14.6. A real
+  `dp_saved_views` table with shareable URLs is slice 3.
+- SLA / digest / on-call rotation handoff — none of the §3.11
+  "ageing" or notification surfaces are wired; the inbox is
+  pull-only.
+- Mentions ingestion — `Mentioned` smart view is still a
+  slice-3 placeholder; needs the §6 `dp_issue_mentions`
+  projection populated by a worker pass over comment bodies.
+- Bundle code-splitting and the Reports charting library
+  pick — deferred per §11 of the original plan.
+
+The slice-3 brief lives in §15 below.
+
+---
+
+### Slice 1 + early slice 2 (original entry, 2026-05-20)
+
 Slice 1 of the §8 plan landed, plus the first half of slice 2.
 The triage shell is now reachable at `#/workflow/triage` (also
 the default `#/workflow` redirect) and the old `Repos` / `Issues`
@@ -1414,3 +1482,92 @@ Flip a state pill and watch it revert if the row was stale
 | No reporting | `/reports/issues`: throughput, lead time, WIP, stale, untriaged |
 | Sized for "one repo, a few issues" | Sized for 100s of repos, 1000s of issues |
 | Re-invents GitHub Issues | Uses what dev-pulse has that GitHub doesn't |
+
+---
+
+## 15. Slice-3 brief (next session pickup)
+
+Slice 1, 1.5, and 2 are closed on `codeless/triage-slice-2`.
+The branch is shippable; slice 3 is the *enrichment* slice
+that pays back the §1 promises slice 2 explicitly deferred.
+Pick up here.
+
+### 15.1 Scope (ordered, smallest-blast-radius first)
+
+1. **Mentions ingestion (§3.7 + §5.5)** — populate the
+   `dp_issue_mentions` projection table. Worker pass over
+   `dp_issues.body` + `dp_issue_comments.body`; extract
+   `@login` tokens with a single regex, resolve against
+   `dp_identities`, upsert `(issue_id, login)`. Wire the
+   `Mentioned` smart view in `/me/queue` and the `mentions`
+   filter in `ListIssuesQuery`. Migration: `dp_issue_mentions`
+   table + GIN index on `login`. Triggering: backfill once
+   over existing rows, then update from the same handlers
+   that touch issue body / comments in `dp-fetcher`.
+
+2. **Projects v2 pull-back (§3.10 stretch)** — currently the
+   date mirror is write-only. Add a `projects_v2_item` webhook
+   subscription, decode `field_value.changed`, and write back
+   into `dp_issue_dates` with `mirror_*` provenance so the
+   inbound edit doesn't fight the local writer. The stub task
+   type already exists; add the handler.
+
+3. **Saved views as a first-class object** — `dp_saved_views`
+   table `(id, owner_user_id, name, query JSONB, shared BOOL)`.
+   `query` is the §5 `ListIssuesQuery` shape. `GET / POST /
+   PATCH / DELETE /views` plus a `?view=<id>` form on the
+   triage URL. Replace the tag-backed substitute that ships in
+   stage 11 (the tag-as-saved-view fallback stays for back-compat).
+
+4. **Reports surface** — `frontend/src/reports/issues-report.tsx`
+   on top of the existing `GET /reports/issues`. Charts:
+   throughput (events/day), lead time (p50/p90), WIP, stale,
+   untriaged. Per §11 of the original plan pick `@tremor/react`
+   unless the team has already vendored something else.
+
+5. **SLA / digest / on-call (§3.11)** — daily digest email +
+   per-team on-call rotation. Backend: `dp_on_call_rotation`
+   + a scheduled task. Frontend: a Settings → Notifications
+   pane. Lower priority; can split into its own PR.
+
+### 15.2 Out of scope for slice 3
+
+- Bulk-import CSV / API for issues (still §4).
+- Custom fields beyond start / due dates.
+- Full-text search across issue bodies (slice 4 — needs a
+  separate Tantivy / pg_trgm decision).
+
+### 15.3 Files to start in
+
+- Backend: `crates/dp-fetcher/src/worker/handlers.rs` (mentions
+  extraction), `crates/dp-store-pg/migrations/dp/0018_*.sql`
+  (mentions + saved-views tables), `crates/dp-rest/src/issues_read.rs`
+  (mentions filter), new `crates/dp-rest/src/views.rs`.
+- Frontend: `frontend/src/workflow/triage-page.tsx` (URL form
+  `?view=<id>`), new `frontend/src/reports/issues-report.tsx`,
+  `frontend/src/api/client.ts` (views CRUD).
+
+### 15.4 Acceptance gate
+
+- `cargo test --workspace` green.
+- `cd frontend && pnpm typecheck` green.
+- `make build` green.
+- New `mentions` filter has at least one happy-path integration
+  test in `dp-rest`.
+- Projects v2 pull-back has a fixture-driven handler test in
+  `dp-fetcher` (no live GitHub).
+- Saved-views CRUD has an OpenAPI registration so the SDK
+  regenerates cleanly.
+
+### 15.5 Known caveats inherited from slice 2
+
+- `dp-fetcher` reconciler tests need `.with_org_kinds(&[])` if
+  you add new fixtures — wiremock will otherwise 404 on the
+  org-scoped (teams / members) pass.
+- `PinDto.label` is still client-resolved; if pin counts grow
+  past the `GET /repos` first-page window, denormalize it
+  server-side (the `triage-page.tsx` resolver was sized for
+  the §13.5 sidebar render cap of 50).
+- `/me/queue` keyset pagination uses `(updated_at, id)`; any
+  new arm added to the queue should ride the same covering
+  index (`dp_issues_updated_at_idx`) and respect `LIMIT $cap`.

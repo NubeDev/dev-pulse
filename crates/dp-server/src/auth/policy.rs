@@ -126,6 +126,15 @@ pub fn register_dev_pulse_resources(registry: &StaticRegistry) {
          and the §8 write surface (create / patch / comment).",
     ));
     registry.register_spec(ResourceSpec::from_static(
+        "repos",
+        &["read", "sync"],
+        Ownership::None,
+        "Repos",
+        "Repository read surface (`/repos`, `/repos/{id}/sync-status`) and the \
+         operator-triggered per-repo sync trigger (`POST /repos/{id}/sync`). \
+         `read` covers list + freshness; `sync` is the §5.9 trigger pair.",
+    ));
+    registry.register_spec(ResourceSpec::from_static(
         "tags",
         &["read", "write"],
         Ownership::None,
@@ -282,6 +291,26 @@ mod tests {
                 );
             }
             other => panic!("expected deny, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn repos_read_and_sync_are_registered() {
+        // Regression guard for the stage-9 review-gate failure: the
+        // §5.9 `(repos, read)` / `(repos, sync)` pairs from
+        // `dp_rest::repos::repos_router` were decorated against an
+        // unregistered resource, which the static engine rejected
+        // as `unknown_resource`. Both pairs must resolve to Allow
+        // for an in-org Reader so the boundary smoke stays green.
+        let e = engine();
+        for action in ["read", "sync"] {
+            let d = e
+                .check(&principal(true), action, &ResourceRef::collection("repos"))
+                .await;
+            assert!(
+                matches!(d, Decision::Allow { .. }),
+                "repos.{action} must be registered + allowed in-org; got {d:?}"
+            );
         }
     }
 

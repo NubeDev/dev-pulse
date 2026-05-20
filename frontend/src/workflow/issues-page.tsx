@@ -93,11 +93,13 @@ import {
   staleVersionFromError,
   useCommentOnIssue,
   useIssue,
+  useIssueDates,
   useIssueList,
   useMarkInboxSeen,
   useMyQueue,
   useSetInboxState,
   useUpdateIssue,
+  useUpdateIssueDates,
   writesUnavailableOrg,
 } from "./use-workflow-data.js";
 import { WritesGate } from "./writes-banner.js";
@@ -884,6 +886,7 @@ function IssueFormBody({
           </span>
         </div>
       </form>
+      <IssueDatesEditor issueId={issue.id} />
       <form className="flex flex-col gap-3 border-t border-border pt-4" onSubmit={onComment}>
         <Label>Add comment</Label>
         <Textarea
@@ -914,5 +917,130 @@ function useOrgLogin(orgId: string): string | undefined {
     }
     return undefined;
   }, [orgId]);
+}
+
+/**
+ * Start / due date pickers (§3.10). Reads the local
+ * `dp_issue_dates` row via `GET /issues/{id}/dates`, writes through
+ * `PATCH /issues/{id}/dates`. The PATCH is local-first — a mirror
+ * failure lands on `mirror_error` and is surfaced as a non-blocking
+ * footnote so the user knows the local save committed.
+ *
+ * The two inputs use `type="date"` so the picker stays
+ * accessible / keyboard-friendly without pulling a calendar
+ * dependency. Wire side carries RFC3339 instants; we serialise the
+ * local `YYYY-MM-DD` as `T00:00:00Z` (start) / `T23:59:59Z` (due)
+ * so a single-day deadline sorts correctly against `now()` in the
+ * `Due this week` / `Overdue` smart-view filters.
+ */
+function IssueDatesEditor({ issueId }: { issueId: string }): JSX.Element {
+  const dates = useIssueDates(issueId);
+  const update = useUpdateIssueDates(issueId);
+  const [start, setStart] = useState<string>("");
+  const [due, setDue] = useState<string>("");
+  const [error, setError] = useState<string | null>(null);
+
+  // Seed local inputs from the server row whenever it lands. We do
+  // not re-seed on every render so the user can edit freely without
+  // the input snapping back to the server value mid-keystroke.
+  const loaded = dates.data?.updated_at;
+  useEffect(() => {
+    if (!dates.data) return;
+    setStart(dates.data.start_at ? dates.data.start_at.slice(0, 10) : "");
+    setDue(dates.data.due_at ? dates.data.due_at.slice(0, 10) : "");
+    setError(null);
+  }, [loaded, dates.data]);
+
+  const submit = (ev: React.FormEvent): void => {
+    ev.preventDefault();
+    setError(null);
+    const startAt = start ? `${start}T00:00:00Z` : null;
+    const dueAt = due ? `${due}T23:59:59Z` : null;
+    if (startAt && dueAt && startAt > dueAt) {
+      setError("Start date must be on or before the due date.");
+      return;
+    }
+    update.mutate(
+      { start_at: startAt, due_at: dueAt },
+      {
+        onError: (e) => {
+          setError(e instanceof Error ? e.message : "Could not save dates.");
+        },
+      },
+    );
+  };
+
+  const clearAll = (): void => {
+    setStart("");
+    setDue("");
+    setError(null);
+    update.mutate({ start_at: null, due_at: null });
+  };
+
+  return (
+    <form
+      className="flex flex-col gap-2 border-t border-border pt-4"
+      onSubmit={submit}
+      data-testid="issue-dates-editor"
+    >
+      <Label className="text-sm">Dates</Label>
+      <div className="flex flex-wrap items-end gap-3">
+        <div className="flex flex-col gap-1">
+          <span className="text-xs text-muted-foreground">Start</span>
+          <Input
+            type="date"
+            value={start}
+            onChange={(e) => setStart(e.target.value)}
+            data-testid="issue-dates-start"
+            className="w-40"
+          />
+        </div>
+        <div className="flex flex-col gap-1">
+          <span className="text-xs text-muted-foreground">Due</span>
+          <Input
+            type="date"
+            value={due}
+            onChange={(e) => setDue(e.target.value)}
+            data-testid="issue-dates-due"
+            className="w-40"
+          />
+        </div>
+        <Button
+          type="submit"
+          size="sm"
+          disabled={update.isPending}
+          data-testid="issue-dates-save"
+        >
+          {update.isPending ? "Saving…" : "Save dates"}
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          onClick={clearAll}
+          disabled={update.isPending || (!start && !due)}
+        >
+          Clear
+        </Button>
+      </div>
+      {error && (
+        <p
+          className="text-xs text-destructive"
+          data-testid="issue-dates-error"
+          role="alert"
+        >
+          {error}
+        </p>
+      )}
+      {dates.data?.mirror_error && !error && (
+        <p
+          className="text-xs text-muted-foreground"
+          data-testid="issue-dates-mirror-error"
+        >
+          Saved locally. Projects v2 mirror failed: {dates.data.mirror_error}
+        </p>
+      )}
+    </form>
+  );
 }
 

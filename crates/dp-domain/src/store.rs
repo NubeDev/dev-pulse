@@ -25,6 +25,9 @@ use crate::fetch::{FetchCursor, FetchRun, FetchRunKind, ResourceKind};
 use crate::freshness::DataAsOf;
 use crate::inbox::{InboxIssueRow, InboxStatus, UserIssueState};
 use crate::issue::{Issue, IssueState, RepoSummary};
+use crate::issue_dates::{
+    IssueDates, ProjectV2MirrorTask, ProjectV2MirrorTaskKind, RepoProjectLink,
+};
 use crate::issue_mutation::{IssueMutation, IssueMutationResult};
 use crate::membership::Membership;
 use crate::org::Org;
@@ -288,6 +291,23 @@ pub trait Store: Send + Sync {
         Ok(0)
     }
 
+    /// Fetch a single repo row by primary key. Used by the §8 issue
+    /// write path to resolve `repo_id -> (org_id, name)` before
+    /// calling the GitHub backend. Default impl returns `None`;
+    /// in-memory test fakes that don't seed repos stay compiling.
+    async fn get_repo(&self, _id: Uuid) -> Result<Option<crate::repo::Repo>, StoreError> {
+        Ok(None)
+    }
+
+    /// Fetch a single org row by primary key. Pairs with
+    /// [`Store::get_repo`] to resolve `(org_login, repo_name)` for
+    /// the §8 GitHub call. Default impl scans [`Store::list_orgs`]
+    /// so storage implementations that override the listing surface
+    /// don't need a separate point lookup.
+    async fn get_org(&self, id: Uuid) -> Result<Option<crate::org::Org>, StoreError> {
+        Ok(self.list_orgs().await?.into_iter().find(|o| o.id == id))
+    }
+
     /// Fetch a single issue by primary key. The §8 detail pane
     /// uses this to re-read after a successful CAS write.
     async fn get_issue(&self, _id: Uuid) -> Result<Option<Issue>, StoreError> {
@@ -393,6 +413,92 @@ pub trait Store: Send + Sync {
         Err(StoreError::Invalid(
             "inbox state not supported by this store".into(),
         ))
+    }
+
+    /// Bulk variant of [`Store::set_inbox_state`]: apply one
+    /// `(status, snoozed_until)` pair to a batch of issues for one
+    /// user. Empty `issue_ids` is a no-op. Returns the number of
+    /// rows touched (inserted + updated).
+    ///
+    /// Semantics:
+    /// * `status = Inbox`   — restore to the inbox; clears any snooze.
+    /// * `status = Snoozed` — `snoozed_until` should be `Some(future)`.
+    /// * `status = Done`    — dismiss; ignores `snoozed_until`.
+    ///
+    /// Last-seen-version is preserved on existing rows (this is the
+    /// dismiss / snooze / restore action, not a "saw it" signal).
+    /// New rows are inserted with `last_seen_version = 0` so the
+    /// next render still shows them as unread until the user
+    /// actually opens them.
+    async fn set_inbox_state_bulk(
+        &self,
+        _user_id: Uuid,
+        _issue_ids: &[Uuid],
+        _status: InboxStatus,
+        _snoozed_until: Option<DateTime<Utc>>,
+    ) -> Result<u64, StoreError> {
+        Err(StoreError::Invalid(
+            "bulk inbox state not supported by this store".into(),
+        ))
+    }
+
+    // ---- issue timeline (triage slice 2 — §5.6) -------------------
+
+    /// Page of `dp_activity_events` rows scoped to one issue, used
+    /// by `GET /issues/{id}/timeline`. Rows are produced newest
+    /// first so the peek panel can render without re-sorting.
+    ///
+    /// Implementations match on the §6 expression-index predicate:
+    /// `repo_id = $repo_id AND kind IN ('issue_opened',
+    /// 'issue_closed', 'issue_comment') AND payload ? 'number' AND
+    /// payload->>'number' ~ '^[0-9]+$' AND
+    /// (payload->>'number')::int = $number`. The guard makes the
+    /// cast safe under malformed history.
+    ///
+    /// Default impl returns empty so non-Postgres fakes (used in
+    /// other crates' tests) don't fail; only `dp-store-pg`
+    /// provides a real implementation.
+    async fn list_events_for_issue(
+        &self,
+        _repo_id: Uuid,
+        _number: i64,
+        _limit: i64,
+        _offset: i64,
+    ) -> Result<Vec<IssueTimelineRow>, StoreError> {
+        Ok(Vec::new())
+    }
+
+    /// Total event count matching [`list_events_for_issue`]. Same
+    /// scope; used for the `total` envelope field.
+    async fn count_events_for_issue(
+        &self,
+        _repo_id: Uuid,
+        _number: i64,
+    ) -> Result<i64, StoreError> {
+        Ok(0)
+    }
+
+    // ---- repo sync status (triage slice 2 — §5.9) -----------------
+
+    /// Read sync freshness for one repo, synthesised from the
+    /// per-resource [`FetchCursor`] rows. Returns `None` if no
+    /// cursor exists yet (the repo has never been synced).
+    async fn get_repo_sync_status(
+        &self,
+        _repo_id: Uuid,
+    ) -> Result<Option<RepoSyncStatus>, StoreError> {
+        Ok(None)
+    }
+
+    // ---- issue metrics report (triage slice 2 — §5.10) ------------
+
+    /// Compute one issue-report metric over the §5.10 SQL shapes.
+    /// Implementations dispatch on the metric kind.
+    async fn issue_metrics(
+        &self,
+        _filter: &IssueMetricsFilter,
+    ) -> Result<Vec<IssueMetricRow>, StoreError> {
+        Ok(Vec::new())
     }
 
     // ---- events + actors -----------------------------------------
@@ -945,6 +1051,102 @@ pub trait Store: Send + Sync {
     ) -> Result<Vec<WebhookDelivery>, StoreError> {
         Ok(Vec::new())
     }
+
+    // ---- issue dates (triage slice 2 — §3.10) --------------------
+
+    /// Read the `dp_issue_dates` sidecar row for an issue, or
+    /// `None` when none exists yet (the issue has never had dates
+    /// set). Default impl returns `None` so in-memory fakes don't
+    /// need to model dates.
+    async fn get_issue_dates(
+        &self,
+        _issue_id: Uuid,
+    ) -> Result<Option<IssueDates>, StoreError> {
+        Ok(None)
+    }
+
+    /// Synchronous upsert of `(start_at, due_at)` on
+    /// `dp_issue_dates`. Returns the post-upsert row so the
+    /// handler can echo the canonical timestamps back to the UI.
+    /// The schema CHECK guards `start_at <= due_at`; violations
+    /// surface as [`StoreError::Invalid`] in the postgres backend.
+    /// Default impl rejects the call so misuse from fakes is loud.
+    async fn upsert_issue_dates(
+        &self,
+        _issue_id: Uuid,
+        _start_at: Option<DateTime<Utc>>,
+        _due_at: Option<DateTime<Utc>>,
+    ) -> Result<IssueDates, StoreError> {
+        Err(StoreError::Invalid(
+            "issue dates not supported by this store".into(),
+        ))
+    }
+
+    /// Write the mirror outcome back to `dp_issue_dates`. On
+    /// success: clears `mirror_error`, stamps `mirror_synced_at`,
+    /// and persists the Projects v2 *item* node id (so the next
+    /// mirror reuses it). On failure: stamps `mirror_error` only.
+    /// Default impl is a no-op so the date upsert always succeeds
+    /// even when the store lacks the table.
+    async fn record_issue_dates_mirror_result(
+        &self,
+        _issue_id: Uuid,
+        _outcome: IssueDatesMirrorOutcome<'_>,
+    ) -> Result<(), StoreError> {
+        Ok(())
+    }
+
+    /// Read the `dp_repo_project_link` row for a repo, or `None`
+    /// when the repo is not linked to a Projects v2 project.
+    async fn get_repo_project_link(
+        &self,
+        _repo_id: Uuid,
+    ) -> Result<Option<RepoProjectLink>, StoreError> {
+        Ok(None)
+    }
+
+    /// Enqueue a `dp_projectv2_mirror_tasks` row. Best-effort by
+    /// contract — the handler ignores errors from this call so
+    /// the local upsert is never blocked. Default impl is a no-op.
+    async fn enqueue_projectv2_mirror_task(
+        &self,
+        _issue_id: Uuid,
+        _repo_id: Uuid,
+        _kind: ProjectV2MirrorTaskKind,
+        _payload: serde_json::Value,
+    ) -> Result<(), StoreError> {
+        Ok(())
+    }
+
+    /// Drain up to `max` pending `mirror_dates` / `pull_back` rows
+    /// ordered by `enqueued_at ASC`. Slice-3 worker entry point;
+    /// returns the empty vec here so existing fakes stay green.
+    async fn claim_projectv2_mirror_tasks(
+        &self,
+        _max: i64,
+    ) -> Result<Vec<ProjectV2MirrorTask>, StoreError> {
+        Ok(Vec::new())
+    }
+}
+
+/// Outcome of a single Projects v2 mirror attempt, fed back into
+/// [`Store::record_issue_dates_mirror_result`]. Borrowed strings
+/// so the worker can pass GraphQL error text straight from its
+/// transport buffer without an intermediate allocation.
+#[derive(Debug, Clone, Copy)]
+pub enum IssueDatesMirrorOutcome<'a> {
+    /// Mirror succeeded; `node_id` is the Projects v2 *item* node
+    /// id GitHub returned (persist so the next edit updates the
+    /// same item instead of creating a duplicate card).
+    Success {
+        /// The Projects v2 item node id to persist.
+        node_id: &'a str,
+    },
+    /// Mirror failed; `error` is the verbatim GraphQL error text.
+    Failure {
+        /// Error text to persist to `mirror_error`.
+        error: &'a str,
+    },
 }
 
 /// Compact projection of `dp_issues` rows the §8.5 sweeper needs:
@@ -964,6 +1166,101 @@ pub struct PendingRemoteIssue {
     /// When the abandoned CAS landed. The sweeper picks rows where
     /// this is older than `now() - pending_remote_timeout_secs`.
     pub pending_remote_at: DateTime<Utc>,
+}
+
+/// One row in the timeline returned by
+/// [`Store::list_events_for_issue`]. Mirrors the shape `GET
+/// /issues/{id}/timeline` emits — see `linear-projects-idea.md`
+/// §5.6.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IssueTimelineRow {
+    /// `dp_activity_events.id`.
+    pub id: Uuid,
+    /// Event kind, parsed back into the typed enum.
+    pub kind: EventKind,
+    /// Source timestamp (`ts`), UTC.
+    pub ts: DateTime<Utc>,
+    /// One-line summary derived from `payload` — `"opened"`,
+    /// `"closed"`, `"commented: <body excerpt>"`, …
+    pub payload_summary: String,
+}
+
+/// Repo sync freshness — synthesised from `dp_fetch_cursors` plus
+/// scheduler state. See `linear-projects-idea.md` §3.9 / §5.9.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoSyncStatus {
+    /// Newest `dp_fetch_cursors.updated_at` seen for this repo.
+    pub last_synced_at: Option<DateTime<Utc>>,
+    /// Same source as `last_synced_at` until the schema grows a
+    /// dedicated `attempted_at` column (no error column exists
+    /// today; treat success and attempt as the same instant).
+    pub last_attempt_at: Option<DateTime<Utc>>,
+    /// Last sync error message, or `None` when the latest sync
+    /// succeeded. Currently always `None` — the cursor row carries
+    /// no error column; an explicit error projection would arrive
+    /// in a follow-up migration.
+    pub last_error: Option<String>,
+}
+
+/// Which §5.10 report metric to compute.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IssueMetric {
+    /// Closed issues per bucket.
+    Throughput,
+    /// Median open → close duration per bucket (seconds).
+    LeadTime,
+    /// Currently-open assigned count.
+    Wip,
+    /// Open + idle (`updated_at < now() - interval '30 days'`).
+    Stale,
+    /// Open + no assignee + no label.
+    Untriaged,
+}
+
+/// Group-by axis for §5.10 metrics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IssueMetricGroupBy {
+    /// Group by `repo_id`.
+    Repo,
+    /// Group by `org_id`.
+    Org,
+    /// Group by per-row `assignee` (`jsonb_array_elements_text`).
+    Assignee,
+    /// Group by ISO week (`date_trunc('week', ...)`).
+    Week,
+    /// Group by ISO day (`date_trunc('day', ...)`).
+    Day,
+}
+
+/// Filter passed to [`Store::issue_metrics`].
+#[derive(Debug, Clone)]
+pub struct IssueMetricsFilter {
+    /// Which metric to compute.
+    pub metric: IssueMetric,
+    /// Group-by axis.
+    pub group_by: IssueMetricGroupBy,
+    /// Inclusive lower bound on the event timestamp (`since`).
+    pub since: Option<DateTime<Utc>>,
+    /// Exclusive upper bound on the event timestamp (`until`).
+    pub until: Option<DateTime<Utc>>,
+    /// Restrict to these orgs (caller's `org_ids ∩ wire scope`).
+    pub org_ids: Vec<Uuid>,
+    /// Restrict to these repos.
+    pub repo_ids: Vec<Uuid>,
+}
+
+/// One row in the §5.10 reports response.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IssueMetricRow {
+    /// Bucket label — repo slug, org login, login, or RFC3339 date.
+    pub bucket: String,
+    /// Metric value. Unit depends on the metric: count for
+    /// throughput / wip / stale / untriaged, seconds (median) for
+    /// lead_time.
+    pub value: f64,
+    /// Row count contributing to `value` (used by the lead-time
+    /// median so the frontend can show "n=12").
+    pub count: i64,
 }
 
 /// Filter for [`Store::list_repos`] / [`Store::count_repos`].
@@ -1049,6 +1346,12 @@ pub struct IssueListFilter {
     /// with **no** assignees and **no** labels. Combines with the
     /// rest of the filter (so "Untriaged in org X" is one call).
     pub untriaged_only: bool,
+    /// Optional keyset cursor used by `/me/queue` pagination.
+    /// When `Some((ts, id))`, the store emits a strictly-less-than
+    /// page on `(updated_at, id)` so concurrent inbox mutations do
+    /// not produce drift across pages. Empty for non-keyset
+    /// callers.
+    pub keyset_after: Option<(DateTime<Utc>, Uuid)>,
 }
 
 /// Hard upper bound on `limit` across the workflow read surface.

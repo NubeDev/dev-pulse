@@ -209,7 +209,8 @@ async fn missed_webhook_detected_by_reconciler() {
         Arc::new(client),
         targets,
     )
-    .with_kinds(&[ResourceKind::PullRequests]);
+    .with_kinds(&[ResourceKind::PullRequests])
+    .with_org_kinds(&[]);
 
     // The reconciler's list call returns one PR that the local
     // store has never seen — i.e. its `opened` webhook went
@@ -359,7 +360,8 @@ async fn scheduler_coalesces_overlapping_ticks() {
         Arc::new(client),
         targets,
     )
-    .with_kinds(&[ResourceKind::PullRequests]);
+    .with_kinds(&[ResourceKind::PullRequests])
+    .with_org_kinds(&[]);
 
     Mock::given(method("GET"))
         .and(path("/repos/octo/hello/pulls"))
@@ -448,7 +450,8 @@ async fn fetch_runs_row_written_per_batch_per_kind() {
         Arc::new(client),
         targets.clone(),
     )
-    .with_kinds(&[ResourceKind::PullRequests]);
+    .with_kinds(&[ResourceKind::PullRequests])
+    .with_org_kinds(&[]);
     Mock::given(method("GET"))
         .and(path("/repos/octo/hello/pulls"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))

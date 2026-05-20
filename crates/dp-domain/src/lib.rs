@@ -29,6 +29,7 @@ pub mod fetch;
 pub mod freshness;
 pub mod inbox;
 pub mod issue;
+pub mod issue_dates;
 pub mod issue_mutation;
 pub mod membership;
 pub mod org;
@@ -49,6 +50,9 @@ pub use fetch::{FetchCursor, FetchRun, FetchRunKind, ResourceKind};
 pub use freshness::DataAsOf;
 pub use inbox::{InboxIssueRow, InboxStatus, UserIssueState};
 pub use issue::{Issue, IssueState, RepoSummary};
+pub use issue_dates::{
+    IssueDates, ProjectV2MirrorTask, ProjectV2MirrorTaskKind, RepoProjectLink,
+};
 pub use issue_mutation::{IssueMutation, IssueMutationOp, IssueMutationResult};
 pub use membership::{Membership, MembershipRole};
 pub use org::Org;
@@ -56,6 +60,10 @@ pub use pin::{Pin, PinKind, PIN_CAP};
 pub use repo::Repo;
 pub use store::{PendingRemoteIssue, Store, StoreError};
 pub use store::{IssueListFilter, RepoListFilter, DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT};
+pub use store::{
+    IssueMetric, IssueMetricGroupBy, IssueMetricRow, IssueMetricsFilter, IssueTimelineRow,
+    RepoSyncStatus,
+};
 pub use tag::{Tag, TagScopeKind, TAG_LINK_WARN_THRESHOLD};
 pub use tag_link::{TagLink, TagLinkKind};
 pub use team::Team;
