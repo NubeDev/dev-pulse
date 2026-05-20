@@ -30,10 +30,12 @@ pub use envelope::{
 };
 pub use freshness::{pick_headline as pick_freshness_headline, DataAsOf, DataAsOfExt};
 pub use leaderboard::{
-    build_user_single_org_sql, resolve_leaderboard_envelope, LeaderboardContext,
-    LeaderboardEnvelope, LeaderboardError, LeaderboardFooter, LeaderboardHeadline,
-    LeaderboardPrimary, LeaderboardResponse, LeaderboardRow, MetricId,
-    ResolvedLeaderboardEnvelope, SubjectKind, USER_SINGLE_ORG_BIND_ORDER,
+    build_leaderboard_sql, build_user_single_org_sql, resolve_leaderboard_envelope,
+    validate_subject_scope_combo, LeaderboardContext, LeaderboardEnvelope, LeaderboardError,
+    LeaderboardFooter, LeaderboardHeadline, LeaderboardPrimary, LeaderboardResponse,
+    LeaderboardRow, MetricId, ResolvedLeaderboardEnvelope, SubjectKind,
+    HOME_ORG_LABEL_UNLABELED_BUCKET, HOME_ORG_LABEL_UNLABELED_LABEL, LEADERBOARD_BIND_ORDER,
+    LEADERBOARD_TIE_BREAK_ORDER_BY_CLAUSE, USER_SINGLE_ORG_BIND_ORDER,
 };
 
 // Re-export the resolved Window type from dp-domain so callers only

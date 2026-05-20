@@ -1,10 +1,15 @@
 //! Leaderboard report kind — scaffold (ORG-REPORTS.md §1–§6).
 //!
 //! Stage 3 lays down the type surface and a thin SQL builder for
-//! `subject = user` in single-org mode only. Pagination
-//! (ORG-REPORTS §6.5), `also_compute` (§6.3), `subject_ids` (§6.10),
-//! the reconciliation footer (§6.2), and the `my_standing` companion
-//! endpoint (§6.9) land in later stages.
+//! `subject = user` in single-org mode only. Stage 4 extends the
+//! envelope gate + the SQL builder to every valid
+//! ([`SubjectKind`], [`ScopeMode`]) pair, locks the §6.1 tie-break
+//! order via [`LEADERBOARD_TIE_BREAK_ORDER_BY_CLAUSE`], and pins the
+//! §6.8 `home_org_label` aggregation (incl. the `__unlabeled__`
+//! synthetic bucket). Pagination (ORG-REPORTS §6.5), `also_compute`
+//! (§6.3), `subject_ids` (§6.10), the reconciliation footer (§6.2),
+//! and the `my_standing` companion endpoint (§6.9) land in later
+//! stages.
 //!
 //! ## Surfaces this module is shared across
 //!
@@ -38,9 +43,9 @@ use crate::envelope::{resolve_window_at, ResolveError, ScopeMode, WindowSpec};
 /// What a leaderboard row represents.
 ///
 /// Orthogonal to the time / org / repo / team dimensions already in
-/// SCOPE.md §8. Stage 3 only wires [`SubjectKind::User`]; the other
-/// three variants land in stage 4 with the full
-/// [`ScopeMode`] fan-out.
+/// SCOPE.md §8. Stage 4 wires every variant with the full
+/// [`ScopeMode`] fan-out subject to the §2 invalid-combo rules
+/// rejected up-front by [`validate_subject_scope_combo`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SubjectKind {
@@ -93,12 +98,14 @@ fn default_include_bots() -> bool {
 pub struct LeaderboardEnvelope {
     /// Window spec, resolved server-side via [`resolve_window_at`].
     pub window: WindowSpec,
-    /// Org-scope lens (SCOPE §8.1). Stage 3 only honours
-    /// [`ScopeMode::SingleOrg`].
+    /// Org-scope lens (SCOPE §8.1). All three modes are accepted as
+    /// of stage 4; invalid pairings with [`Self::subject`] are
+    /// rejected by [`validate_subject_scope_combo`].
     pub scope_mode: ScopeMode,
     /// Orgs in scope. Empty means "all orgs the principal can see"
     /// (the auth layer narrows the set in Phase 4). Single-org mode
-    /// expects exactly one entry; stage 4 broadens this.
+    /// expects exactly one entry; cross-org modes accept one or
+    /// more.
     #[serde(default)]
     pub orgs: Vec<Uuid>,
     /// Repo filter. Empty == no filter.
@@ -112,7 +119,7 @@ pub struct LeaderboardEnvelope {
     /// [`CountMetric::default_actor_roles`].
     #[serde(default)]
     pub actor_roles: Vec<ActorRole>,
-    /// Subject axis (§2). Stage 3 only honours [`SubjectKind::User`].
+    /// Subject axis (§2). All four variants accepted as of stage 4.
     pub subject: SubjectKind,
     /// The one §15.7 metric used to sort + paginate.
     pub rank_by: MetricId,
@@ -272,15 +279,23 @@ pub struct LeaderboardResponse {
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum LeaderboardError {
-    /// Subject axis not yet wired in this stage. Lifts in stage 4.
-    #[error("leaderboard subject={0:?} not yet implemented (stage 3 only honours subject=user)")]
-    SubjectNotYetWired(SubjectKind),
-    /// Scope mode not yet wired in this stage. Lifts in stage 4.
-    #[error("leaderboard scope_mode={0:?} not yet implemented (stage 3 only honours single_org)")]
-    ScopeModeNotYetWired(ScopeMode),
     /// `orgs` must contain exactly one id in single-org mode.
     #[error("single_org scope requires exactly one org id, got {0}")]
     SingleOrgRequiresOneOrg(usize),
+    /// Cross-org modes require at least one org in scope.
+    #[error("cross-org scope requires at least one org id, got 0")]
+    CrossOrgRequiresOrgs,
+    /// The `(subject, scope_mode)` pair is meaningless per
+    /// ORG-REPORTS §2 — e.g. `team` in `all_orgs_combined` (teams do
+    /// not cross orgs) or `org` in `single_org` (a one-row
+    /// leaderboard is not a leaderboard).
+    #[error("leaderboard subject={subject:?} is invalid in scope_mode={scope_mode:?} (ORG-REPORTS §2)")]
+    InvalidSubjectScopeCombo {
+        /// The subject axis that was requested.
+        subject: SubjectKind,
+        /// The scope mode that was requested.
+        scope_mode: ScopeMode,
+    },
     /// Window spec failed to resolve.
     #[error(transparent)]
     Resolve(#[from] ResolveError),
@@ -290,25 +305,52 @@ pub enum LeaderboardError {
 // Envelope resolution
 // ---------------------------------------------------------------------------
 
+/// Validate a (subject, scope_mode) pair per ORG-REPORTS §2.
+///
+/// The combinations rejected here are *meaningless*, not merely
+/// unwired: `team` in `all_orgs_combined` (teams are org-scoped by
+/// definition — combining them across orgs is undefined) and `org`
+/// in `single_org` (a leaderboard with one row is degenerate).
+/// Every other pair is honoured by the stage-4 SQL builder.
+pub fn validate_subject_scope_combo(
+    subject: SubjectKind,
+    scope_mode: ScopeMode,
+) -> Result<(), LeaderboardError> {
+    match (subject, scope_mode) {
+        (SubjectKind::Team, ScopeMode::AllOrgsCombined)
+        | (SubjectKind::Org, ScopeMode::SingleOrg) => {
+            Err(LeaderboardError::InvalidSubjectScopeCombo { subject, scope_mode })
+        }
+        _ => Ok(()),
+    }
+}
+
 /// Resolve a [`LeaderboardEnvelope`] at `now`, returning the
 /// [`ResolvedLeaderboardEnvelope`] echoed in the response.
 ///
-/// Stage 3 enforces the `subject = user` + `scope_mode = single_org`
-/// gate so unwired combinations fail fast with a typed error instead
-/// of silently producing the user-single-org SQL for a different
-/// subject. Stage 4 widens this check.
+/// Stage 4 accepts every valid `(subject, scope_mode)` pair per
+/// ORG-REPORTS §2 and validates the `orgs` cardinality contract per
+/// scope mode.
 pub fn resolve_leaderboard_envelope(
     env: &LeaderboardEnvelope,
     now: DateTime<Utc>,
 ) -> Result<ResolvedLeaderboardEnvelope, LeaderboardError> {
-    if env.subject != SubjectKind::User {
-        return Err(LeaderboardError::SubjectNotYetWired(env.subject));
-    }
-    if env.scope_mode != ScopeMode::SingleOrg {
-        return Err(LeaderboardError::ScopeModeNotYetWired(env.scope_mode));
-    }
-    if env.orgs.len() != 1 {
-        return Err(LeaderboardError::SingleOrgRequiresOneOrg(env.orgs.len()));
+    validate_subject_scope_combo(env.subject, env.scope_mode)?;
+    match env.scope_mode {
+        ScopeMode::SingleOrg => {
+            if env.orgs.len() != 1 {
+                return Err(LeaderboardError::SingleOrgRequiresOneOrg(env.orgs.len()));
+            }
+        }
+        ScopeMode::AllOrgsCombined | ScopeMode::PerOrgSplit => {
+            // Empty `orgs` is the wire-form "all orgs the principal
+            // can see" — the auth layer in Phase 4 narrows it. The
+            // SQL builder bind point requires the resolved list to
+            // be non-empty; here we only reject the unambiguous
+            // "client sent [] and we have no principal context"
+            // shape once the principal layer lands. Stage 4 keeps
+            // the constructor permissive (empty == defer to auth).
+        }
     }
     let resolved_window = resolve_window_at(&env.window, now)?;
     Ok(ResolvedLeaderboardEnvelope {
@@ -379,6 +421,328 @@ pub fn build_user_single_org_sql() -> &'static str {
       GROUP BY ea.user_id \
       ORDER BY primary_value DESC, active_days DESC, subject_id ASC"
 }
+
+// ---------------------------------------------------------------------------
+// §6.8 — `home_org_label` aggregation
+// ---------------------------------------------------------------------------
+
+/// Synthetic `subject_id` for users with `dp_memberships.home_org IS
+/// NULL` when `subject = home_org_label`.
+///
+/// ORG-REPORTS §6.8: NULL home-orgs are bucketed into a single
+/// synthetic row rather than silently dropped, so an org with poor
+/// home-org coverage shows up loud in the leaderboard rather than
+/// vanishing. Suppression requires an explicit envelope filter, not
+/// an accident of aggregation. The string is intentionally
+/// underscore-bracketed so it can never collide with a real
+/// org-slug/UUID.
+pub const HOME_ORG_LABEL_UNLABELED_BUCKET: &str = "__unlabeled__";
+
+/// Human-friendly label for [`HOME_ORG_LABEL_UNLABELED_BUCKET`].
+pub const HOME_ORG_LABEL_UNLABELED_LABEL: &str = "(no home org)";
+
+// ---------------------------------------------------------------------------
+// §6.1 — tie-break order, locked
+// ---------------------------------------------------------------------------
+
+/// The §6.1 tie-break order, expressed as the `ORDER BY` clause
+/// every leaderboard SQL string emits verbatim.
+///
+/// `primary_value DESC → active_days DESC → subject_id ASC`. The
+/// `subject_id` final break is intentional: labels (`login`,
+/// `team.slug`, `org.login`) can change; ids do not. Sharing this
+/// string across every (subject × scope) variant is what makes the
+/// REST / MCP / frontend surfaces deterministic without each one
+/// re-implementing the rule.
+pub const LEADERBOARD_TIE_BREAK_ORDER_BY_CLAUSE: &str =
+    "ORDER BY primary_value DESC, active_days DESC, subject_id ASC";
+
+// ---------------------------------------------------------------------------
+// Stage-4 thin SQL builder — every valid (subject, scope) pair
+// ---------------------------------------------------------------------------
+
+/// Parameter bind order for [`build_leaderboard_sql`].
+///
+/// Unified across every `(subject, scope_mode)` combo so the store
+/// adapter and any integration test bind the same way regardless of
+/// the lens chosen. Single-org callers pass `org_ids` as a
+/// one-element `uuid[]`; the envelope validation in
+/// [`resolve_leaderboard_envelope`] guarantees the cardinality.
+pub const LEADERBOARD_BIND_ORDER: &[&str] = &[
+    "$1 window.start (timestamptz)",
+    "$2 window.end (timestamptz, exclusive)",
+    "$3 org_ids (uuid[]; cardinality >= 1)",
+    "$4 event_kind (text — from CountMetric::event_kind())",
+    "$5 actor_roles (text[] — from envelope.actor_roles or CountMetric::default_actor_roles())",
+    "$6 repos (uuid[]; cardinality 0 == no filter)",
+];
+
+/// SQL for the leaderboard, fanned out per `(subject, scope_mode)`.
+///
+/// Returns the SQL string the store will execute against
+/// `dp_activity_events` / `dp_event_actors` (+ `dp_memberships` /
+/// `dp_teams` joins where the subject requires them). Returns an
+/// error for the §2 invalid combinations.
+///
+/// Every variant:
+///
+/// * binds in [`LEADERBOARD_BIND_ORDER`],
+/// * projects the same five columns —
+///   `subject_id / primary_value / active_days / repos_touched /
+///   active_orgs` — so the row-mapper is shared,
+/// * sorts by [`LEADERBOARD_TIE_BREAK_ORDER_BY_CLAUSE`] (§6.1),
+/// * omits `LIMIT` / `OFFSET` (pagination lands in stage 6),
+/// * omits bot suppression (the store applies it post-fetch so
+///   §6.4's `bots_suppressed_events` is computable without a second
+///   query).
+///
+/// `per_org_split` is the only mode whose SQL groups by
+/// `(subject, org_id)` and projects `subject_org` as a sixth
+/// column; the response shape's `LeaderboardRow.subject_org` is
+/// populated **only** for that mode (response §5).
+///
+/// `home_org_label` uses `COALESCE(m.home_org::text,
+/// HOME_ORG_LABEL_UNLABELED_BUCKET)` as the grouping key so NULL
+/// home-orgs end up in the synthetic bucket per §6.8.
+pub fn build_leaderboard_sql(
+    subject: SubjectKind,
+    scope_mode: ScopeMode,
+) -> Result<&'static str, LeaderboardError> {
+    validate_subject_scope_combo(subject, scope_mode)?;
+    Ok(match (subject, scope_mode) {
+        // ---- subject = user ------------------------------------------------
+        (SubjectKind::User, ScopeMode::SingleOrg) => USER_SINGLE_ORG_SQL,
+        (SubjectKind::User, ScopeMode::AllOrgsCombined) => USER_ALL_ORGS_COMBINED_SQL,
+        (SubjectKind::User, ScopeMode::PerOrgSplit) => USER_PER_ORG_SPLIT_SQL,
+        // ---- subject = team (single-org and per-org-split only) -----------
+        (SubjectKind::Team, ScopeMode::SingleOrg) => TEAM_SINGLE_ORG_SQL,
+        (SubjectKind::Team, ScopeMode::PerOrgSplit) => TEAM_PER_ORG_SPLIT_SQL,
+        // ---- subject = org (all-orgs-combined and per-org-split only) -----
+        (SubjectKind::Org, ScopeMode::AllOrgsCombined) => ORG_ALL_ORGS_COMBINED_SQL,
+        (SubjectKind::Org, ScopeMode::PerOrgSplit) => ORG_PER_ORG_SPLIT_SQL,
+        // ---- subject = home_org_label (all three modes) -------------------
+        (SubjectKind::HomeOrgLabel, ScopeMode::SingleOrg) => HOME_ORG_LABEL_SINGLE_ORG_SQL,
+        (SubjectKind::HomeOrgLabel, ScopeMode::AllOrgsCombined) => {
+            HOME_ORG_LABEL_ALL_ORGS_COMBINED_SQL
+        }
+        (SubjectKind::HomeOrgLabel, ScopeMode::PerOrgSplit) => HOME_ORG_LABEL_PER_ORG_SPLIT_SQL,
+        // ---- §2 invalid combos — already rejected above -------------------
+        (SubjectKind::Team, ScopeMode::AllOrgsCombined)
+        | (SubjectKind::Org, ScopeMode::SingleOrg) => unreachable!("validated above"),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Per-(subject, scope) SQL strings
+// ---------------------------------------------------------------------------
+//
+// Each string assumes `LEADERBOARD_BIND_ORDER`. The active_orgs
+// column is computed as `count(DISTINCT e.org_id)` for cross-org
+// variants and hard-coded `1::bigint` for single-org / per-org-split
+// (which both produce one row per org by construction).
+//
+// active_days truncates `e.ts` to UTC days — re-anchoring to the
+// window TZ is a §15.8 trend-bucket concern owned by stage 4's
+// sparkline plumbing, not the rank query.
+// ---------------------------------------------------------------------------
+
+// --- subject = user --------------------------------------------------------
+
+const USER_SINGLE_ORG_SQL: &str = "SELECT ea.user_id::text                                AS subject_id, \
+                                          count(*)::bigint                                 AS primary_value, \
+                                          count(DISTINCT date_trunc('day', e.ts))::bigint  AS active_days, \
+                                          count(DISTINCT e.repo_id)::bigint                AS repos_touched, \
+                                          1::bigint                                        AS active_orgs \
+                                     FROM dp_event_actors ea \
+                                     JOIN dp_activity_events e ON e.id = ea.event_id \
+                                    WHERE e.ts   >= $1 \
+                                      AND e.ts   <  $2 \
+                                      AND e.org_id = ANY($3) \
+                                      AND e.kind   = $4 \
+                                      AND ea.role  = ANY($5) \
+                                      AND (cardinality($6::uuid[]) = 0 OR e.repo_id = ANY($6)) \
+                                    GROUP BY ea.user_id \
+                                    ORDER BY primary_value DESC, active_days DESC, subject_id ASC";
+
+const USER_ALL_ORGS_COMBINED_SQL: &str = "SELECT ea.user_id::text                                AS subject_id, \
+                                                 count(*)::bigint                                 AS primary_value, \
+                                                 count(DISTINCT date_trunc('day', e.ts))::bigint  AS active_days, \
+                                                 count(DISTINCT e.repo_id)::bigint                AS repos_touched, \
+                                                 count(DISTINCT e.org_id)::bigint                 AS active_orgs \
+                                            FROM dp_event_actors ea \
+                                            JOIN dp_activity_events e ON e.id = ea.event_id \
+                                           WHERE e.ts   >= $1 \
+                                             AND e.ts   <  $2 \
+                                             AND e.org_id = ANY($3) \
+                                             AND e.kind   = $4 \
+                                             AND ea.role  = ANY($5) \
+                                             AND (cardinality($6::uuid[]) = 0 OR e.repo_id = ANY($6)) \
+                                           GROUP BY ea.user_id \
+                                           ORDER BY primary_value DESC, active_days DESC, subject_id ASC";
+
+const USER_PER_ORG_SPLIT_SQL: &str = "SELECT ea.user_id::text                                AS subject_id, \
+                                             e.org_id                                         AS subject_org, \
+                                             count(*)::bigint                                 AS primary_value, \
+                                             count(DISTINCT date_trunc('day', e.ts))::bigint  AS active_days, \
+                                             count(DISTINCT e.repo_id)::bigint                AS repos_touched, \
+                                             1::bigint                                        AS active_orgs \
+                                        FROM dp_event_actors ea \
+                                        JOIN dp_activity_events e ON e.id = ea.event_id \
+                                       WHERE e.ts   >= $1 \
+                                         AND e.ts   <  $2 \
+                                         AND e.org_id = ANY($3) \
+                                         AND e.kind   = $4 \
+                                         AND ea.role  = ANY($5) \
+                                         AND (cardinality($6::uuid[]) = 0 OR e.repo_id = ANY($6)) \
+                                       GROUP BY ea.user_id, e.org_id \
+                                       ORDER BY primary_value DESC, active_days DESC, subject_id ASC";
+
+// --- subject = team --------------------------------------------------------
+//
+// Team membership lives in a yet-to-be-added `dp_team_members
+// (team_id, user_id, org_id)` table — the store-side prerequisite
+// for these strings is tracked alongside the duration-metric fetch
+// (STAGE-1-COMPOSABILITY §3). The SQL is shaped so it lights up the
+// instant the membership table exists; until then the team variants
+// are scaffold-only (REST/MCP integration sits behind a §6.x feature
+// gate that stage 6+ wires).
+
+const TEAM_SINGLE_ORG_SQL: &str = "SELECT tm.team_id::text                                AS subject_id, \
+                                          count(*)::bigint                                 AS primary_value, \
+                                          count(DISTINCT date_trunc('day', e.ts))::bigint  AS active_days, \
+                                          count(DISTINCT e.repo_id)::bigint                AS repos_touched, \
+                                          1::bigint                                        AS active_orgs \
+                                     FROM dp_event_actors ea \
+                                     JOIN dp_activity_events e ON e.id = ea.event_id \
+                                     JOIN dp_team_members   tm ON tm.user_id = ea.user_id AND tm.org_id = e.org_id \
+                                    WHERE e.ts   >= $1 \
+                                      AND e.ts   <  $2 \
+                                      AND e.org_id = ANY($3) \
+                                      AND e.kind   = $4 \
+                                      AND ea.role  = ANY($5) \
+                                      AND (cardinality($6::uuid[]) = 0 OR e.repo_id = ANY($6)) \
+                                    GROUP BY tm.team_id \
+                                    ORDER BY primary_value DESC, active_days DESC, subject_id ASC";
+
+const TEAM_PER_ORG_SPLIT_SQL: &str = "SELECT tm.team_id::text                                AS subject_id, \
+                                             e.org_id                                         AS subject_org, \
+                                             count(*)::bigint                                 AS primary_value, \
+                                             count(DISTINCT date_trunc('day', e.ts))::bigint  AS active_days, \
+                                             count(DISTINCT e.repo_id)::bigint                AS repos_touched, \
+                                             1::bigint                                        AS active_orgs \
+                                        FROM dp_event_actors ea \
+                                        JOIN dp_activity_events e ON e.id = ea.event_id \
+                                        JOIN dp_team_members   tm ON tm.user_id = ea.user_id AND tm.org_id = e.org_id \
+                                       WHERE e.ts   >= $1 \
+                                         AND e.ts   <  $2 \
+                                         AND e.org_id = ANY($3) \
+                                         AND e.kind   = $4 \
+                                         AND ea.role  = ANY($5) \
+                                         AND (cardinality($6::uuid[]) = 0 OR e.repo_id = ANY($6)) \
+                                       GROUP BY tm.team_id, e.org_id \
+                                       ORDER BY primary_value DESC, active_days DESC, subject_id ASC";
+
+// --- subject = org ---------------------------------------------------------
+
+const ORG_ALL_ORGS_COMBINED_SQL: &str = "SELECT e.org_id::text                                  AS subject_id, \
+                                                count(*)::bigint                                 AS primary_value, \
+                                                count(DISTINCT date_trunc('day', e.ts))::bigint  AS active_days, \
+                                                count(DISTINCT e.repo_id)::bigint                AS repos_touched, \
+                                                1::bigint                                        AS active_orgs \
+                                           FROM dp_event_actors ea \
+                                           JOIN dp_activity_events e ON e.id = ea.event_id \
+                                          WHERE e.ts   >= $1 \
+                                            AND e.ts   <  $2 \
+                                            AND e.org_id = ANY($3) \
+                                            AND e.kind   = $4 \
+                                            AND ea.role  = ANY($5) \
+                                            AND (cardinality($6::uuid[]) = 0 OR e.repo_id = ANY($6)) \
+                                          GROUP BY e.org_id \
+                                          ORDER BY primary_value DESC, active_days DESC, subject_id ASC";
+
+// per_org_split for subject=org is degenerate (subject_id == subject_org),
+// but ORG-REPORTS §5 keeps it valid — the frontend renders the grouped
+// table with one row per group, which is still useful UX (it exercises
+// the same code path as user/team per-org-split). subject_org is
+// projected to keep the row-mapper shared.
+const ORG_PER_ORG_SPLIT_SQL: &str = "SELECT e.org_id::text                                  AS subject_id, \
+                                            e.org_id                                         AS subject_org, \
+                                            count(*)::bigint                                 AS primary_value, \
+                                            count(DISTINCT date_trunc('day', e.ts))::bigint  AS active_days, \
+                                            count(DISTINCT e.repo_id)::bigint                AS repos_touched, \
+                                            1::bigint                                        AS active_orgs \
+                                       FROM dp_event_actors ea \
+                                       JOIN dp_activity_events e ON e.id = ea.event_id \
+                                      WHERE e.ts   >= $1 \
+                                        AND e.ts   <  $2 \
+                                        AND e.org_id = ANY($3) \
+                                        AND e.kind   = $4 \
+                                        AND ea.role  = ANY($5) \
+                                        AND (cardinality($6::uuid[]) = 0 OR e.repo_id = ANY($6)) \
+                                      GROUP BY e.org_id \
+                                      ORDER BY primary_value DESC, active_days DESC, subject_id ASC";
+
+// --- subject = home_org_label ---------------------------------------------
+//
+// §6.8: group by `COALESCE(m.home_org::text, '__unlabeled__')` so
+// users without a home-org membership land in the synthetic bucket
+// rather than vanishing. Count metrics sum across all members of
+// the label (one row per `(user, event)` actor pair already, so a
+// plain `count(*)` is the sum the spec asks for — no averaging-of-
+// averages). The `m.home_org` join is `LEFT JOIN` so users with no
+// membership row still aggregate into `__unlabeled__`.
+
+const HOME_ORG_LABEL_SINGLE_ORG_SQL: &str = "SELECT COALESCE(m.home_org::text, '__unlabeled__')      AS subject_id, \
+                                                    count(*)::bigint                                 AS primary_value, \
+                                                    count(DISTINCT date_trunc('day', e.ts))::bigint  AS active_days, \
+                                                    count(DISTINCT e.repo_id)::bigint                AS repos_touched, \
+                                                    1::bigint                                        AS active_orgs \
+                                               FROM dp_event_actors ea \
+                                               JOIN dp_activity_events e ON e.id = ea.event_id \
+                                          LEFT JOIN dp_memberships    m ON m.user_id = ea.user_id AND m.home_org = m.org_id \
+                                              WHERE e.ts   >= $1 \
+                                                AND e.ts   <  $2 \
+                                                AND e.org_id = ANY($3) \
+                                                AND e.kind   = $4 \
+                                                AND ea.role  = ANY($5) \
+                                                AND (cardinality($6::uuid[]) = 0 OR e.repo_id = ANY($6)) \
+                                              GROUP BY COALESCE(m.home_org::text, '__unlabeled__') \
+                                              ORDER BY primary_value DESC, active_days DESC, subject_id ASC";
+
+const HOME_ORG_LABEL_ALL_ORGS_COMBINED_SQL: &str = "SELECT COALESCE(m.home_org::text, '__unlabeled__')      AS subject_id, \
+                                                           count(*)::bigint                                 AS primary_value, \
+                                                           count(DISTINCT date_trunc('day', e.ts))::bigint  AS active_days, \
+                                                           count(DISTINCT e.repo_id)::bigint                AS repos_touched, \
+                                                           count(DISTINCT e.org_id)::bigint                 AS active_orgs \
+                                                      FROM dp_event_actors ea \
+                                                      JOIN dp_activity_events e ON e.id = ea.event_id \
+                                                 LEFT JOIN dp_memberships    m ON m.user_id = ea.user_id AND m.home_org = m.org_id \
+                                                     WHERE e.ts   >= $1 \
+                                                       AND e.ts   <  $2 \
+                                                       AND e.org_id = ANY($3) \
+                                                       AND e.kind   = $4 \
+                                                       AND ea.role  = ANY($5) \
+                                                       AND (cardinality($6::uuid[]) = 0 OR e.repo_id = ANY($6)) \
+                                                     GROUP BY COALESCE(m.home_org::text, '__unlabeled__') \
+                                                     ORDER BY primary_value DESC, active_days DESC, subject_id ASC";
+
+const HOME_ORG_LABEL_PER_ORG_SPLIT_SQL: &str = "SELECT COALESCE(m.home_org::text, '__unlabeled__')      AS subject_id, \
+                                                       e.org_id                                         AS subject_org, \
+                                                       count(*)::bigint                                 AS primary_value, \
+                                                       count(DISTINCT date_trunc('day', e.ts))::bigint  AS active_days, \
+                                                       count(DISTINCT e.repo_id)::bigint                AS repos_touched, \
+                                                       1::bigint                                        AS active_orgs \
+                                                  FROM dp_event_actors ea \
+                                                  JOIN dp_activity_events e ON e.id = ea.event_id \
+                                             LEFT JOIN dp_memberships    m ON m.user_id = ea.user_id AND m.home_org = m.org_id \
+                                                 WHERE e.ts   >= $1 \
+                                                   AND e.ts   <  $2 \
+                                                   AND e.org_id = ANY($3) \
+                                                   AND e.kind   = $4 \
+                                                   AND ea.role  = ANY($5) \
+                                                   AND (cardinality($6::uuid[]) = 0 OR e.repo_id = ANY($6)) \
+                                                 GROUP BY COALESCE(m.home_org::text, '__unlabeled__'), e.org_id \
+                                                 ORDER BY primary_value DESC, active_days DESC, subject_id ASC";
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -458,22 +822,54 @@ mod tests {
     }
 
     #[test]
-    fn resolve_rejects_non_user_subject() {
-        let mut env = sample_envelope();
-        env.subject = SubjectKind::Team;
-        let err = resolve_leaderboard_envelope(&env, utc(2025, 6, 15, 12, 0, 0)).unwrap_err();
-        assert_eq!(err, LeaderboardError::SubjectNotYetWired(SubjectKind::Team));
+    fn resolve_accepts_every_valid_subject_scope_pair() {
+        // Stage 4 lifts the stage-3 gate: every §2-valid combo must
+        // resolve cleanly so the dispatch fans out to the right SQL.
+        let valid = [
+            (SubjectKind::User, ScopeMode::SingleOrg),
+            (SubjectKind::User, ScopeMode::AllOrgsCombined),
+            (SubjectKind::User, ScopeMode::PerOrgSplit),
+            (SubjectKind::Team, ScopeMode::SingleOrg),
+            (SubjectKind::Team, ScopeMode::PerOrgSplit),
+            (SubjectKind::Org, ScopeMode::AllOrgsCombined),
+            (SubjectKind::Org, ScopeMode::PerOrgSplit),
+            (SubjectKind::HomeOrgLabel, ScopeMode::SingleOrg),
+            (SubjectKind::HomeOrgLabel, ScopeMode::AllOrgsCombined),
+            (SubjectKind::HomeOrgLabel, ScopeMode::PerOrgSplit),
+        ];
+        for (subject, scope_mode) in valid {
+            let mut env = sample_envelope();
+            env.subject = subject;
+            env.scope_mode = scope_mode;
+            // Single-org expects exactly one; cross-org accepts >= 1
+            // (the auth layer narrows []).
+            env.orgs = vec![Uuid::nil()];
+            let r = resolve_leaderboard_envelope(&env, utc(2025, 6, 18, 12, 0, 0));
+            assert!(
+                r.is_ok(),
+                "expected ({subject:?}, {scope_mode:?}) to resolve, got {r:?}",
+            );
+        }
     }
 
     #[test]
-    fn resolve_rejects_non_single_org_scope() {
-        let mut env = sample_envelope();
-        env.scope_mode = ScopeMode::AllOrgsCombined;
-        let err = resolve_leaderboard_envelope(&env, utc(2025, 6, 15, 12, 0, 0)).unwrap_err();
-        assert_eq!(
-            err,
-            LeaderboardError::ScopeModeNotYetWired(ScopeMode::AllOrgsCombined)
-        );
+    fn resolve_rejects_invalid_subject_scope_combos() {
+        // ORG-REPORTS §2: team is meaningless in all_orgs_combined;
+        // org is meaningless in single_org (one-row leaderboard).
+        for (subject, scope_mode) in [
+            (SubjectKind::Team, ScopeMode::AllOrgsCombined),
+            (SubjectKind::Org, ScopeMode::SingleOrg),
+        ] {
+            let mut env = sample_envelope();
+            env.subject = subject;
+            env.scope_mode = scope_mode;
+            env.orgs = vec![Uuid::nil()];
+            let err = resolve_leaderboard_envelope(&env, utc(2025, 6, 18, 12, 0, 0)).unwrap_err();
+            assert_eq!(
+                err,
+                LeaderboardError::InvalidSubjectScopeCombo { subject, scope_mode },
+            );
+        }
     }
 
     #[test]
@@ -574,6 +970,224 @@ mod tests {
         row_with.subject_org = Some(Uuid::nil());
         let json = serde_json::to_string(&row_with).unwrap();
         assert!(json.contains("subject_org"), "{json}");
+    }
+
+    // ----- Stage 4: dispatch + tie-break + home_org_label ---------------
+
+    fn all_valid_pairs() -> Vec<(SubjectKind, ScopeMode)> {
+        vec![
+            (SubjectKind::User, ScopeMode::SingleOrg),
+            (SubjectKind::User, ScopeMode::AllOrgsCombined),
+            (SubjectKind::User, ScopeMode::PerOrgSplit),
+            (SubjectKind::Team, ScopeMode::SingleOrg),
+            (SubjectKind::Team, ScopeMode::PerOrgSplit),
+            (SubjectKind::Org, ScopeMode::AllOrgsCombined),
+            (SubjectKind::Org, ScopeMode::PerOrgSplit),
+            (SubjectKind::HomeOrgLabel, ScopeMode::SingleOrg),
+            (SubjectKind::HomeOrgLabel, ScopeMode::AllOrgsCombined),
+            (SubjectKind::HomeOrgLabel, ScopeMode::PerOrgSplit),
+        ]
+    }
+
+    #[test]
+    fn dispatch_returns_sql_for_every_valid_pair() {
+        for (s, sm) in all_valid_pairs() {
+            let sql = build_leaderboard_sql(s, sm)
+                .unwrap_or_else(|e| panic!("({s:?}, {sm:?}) should dispatch: {e}"));
+            assert!(!sql.is_empty(), "({s:?}, {sm:?}) returned empty SQL");
+        }
+    }
+
+    #[test]
+    fn dispatch_rejects_invalid_pairs() {
+        for (s, sm) in [
+            (SubjectKind::Team, ScopeMode::AllOrgsCombined),
+            (SubjectKind::Org, ScopeMode::SingleOrg),
+        ] {
+            let err = build_leaderboard_sql(s, sm).unwrap_err();
+            assert_eq!(
+                err,
+                LeaderboardError::InvalidSubjectScopeCombo {
+                    subject: s,
+                    scope_mode: sm
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn every_dispatch_sql_emits_the_locked_tie_break_clause() {
+        // §6.1: the tie-break order is identical across every
+        // (subject, scope) combo. A drift here is the §11.4
+        // divergence trap.
+        for (s, sm) in all_valid_pairs() {
+            let sql = build_leaderboard_sql(s, sm).unwrap();
+            assert!(
+                sql.contains(LEADERBOARD_TIE_BREAK_ORDER_BY_CLAUSE),
+                "({s:?}, {sm:?}) missing locked tie-break clause; got: {sql}",
+            );
+        }
+    }
+
+    #[test]
+    fn every_dispatch_sql_projects_the_shared_row_mapper_columns() {
+        // The store-side row-mapper expects the same five base
+        // columns regardless of (subject, scope). per_org_split
+        // additionally projects `subject_org`; that case is checked
+        // separately below.
+        for (s, sm) in all_valid_pairs() {
+            let sql = build_leaderboard_sql(s, sm).unwrap();
+            for col in [
+                "subject_id",
+                "primary_value",
+                "active_days",
+                "repos_touched",
+                "active_orgs",
+            ] {
+                assert!(sql.contains(col), "({s:?}, {sm:?}) missing {col}: {sql}");
+            }
+        }
+    }
+
+    #[test]
+    fn per_org_split_variants_project_subject_org() {
+        // §5: `subject_org` is populated only in per_org_split. The
+        // SQL must project it for those variants and only those
+        // variants, mirroring the response shape's
+        // `skip_serializing_if = Option::is_none`.
+        for (s, sm) in all_valid_pairs() {
+            let sql = build_leaderboard_sql(s, sm).unwrap();
+            let projects_subject_org = sql.contains("AS subject_org");
+            assert_eq!(
+                projects_subject_org,
+                sm == ScopeMode::PerOrgSplit,
+                "({s:?}, {sm:?}) subject_org projection should match per_org_split"
+            );
+        }
+    }
+
+    #[test]
+    fn cross_org_variants_compute_active_orgs_dynamically() {
+        // all_orgs_combined is the only mode where active_orgs is a
+        // real signal — it tells us how many orgs the subject
+        // appears in. Single-org and per-org-split produce one row
+        // per org by construction, so a hard-coded `1::bigint` is
+        // correct there. subject=org is special: each row IS an
+        // org, so active_orgs is trivially 1 even in
+        // all_orgs_combined.
+        for (s, sm) in all_valid_pairs() {
+            let sql = build_leaderboard_sql(s, sm).unwrap();
+            let expect_distinct = sm == ScopeMode::AllOrgsCombined && s != SubjectKind::Org;
+            if expect_distinct {
+                assert!(
+                    sql.contains("count(DISTINCT e.org_id)::bigint                 AS active_orgs"),
+                    "({s:?}, {sm:?}) should compute active_orgs via count(DISTINCT): {sql}",
+                );
+            } else {
+                assert!(
+                    sql.contains("1::bigint                                        AS active_orgs"),
+                    "({s:?}, {sm:?}) should hard-code active_orgs = 1: {sql}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn home_org_label_uses_the_unlabeled_bucket_coalesce() {
+        // §6.8: NULL home-orgs land in the `__unlabeled__` synthetic
+        // bucket via `COALESCE(m.home_org::text, '__unlabeled__')`.
+        // The bucket name is shared with the wire constant so a
+        // rename here propagates to the response shape — drift is
+        // exactly the §11.4 divergence trap.
+        for sm in [
+            ScopeMode::SingleOrg,
+            ScopeMode::AllOrgsCombined,
+            ScopeMode::PerOrgSplit,
+        ] {
+            let sql = build_leaderboard_sql(SubjectKind::HomeOrgLabel, sm).unwrap();
+            assert!(
+                sql.contains(&format!(
+                    "COALESCE(m.home_org::text, '{}')",
+                    HOME_ORG_LABEL_UNLABELED_BUCKET
+                )),
+                "({sm:?}) home_org_label SQL must coalesce NULL to bucket: {sql}",
+            );
+            // §6.8 — never silently dropped: the join must be LEFT
+            // so users without a membership row still aggregate.
+            assert!(
+                sql.contains("LEFT JOIN dp_memberships"),
+                "({sm:?}) home_org_label must LEFT JOIN memberships",
+            );
+        }
+    }
+
+    #[test]
+    fn home_org_label_bucket_constants_are_stable() {
+        // The wire form of the synthetic row is locked: any rename
+        // would break dashboards keyed on `__unlabeled__`.
+        assert_eq!(HOME_ORG_LABEL_UNLABELED_BUCKET, "__unlabeled__");
+        assert_eq!(HOME_ORG_LABEL_UNLABELED_LABEL, "(no home org)");
+    }
+
+    #[test]
+    fn leaderboard_bind_order_is_six_params_for_every_variant() {
+        assert_eq!(LEADERBOARD_BIND_ORDER.len(), 6);
+        for (s, sm) in all_valid_pairs() {
+            let sql = build_leaderboard_sql(s, sm).unwrap();
+            for i in 1..=6 {
+                assert!(sql.contains(&format!("${i}")), "({s:?}, {sm:?}) missing ${i}");
+            }
+        }
+    }
+
+    #[test]
+    fn no_dispatch_sql_carries_limit_or_offset() {
+        // Pagination lands in stage 6 as a cursor predicate, not
+        // LIMIT/OFFSET — keep this guard so the change is visible.
+        for (s, sm) in all_valid_pairs() {
+            let sql = build_leaderboard_sql(s, sm).unwrap();
+            let upper = sql.to_ascii_uppercase();
+            assert!(!upper.contains(" LIMIT "), "({s:?}, {sm:?}): {sql}");
+            assert!(!upper.contains(" OFFSET "), "({s:?}, {sm:?}): {sql}");
+        }
+    }
+
+    #[test]
+    fn team_variants_join_team_members_within_org() {
+        // Teams are org-scoped (§2). The dp_team_members join must
+        // include the org_id predicate so a user's team in org A
+        // doesn't pick up their events in org B.
+        for sm in [ScopeMode::SingleOrg, ScopeMode::PerOrgSplit] {
+            let sql = build_leaderboard_sql(SubjectKind::Team, sm).unwrap();
+            assert!(
+                sql.contains("JOIN dp_team_members   tm ON tm.user_id = ea.user_id AND tm.org_id = e.org_id"),
+                "({sm:?}) team join must scope by (user_id, org_id): {sql}",
+            );
+        }
+    }
+
+    #[test]
+    fn validator_matches_dispatcher_on_invalid_combos() {
+        // The validator is the single source of truth for §2 — any
+        // drift between the standalone validator and the
+        // dispatcher's gate would let an invalid combo into the
+        // store layer.
+        for s in [
+            SubjectKind::User,
+            SubjectKind::Team,
+            SubjectKind::Org,
+            SubjectKind::HomeOrgLabel,
+        ] {
+            for sm in [
+                ScopeMode::SingleOrg,
+                ScopeMode::AllOrgsCombined,
+                ScopeMode::PerOrgSplit,
+            ] {
+                let v_ok = validate_subject_scope_combo(s, sm).is_ok();
+                let d_ok = build_leaderboard_sql(s, sm).is_ok();
+                assert_eq!(v_ok, d_ok, "validator/dispatcher disagree on ({s:?}, {sm:?})");
+            }
+        }
     }
 
     #[test]
