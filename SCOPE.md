@@ -161,6 +161,156 @@ Every report **must** support three org-scope lenses, selectable at the top of t
 
 **De-duplication rule for "All orgs combined":** people active in multiple orgs count **once** in *People active*. Events (PRs, reviews, etc.) are summed across orgs. This is why the combined total in *People active* can be smaller than the sum of per-org totals — it's correct, not a bug, and the UI must label it so users don't misread it.
 
+### 8.2 Leaderboard report kind (cross-cutting primitive)
+
+Every report shape locked elsewhere in §8 ranks **events through
+time** for a fixed subject. The **leaderboard** is the orthogonal
+shape: it ranks **subjects** against each other for a fixed §15.7
+metric, under the same three §8.1 org-scope modes. It is the
+cross-cutting primitive — the same query scales from one user to
+one team to one org to all orgs without changing surface, envelope,
+or aggregation rules. Compare-users is a thin client of it (§15.15
+decision 10), not a separate backend mode.
+
+The decisions that pin the leaderboard's semantics — tie-break,
+reconciliation, pagination, bot suppression, NULL handling,
+`home_org_label` aggregation, and the rejection of composite
+scores — live in **§15.15**. This section pins the shape only.
+
+#### Subject axis
+
+```
+SubjectKind = user | team | org | home_org_label
+```
+
+- `user` — one row per `users.id` (post-bot-filter, §15.15
+  decision 4).
+- `team` — one row per `teams.id`. Org-scoped by definition; in
+  "all orgs combined" mode this kind is **invalid** and the API
+  rejects the envelope rather than producing nonsense.
+- `org` — one row per `orgs.id`. Only meaningful in
+  "all orgs combined" or "per-org split" modes.
+- `home_org_label` — one row per distinct value of
+  `users.home_org_label` (§3 goal 3). NULL labels bucket into a
+  synthetic `__unlabeled__` row (§15.15 decision 8).
+
+#### Envelope
+
+Extends §15.6 with the fields specific to ranking subjects. No
+existing §15.6 field changes meaning, so an existing report URL
+can be pivoted into a leaderboard by adding two query params.
+
+```rust
+pub struct LeaderboardEnvelope {
+    // inherited from §15.6, unchanged
+    pub window:        Window,
+    pub org_scope:     ScopeMode,        // §8.1 three modes
+    pub repos:         Option<Vec<RepoId>>,
+    pub teams:         Option<Vec<TeamId>>,
+    pub actor_roles:   Option<Vec<ActorRole>>,
+    pub tz:            Tz,
+    // leaderboard-specific
+    pub subject:       SubjectKind,
+    pub rank_by:       MetricId,             // exactly one §15.7 row
+    pub also_compute:  Option<Vec<MetricId>>, // §15.15 dec. 3, cap 5
+    pub subject_ids:   Option<Vec<SubjectId>>,// §15.15 dec. 10, cap 50
+    pub include_bots:  bool,                  // default false
+    pub page:          PageRequest,           // §15.15 dec. 5
+}
+```
+
+- `rank_by` is exactly one §15.7 metric. Server-side sort and
+  pagination are *only* on `rank_by` — composite scores are
+  rejected (§15.15 decision 7).
+- `also_compute` carries additional §15.7 metrics into each row's
+  `context` block so the UI can re-sort the visible page without
+  a second request. It does not change rank order or pagination.
+- `subject_ids` filters *before* ranking; the resulting ranks are
+  within the filtered set, not the global one. In this mode
+  pagination is disabled (§15.15 decision 10).
+
+#### Response
+
+Mirrors §15.6's headline+table+trend triple with the table re-typed
+as a ranked list:
+
+```jsonc
+{
+  "envelope": {
+    /* request echo, with the window resolved to absolute UTC
+       timestamps. Identical input + identical resolved_at must
+       produce identical output (§15.15 decision 5). */
+    "resolved_at":     "2026-05-20T09:00:00Z",
+    "resolved_window": { "from": "...", "to": "..." }
+  },
+  "headline": { "total_subjects": 42, "events_total": 1287, ... },
+  "rows": [
+    {
+      "rank":         1,
+      "subject_id":   "...",
+      "subject_kind": "user",
+      "subject_label":"alice",
+      "subject_org":  "...",     // only in per-org-split
+      "primary":      { "metric": "prs_merged", "value": 23 },
+      "context":      {
+        "active_days": 14, "repos_touched": 6,
+        "reviews_given": { "value": 41 },
+        "pr_cycle_time_hours_p50": { "value": 19.4, "n": 23 }
+      },
+      "sparkline":    [ /* per-bucket counts, §15.8 */ ],
+      "active_orgs":  3
+    }
+  ],
+  "footer": {
+    "unattributed_events":        17,   // §15.15 decision 2
+    "unattributed_events_metric": 11,   // §15.15 decision 2
+    "insufficient_data":          4,    // §15.15 decision 6
+    "bots_suppressed":            2,    // §15.15 decision 4
+    "bots_suppressed_events":     38    // §15.15 decision 4
+  },
+  "page": { "next_cursor": "...", "has_more": true }
+}
+```
+
+#### Org-scope interaction (the trap to avoid)
+
+Each §8.1 mode produces a different leaderboard. The UI must label
+the mode explicitly so users never compare results across modes by
+accident.
+
+| Mode               | What "rank" means                                                  | Row identity                                                |
+|--------------------|--------------------------------------------------------------------|-------------------------------------------------------------|
+| **single-org**     | Rank within one codebase.                                          | `subject`                                                   |
+| **all-orgs-combined** | Rank by cross-org total, de-duplicated.                         | `subject` (one row even if active in N orgs)                |
+| **per-org-split**  | Rank by `(subject × org)` pair — surfaces context-switching.       | `(subject_id, subject_org)` — only mode where rows repeat   |
+
+`per-org-split` is the only mode where a single user can appear
+multiple times and the only mode where `rows[].subject_org` is
+populated. The frontend must visually group those rows together
+(grouped table, not a flat list) or §8.1's "spread thin" insight
+is lost in the sort order.
+
+#### Endpoint shape — note
+
+§15.15 decisions 9 and 10 together imply **two endpoints, not one**:
+the manager/admin-scoped `leaderboard` endpoint described above,
+plus the IC-self-view `my_standing` endpoint (decision 9) which
+reuses the same SQL primitives behind a separate envelope so
+`total_subjects` and page boundaries cannot leak distributional
+information about colleagues. This split is load-bearing — see
+§15.15 for the rationale.
+
+#### Reconciliation with §4 non-goals
+
+§4 forbids "rank all users by X" as a UI affordance. The
+leaderboard endpoint is **not** that affordance: it is the backend
+primitive that powers manager team-distribution views (§7), exec
+contribution-split views (§7), and the IC `my_standing` view
+(§15.15 decision 9). The UI rules from §4 still apply — no
+single-number "developer score", no surfaced "rank all users"
+button — and §15.15 decision 7 makes the composite-score
+prohibition a backend invariant, not a UI policy.
+
 ### Aggregation functions
 
 - **Counts** for discrete events (commits, PRs, reviews, issues).
@@ -641,3 +791,197 @@ TODO §0.1–§0.6 are settled and locked as inputs to Phase 2:
   splits fragment Phase 7 TS generation and Phase 5 MCP schemas.
 - **Revisit if:** starter crates add native utoipa annotations →
   remove the shims.
+
+### 15.15 Leaderboard semantics (Phase 3+)
+
+Pins the ten decisions that make the §8.2 leaderboard report kind
+behave identically across REST, MCP, and frontend. Each one is a
+source of silent divergence between surfaces (a §11.4 trust
+violation) if left unpinned.
+
+**Two-endpoint shape (load-bearing):** decisions 9 and 10 together
+mean the leaderboard surface ships as **two endpoints, not one**:
+
+- The manager/admin `leaderboard` endpoint (decisions 1–8, 10).
+- The IC `my_standing` endpoint (decision 9) — same SQL
+  primitives, separate envelope, separate permission, headline
+  computed over the visible set only.
+
+This split must survive the §8.2 → §15.15 fold: collapsing the two
+into one endpoint with a projection flag re-introduces the
+`total_subjects` / page-boundary leak that decision 9 explicitly
+rejects.
+
+#### 15.15.1 Tie-break order, locked
+
+- **Decision (Phase 3+):** `rank_by DESC → active_days DESC →
+  subject_id ASC`. Deterministic across REST, MCP, and frontend.
+  `subject_id` is the final tie-break because labels (`login`,
+  `team.slug`) can change; ids do not.
+- **Revisit if:** a new metric class makes `active_days` a poor
+  secondary signal — replace it deliberately, do not silently add
+  a third sort key.
+
+#### 15.15.2 Unattributed events, with explicit reconciliation
+
+- **Decision (Phase 3+):** events with `event_actors.user_id IS
+  NULL` (§15.7) are excluded from `subject = user` rows but
+  surfaced in the footer with **two** counts:
+  - `unattributed_events` — total unattributed in the resolved
+    window (matches the headline report).
+  - `unattributed_events_metric` — unattributed events that would
+    have contributed to `rank_by` if attributed.
+- **Reconciliation identity (count metrics only):**
+
+  ```
+  headline.events_total
+    == sum(rows[].primary.value)
+     + footer.unattributed_events_metric
+     + footer.bots_suppressed_events
+  ```
+
+  For duration metrics the identity is meaningless (values are
+  aggregates, not counts) and the check is skipped, but
+  `unattributed_events_metric` is still reported. A debug-build
+  assertion enforces the identity for count metrics.
+- **Scope of the identity:** `headline` and `footer` carry
+  **full-result** totals, not per-page totals. The
+  reconciliation identity holds across the union of all pages,
+  not page-by-page — `sum(rows[].primary.value)` in the identity
+  means the sum over the entire result set, computed before
+  pagination is applied.
+- **Revisit if:** §15.7 grows a metric class that violates both
+  the count and duration semantics (e.g. ratios) → carve out a
+  third exemption deliberately.
+
+#### 15.15.3 Multi-metric rows via `also_compute`, not composite scores
+
+- **Decision (Phase 3+):** `also_compute` carries up to **5**
+  additional §15.7 metrics per row in `row.context`. Server-side
+  sort and pagination remain on `rank_by` only — `also_compute`
+  is a display affordance, not a sort affordance.
+- **Why:** the UI can re-sort the visible page client-side
+  without a second request, and the compare-users mode (decision
+  10) can fetch every metric of interest in one call.
+- **Page-boundary invariance:** changing `also_compute` between
+  page requests must not shift which subjects appear on which
+  page; tests cover this.
+- **Revisit if:** the 5-metric cap is too tight for a real
+  compare-users flow → raise it, but keep the cap (response size
+  is a real constraint).
+
+#### 15.15.4 Bot suppression is a filter, not a rank rule
+
+- **Decision (Phase 3+):** `include_bots` defaults `false`. Bots
+  never silently disappear from event totals (they still appear
+  in the headline); they only disappear from the ranked rows.
+  Two footer counts:
+  - `bots_suppressed` — number of bot subjects hidden from rows.
+  - `bots_suppressed_events` — events those bots contributed,
+    needed by the §15.15.2 identity.
+- **Revisit if:** a deployment wants bots inline by default (CI
+  bots as first-class contributors) → flip the default in
+  `starter-config`, not in the wire format.
+
+#### 15.15.5 Stable cursor pagination, pinned to resolved window
+
+- **Decision (Phase 3+):** `cursor = (resolved_window_end,
+  rank_by_value, subject_id)`. The resolved window is captured
+  at request time (`envelope.resolved_at` in §8.2) and pinned
+  into the cursor, so events landing between page 1 and page 2
+  cannot reshuffle or duplicate rows. A subsequent page request
+  with a stale `resolved_window_end` is honoured (server reuses
+  the pinned window); a request whose envelope window has moved
+  forward returns `400 cursor_window_mismatch` rather than
+  silently mixing two snapshots. Default page size 25; max 200.
+- **Revisit if:** a UI needs jumping (page N of 50) rather than
+  forward-only cursors → add an offset-mode variant; do not
+  retrofit the cursor.
+
+#### 15.15.6 Duration metrics: NULL ranks last
+
+- **Decision (Phase 3+):** subjects below §15.9's sufficiency
+  threshold for the chosen duration metric have NULL aggregates
+  and sort to the bottom in a labelled "insufficient data"
+  group — never as 0, never silently mid-rank. Counted in
+  `footer.insufficient_data`. The threshold lives in §15.9; the
+  leaderboard does not define its own.
+- **Revisit if:** §15.9's threshold becomes configurable per
+  deployment → the leaderboard footer label must reflect the
+  active threshold, not a hard-coded "n < 5".
+
+#### 15.15.7 No composite "productivity score"
+
+- **Decision (Phase 3+):** rank exactly one named §15.7 metric
+  at a time. A weighted scalar across metrics is rejected on two
+  grounds:
+  - §11.4 trust — a black-box score is unauditable.
+  - §9 transparency — every number must be traceable to a §15.7
+    row.
+  The multi-metric escape hatch is `also_compute` (decision 3),
+  which never affects rank order.
+- **Revisit if:** never silently. Re-opening this requires an
+  explicit §9 transparency review and a §11.4 trust review.
+
+#### 15.15.8 `home_org_label` aggregation, pinned
+
+- **Decision (Phase 3+):** when `subject = home_org_label`:
+  - **Aggregation** — count metrics sum across all members of
+    the label; duration metrics use the same percentile
+    aggregator as the per-user version (§15.9), computed over
+    the union of member events. **No averaging-of-averages.**
+  - **NULL labels** — users with `home_org_label IS NULL` are
+    bucketed into a single synthetic row with `subject_id =
+    "__unlabeled__"` and `subject_label = "(no home org)"`, so
+    they are never silently dropped. Suppressing them requires
+    an explicit envelope filter, not an accident of aggregation.
+  - **Single-member labels** are surfaced as-is — in shared-org
+    scenarios a label with one member is real signal, not noise.
+- **Revisit if:** §3 goal 3's manual mapping is supplemented by
+  email-domain inference → decide whether inferred labels share
+  the `__unlabeled__` bucket or get their own provisional row.
+
+#### 15.15.9 IC self-view is a **separate** report kind (`my_standing`)
+
+- **Decision (Phase 3+):** the leaderboard endpoint requires
+  manager/admin scope. An IC asking "where do I sit?" calls a
+  **separate `my_standing` endpoint** that returns:
+  - the viewer's own row in full,
+  - an anonymised neighbour window (±3 ranks, labels "—"),
+  - a headline computed **over the visible set only**.
+- **Why separate, not a projection flag:** `total_subjects` and
+  page boundaries are themselves distributional information about
+  colleagues. A single endpoint with "IC mode" projection would
+  leak both. Same SQL primitives underneath; distinct envelope,
+  distinct permission, distinct response.
+- **Permissioning:** lives at the `with_principal +
+  require_permission` boundary (§15.12). The leaderboard
+  endpoint and `my_standing` endpoint carry distinct permission
+  predicates.
+- **Revisit if:** a deployment exposes leaderboards to ICs
+  directly (e.g. a small co-op where rankings are public) →
+  config-flag `my_standing.fallback_to_leaderboard`, do not
+  merge the endpoints.
+
+#### 15.15.10 `subject_ids` is the small-N compare-users path
+
+- **Decision (Phase 3+):** `subject_ids` is capped at **50** and
+  is honoured only when its length is ≤ that cap; larger
+  requests are rejected with `400 subject_ids_too_large`. In
+  `subject_ids` mode pagination is **disabled** — the server
+  returns all matching rows in one response — so the
+  compare-users UI can request every metric of interest via
+  `also_compute` (decision 3) and never deal with cursors.
+- **Cursor conflict is a typed 400, not silent:** a request that
+  both sets `subject_ids` and carries a `page.cursor` is rejected
+  with `400 pagination_disabled_for_subject_ids`. Quietly
+  ignoring the cursor would let REST and MCP drift on behaviour;
+  surfacing the conflict keeps the three surfaces loud.
+- **Why:** §7's "compare these users" use-case is the only
+  place a backend pairwise endpoint would be justified;
+  `subject_ids` + `also_compute` covers it without a new surface
+  (see §8.2 promotion path).
+- **Revisit if:** real compare flows routinely hit > 50 subjects
+  → raise the cap deliberately, do not re-enable pagination in
+  this mode (the UI semantics depend on "all rows in one
+  response").
