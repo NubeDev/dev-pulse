@@ -267,10 +267,244 @@ function reportParamsToQuery(params: ReportParams | undefined): string {
 }
 
 // ---------------------------------------------------------------------------
+// Workflow surface (SCOPE-PROJECTS §6 / §7 / §8 / §13.6) DTOs.
+// ---------------------------------------------------------------------------
+
+/** §6.1 / §13.5 working assumption — data-model cap. Mirrored from
+ *  `dp_domain::PIN_CAP`. */
+export const PIN_CAP = 20;
+/** §6.1 / §13.5 working assumption — sidebar render cap *after* tag
+ *  expansion. Above this the overflow collapses into "…and N more". */
+export const PIN_RENDER_CAP = 50;
+/** §13.5 — group-by-tag cap. */
+export const TAGS_GROUP_BY_CAP = 50;
+/** §13.5 — soft warning threshold for a single tag's link count. */
+export const TAG_LINK_WARN_THRESHOLD = 500;
+
+export const PinKindSchema = z.enum(["repo", "tag"]);
+export type PinKind = z.infer<typeof PinKindSchema>;
+
+export const PinDtoSchema = z.object({
+  kind: PinKindSchema,
+  target_id: uuid,
+  position: z.number().int(),
+  pinned_at: isoDateTime,
+});
+export type PinDto = z.infer<typeof PinDtoSchema>;
+
+export const AddPinRequestSchema = z.object({
+  kind: PinKindSchema,
+  target_id: uuid,
+});
+export type AddPinRequest = z.infer<typeof AddPinRequestSchema>;
+
+export const PinKeyDtoSchema = z.object({
+  kind: PinKindSchema,
+  target_id: uuid,
+});
+export type PinKeyDto = z.infer<typeof PinKeyDtoSchema>;
+
+export const ReorderRequestSchema = z.object({
+  order: z.array(PinKeyDtoSchema),
+});
+export type ReorderRequest = z.infer<typeof ReorderRequestSchema>;
+
+export const TagScopeKindSchema = z.enum(["user", "team", "org"]);
+export type TagScopeKind = z.infer<typeof TagScopeKindSchema>;
+
+export const TagLinkKindSchema = z.enum(["repo", "issue", "user", "team"]);
+export type TagLinkKind = z.infer<typeof TagLinkKindSchema>;
+
+export const TagDtoSchema = z.object({
+  id: uuid,
+  scope_kind: TagScopeKindSchema,
+  scope_id: uuid,
+  name: z.string(),
+  color: z.string(),
+  description: z.string().nullable().optional(),
+  created_by: uuid,
+  created_at: isoDateTime,
+  archived_at: isoDateTime.nullable().optional(),
+  /** Viewer-filtered count (§7.4). Never the true total. */
+  visible_link_count: z.number().int(),
+});
+export type TagDto = z.infer<typeof TagDtoSchema>;
+
+export const TagLinkDtoSchema = z.object({
+  id: uuid,
+  tag_id: uuid,
+  kind: TagLinkKindSchema,
+  target_id: uuid,
+  added_by: uuid,
+  added_at: isoDateTime,
+});
+export type TagLinkDto = z.infer<typeof TagLinkDtoSchema>;
+
+export const TagDetailResponseSchema = z.object({
+  tag: TagDtoSchema,
+  links: z.array(TagLinkDtoSchema),
+  links_page: z.number().int(),
+  links_page_size: z.number().int(),
+});
+export type TagDetailResponse = z.infer<typeof TagDetailResponseSchema>;
+
+export const CreateTagRequestSchema = z.object({
+  scope_kind: TagScopeKindSchema,
+  scope_id: uuid,
+  name: z.string(),
+  color: z.string(),
+  description: z.string().nullable().optional(),
+});
+export type CreateTagRequest = z.infer<typeof CreateTagRequestSchema>;
+
+export const UpdateTagRequestSchema = z.object({
+  name: z.string().optional(),
+  color: z.string().optional(),
+  description: z.string().nullable().optional(),
+  archived: z.boolean().optional(),
+});
+export type UpdateTagRequest = z.infer<typeof UpdateTagRequestSchema>;
+
+export const LinkRequestItemSchema = z.object({
+  kind: TagLinkKindSchema,
+  target_id: uuid,
+});
+export type LinkRequestItem = z.infer<typeof LinkRequestItemSchema>;
+
+export const LinkBatchRequestSchema = z.object({
+  items: z.array(LinkRequestItemSchema),
+});
+export type LinkBatchRequest = z.infer<typeof LinkBatchRequestSchema>;
+
+export const LinkBatchResponseSchema = z.object({
+  linked: z.array(TagLinkDtoSchema),
+  warning: z.string().optional(),
+});
+export type LinkBatchResponse = z.infer<typeof LinkBatchResponseSchema>;
+
+/** §13.6 banner row. */
+export const AppInstallBannerOrgDtoSchema = z.object({
+  org_id: uuid,
+  login: z.string(),
+  name: z.string().nullable().optional(),
+  writes_available: z.boolean(),
+  manage_url: z.string().optional(),
+  admin_copy_text: z.string(),
+});
+export type AppInstallBannerOrgDto = z.infer<typeof AppInstallBannerOrgDtoSchema>;
+
+export const AppInstallBannerResponseSchema = z.object({
+  request_issues_write: z.boolean(),
+  orgs: z.array(AppInstallBannerOrgDtoSchema),
+});
+export type AppInstallBannerResponse = z.infer<typeof AppInstallBannerResponseSchema>;
+
+// --- Issues write path (SCOPE-PROJECTS §8) --------------------------------
+//
+// The CAS-on-`version` write path. UI captures `version` at form load,
+// submits as `expected_version`; the server returns the new row on
+// success and `409 { code: "stale_local_version", current_version }`
+// when the CAS misses (§8.3) — the frontend then reloads and reprompts.
+
+export const IssueDtoSchema = z.object({
+  id: uuid,
+  repo_id: uuid,
+  org_id: uuid,
+  number: z.number().int(),
+  title: z.string(),
+  body: z.string().nullable().optional(),
+  state: z.enum(["open", "closed"]),
+  labels: z.array(z.string()),
+  assignees: z.array(z.string()),
+  milestone: z.string().nullable().optional(),
+  /** §8.2 — monotonically bumped on every fetched update *and* every
+   *  optimistic local write. CAS token for the §8 write path. */
+  version: z.number().int(),
+  updated_at: isoDateTime,
+});
+export type IssueDto = z.infer<typeof IssueDtoSchema>;
+
+export const CreateIssueRequestSchema = z.object({
+  repo_id: uuid,
+  title: z.string().min(1),
+  body: z.string().optional(),
+  labels: z.array(z.string()).optional(),
+  assignees: z.array(z.string()).optional(),
+  milestone: z.string().optional(),
+});
+export type CreateIssueRequest = z.infer<typeof CreateIssueRequestSchema>;
+
+export const UpdateIssueRequestSchema = z.object({
+  /** CAS token from form load (§8.2 step 1). */
+  expected_version: z.number().int(),
+  title: z.string().optional(),
+  body: z.string().nullable().optional(),
+  labels: z.array(z.string()).optional(),
+  assignees: z.array(z.string()).optional(),
+  milestone: z.string().nullable().optional(),
+  state: z.enum(["open", "closed"]).optional(),
+});
+export type UpdateIssueRequest = z.infer<typeof UpdateIssueRequestSchema>;
+
+export const CreateCommentRequestSchema = z.object({
+  expected_version: z.number().int(),
+  body: z.string().min(1),
+});
+export type CreateCommentRequest = z.infer<typeof CreateCommentRequestSchema>;
+
+// ---------------------------------------------------------------------------
 // API wrapper
 // ---------------------------------------------------------------------------
 
 const CSRF_COOKIE = "starter_csrf";
+
+/**
+ * dp-rest's structured error envelope. Captures the `code` field
+ * surfaced by `crates/dp-rest/src/error.rs` so callers can switch on
+ * stable codes (`"stale_local_version"`, `"writes_not_available_for_org"`,
+ * `"batch_rejected"`, `"pin_cap_exceeded"`, …) without parsing
+ * human-readable strings.
+ *
+ * The §8.3 stale-version reload UX hangs off this — the issue form
+ * catches `DpRestError` with `code === "stale_local_version"` and
+ * pulls `current_version` from `body` to drive the reload prompt.
+ */
+export class DpRestError extends Error {
+  readonly status: number;
+  readonly code: string;
+  /** Full decoded JSON body, when the server sent one. The shape is
+   *  per-code; see `error.rs` `WritesNotAvailableBody`,
+   *  `BatchErrorBody`, `StaleLocalVersionBody`. */
+  readonly body: Record<string, unknown> | undefined;
+
+  constructor(status: number, code: string, message: string, body?: Record<string, unknown>) {
+    super(message);
+    this.name = "DpRestError";
+    this.status = status;
+    this.code = code;
+    this.body = body;
+  }
+
+  static async fromResponse(res: Response): Promise<DpRestError> {
+    let body: Record<string, unknown> | undefined;
+    try {
+      const j = (await res.clone().json()) as Record<string, unknown>;
+      if (j && typeof j === "object") body = j;
+    } catch {
+      // not JSON — fall through.
+    }
+    const code = (body?.["code"] as string | undefined) ?? `http_${res.status}`;
+    const message = (body?.["error"] as string | undefined)
+      ?? (body?.["message"] as string | undefined)
+      ?? `HTTP ${res.status}`;
+    return new DpRestError(res.status, code, message, body);
+  }
+}
+
+/** Type guard — narrows an unknown thrown value to a `DpRestError`. */
+export function isDpRestError(e: unknown): e is DpRestError {
+  return e instanceof DpRestError;
+}
 
 function readCookie(name: string): string | undefined {
   if (typeof document === "undefined") return undefined;
@@ -304,11 +538,12 @@ export class DevPulseApi {
       credentials: "include",
       headers: this.client.headers,
     });
-    if (!res.ok) throw await StarterError.fromResponse(res);
+    if (!res.ok) throw await DpRestError.fromResponse(res);
     return schema.parse(await res.json());
   }
 
-  private async postJson<TBody, TRes>(
+  private async sendJson<TBody, TRes>(
+    method: "POST" | "PUT" | "PATCH" | "DELETE",
     path: string,
     body: TBody | undefined,
     schema: z.ZodType<TRes>,
@@ -318,13 +553,21 @@ export class DevPulseApi {
     if (body !== undefined) headers["content-type"] = "application/json";
     if (csrf) headers["X-CSRF-Token"] = csrf;
     const res = await this.client.fetch(`${this.client.baseUrl}${path}`, {
-      method: "POST",
+      method,
       credentials: "include",
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
     });
-    if (!res.ok) throw await StarterError.fromResponse(res);
+    if (!res.ok) throw await DpRestError.fromResponse(res);
     return schema.parse(await res.json());
+  }
+
+  private postJson<TBody, TRes>(
+    path: string,
+    body: TBody | undefined,
+    schema: z.ZodType<TRes>,
+  ): Promise<TRes> {
+    return this.sendJson("POST", path, body, schema);
   }
 
   // -- reports --------------------------------------------------------------
@@ -453,6 +696,141 @@ export class DevPulseApi {
     return this.getJson(
       `/admin/users/${encodeURIComponent(userId)}/export`,
       UserExportSchema,
+    );
+  }
+
+  // -- pins (SCOPE-PROJECTS §6.4) -------------------------------------------
+
+  /** `GET /me/pins` — ordered list of caller's pins. */
+  async listPins(): Promise<PinDto[]> {
+    return this.getJson("/me/pins", z.array(PinDtoSchema));
+  }
+
+  /** `POST /me/pins` — append. Throws `DpRestError` with
+   *  `code === "pin_cap_exceeded"` past §13.5 cap. */
+  async addPin(req: AddPinRequest): Promise<PinDto> {
+    return this.sendJson("POST", "/me/pins", req, PinDtoSchema);
+  }
+
+  /** `DELETE /me/pins/{kind}/{target_id}`. */
+  async removePin(kind: PinKind, targetId: string): Promise<Ack> {
+    return this.sendJson(
+      "DELETE",
+      `/me/pins/${kind}/${encodeURIComponent(targetId)}`,
+      undefined,
+      AckSchema,
+    );
+  }
+
+  /** `PUT /me/pins/order` — atomic full-set reorder (§6.4). */
+  async reorderPins(req: ReorderRequest): Promise<Ack> {
+    return this.sendJson("PUT", "/me/pins/order", req, AckSchema);
+  }
+
+  // -- tags (SCOPE-PROJECTS §7.5) -------------------------------------------
+
+  /** `GET /tags` — visible tags + viewer-filtered link counts (§7.4). */
+  async listTags(): Promise<TagDto[]> {
+    return this.getJson("/tags", z.array(TagDtoSchema));
+  }
+
+  /** `GET /me/tags` — tags the caller owns or is a scope member of. */
+  async listMyTags(): Promise<TagDto[]> {
+    return this.getJson("/me/tags", z.array(TagDtoSchema));
+  }
+
+  /** `GET /tags/{id}?links_page=n`. */
+  async getTag(id: string, linksPage?: number): Promise<TagDetailResponse> {
+    const q = linksPage !== undefined ? `?links_page=${linksPage}` : "";
+    return this.getJson(
+      `/tags/${encodeURIComponent(id)}${q}`,
+      TagDetailResponseSchema,
+    );
+  }
+
+  /** `POST /tags` — create. */
+  async createTag(req: CreateTagRequest): Promise<TagDto> {
+    return this.sendJson("POST", "/tags", req, TagDtoSchema);
+  }
+
+  /** `PATCH /tags/{id}` — rename / recolour / archive. */
+  async updateTag(id: string, req: UpdateTagRequest): Promise<TagDto> {
+    return this.sendJson(
+      "PATCH",
+      `/tags/${encodeURIComponent(id)}`,
+      req,
+      TagDtoSchema,
+    );
+  }
+
+  /** `POST /tags/{id}/links` — transactional all-or-nothing batch (§7.5). */
+  async linkTagTargets(id: string, req: LinkBatchRequest): Promise<LinkBatchResponse> {
+    return this.sendJson(
+      "POST",
+      `/tags/${encodeURIComponent(id)}/links`,
+      req,
+      LinkBatchResponseSchema,
+    );
+  }
+
+  /** `DELETE /tags/{id}/links` — transactional all-or-nothing unlink. */
+  async unlinkTagTargets(id: string, req: LinkBatchRequest): Promise<Ack> {
+    return this.sendJson(
+      "DELETE",
+      `/tags/${encodeURIComponent(id)}/links`,
+      req,
+      AckSchema,
+    );
+  }
+
+  // -- GitHub App permission banner (§8.4 / §13.6) --------------------------
+
+  /** `GET /me/app-install-banner`. */
+  async getAppInstallBanner(): Promise<AppInstallBannerResponse> {
+    return this.getJson("/me/app-install-banner", AppInstallBannerResponseSchema);
+  }
+
+  // -- issue writes (SCOPE-PROJECTS §8.2) -----------------------------------
+  //
+  // The frontend captures `version` from the GET shape, submits it
+  // back as `expected_version` on PATCH/comment. A `409 stale_local_version`
+  // surfaces as `DpRestError` with `body.current_version` so the UI
+  // can reload and re-prompt (§8.3).
+
+  /** `GET /repos/{repo_id}/issues/{number}`. */
+  async getIssue(repoId: string, number: number): Promise<IssueDto> {
+    return this.getJson(
+      `/repos/${encodeURIComponent(repoId)}/issues/${number}`,
+      IssueDtoSchema,
+    );
+  }
+
+  /** `POST /issues` — create. May throw `DpRestError` with
+   *  `code === "writes_not_available_for_org"` per §8.4. */
+  async createIssue(req: CreateIssueRequest): Promise<IssueDto> {
+    return this.sendJson("POST", "/issues", req, IssueDtoSchema);
+  }
+
+  /** `PATCH /issues/{id}` — partial update. CAS on `expected_version`.
+   *  Throws `DpRestError` with `code === "stale_local_version"` (with
+   *  `body.current_version`) per §8.3, or `"writes_not_available_for_org"`
+   *  per §8.4. */
+  async updateIssue(id: string, req: UpdateIssueRequest): Promise<IssueDto> {
+    return this.sendJson(
+      "PATCH",
+      `/issues/${encodeURIComponent(id)}`,
+      req,
+      IssueDtoSchema,
+    );
+  }
+
+  /** `POST /issues/{id}/comments` — same CAS contract. */
+  async commentOnIssue(id: string, req: CreateCommentRequest): Promise<IssueDto> {
+    return this.sendJson(
+      "POST",
+      `/issues/${encodeURIComponent(id)}/comments`,
+      req,
+      IssueDtoSchema,
     );
   }
 }

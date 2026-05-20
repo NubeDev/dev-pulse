@@ -27,6 +27,9 @@ export interface AppSidebarProps extends React.ComponentProps<typeof Sidebar> {
   user: NavUserProps["user"]
   onLogout?: () => void
   brand?: { title: string; url: string }
+  /** Extra content rendered below the main nav (e.g. the
+   *  SCOPE-PROJECTS §6 pin sidebar widget). */
+  extraContent?: React.ReactNode
 }
 
 export function AppSidebar({
@@ -35,6 +38,7 @@ export function AppSidebar({
   user,
   onLogout,
   brand = { title: "dev-pulse", url: "#/reports" },
+  extraContent,
   ...props
 }: AppSidebarProps) {
   return (
@@ -56,6 +60,7 @@ export function AppSidebar({
       </SidebarHeader>
       <SidebarContent>
         <NavMain items={navMain} activeUrl={activeUrl} />
+        {extraContent}
       </SidebarContent>
       <SidebarFooter>
         <NavUser user={user} onLogout={onLogout} />

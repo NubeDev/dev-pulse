@@ -14,17 +14,21 @@ import type { ReactNode } from "react"
 import {
   IconBuilding,
   IconBuildingSkyscraper,
+  IconBug,
   IconChartBar,
   IconClockHour4,
   IconColumns,
   IconHome,
   IconHistory,
+  IconPinned,
   IconRefresh,
   IconShieldLock,
+  IconTags,
   IconUser,
   IconUserCog,
   IconUsers,
   IconUsersGroup,
+  IconBriefcase,
 } from "@tabler/icons-react"
 import { useAuth } from "@nube/starter-ui-core/auth"
 
@@ -33,12 +37,15 @@ import { SiteHeader } from "@/components/site-header"
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
 import type { NavMainItem } from "@/components/nav-main"
 import { ThemeToggle } from "../components/theme-toggle.jsx"
+import { PinSidebar } from "../workflow/pin-sidebar.jsx"
+import { WritesBanner } from "../workflow/writes-banner.jsx"
 import {
   adminTabOf,
   directoryTabOf,
   reportTabOf,
   sectionOf,
   useRoute,
+  workflowTabOf,
   type Section,
 } from "../routes.js"
 
@@ -55,6 +62,18 @@ const NAV_MAIN: NavMainItem[] = [
       { title: "Org", url: "#/reports/org", icon: IconBuilding },
       { title: "Home-org split", url: "#/reports/home-org-split", icon: IconColumns },
       { title: "Freshness", url: "#/reports/freshness", icon: IconClockHour4 },
+    ],
+  },
+  {
+    title: "Workflow",
+    url: "#/workflow",
+    icon: IconBriefcase,
+    accent: "var(--accent-reports)",
+    subTestId: "workflow-subnav",
+    items: [
+      { title: "Pins", url: "#/workflow/pins", icon: IconPinned },
+      { title: "Tags", url: "#/workflow/tags", icon: IconTags },
+      { title: "Issues", url: "#/workflow/issues", icon: IconBug },
     ],
   },
   {
@@ -88,7 +107,14 @@ const SECTION_TITLE: Record<Section, string> = {
   reports: "Reports",
   directory: "Directory",
   admin: "Admin",
+  workflow: "Workflow",
   login: "Login",
+}
+
+const WORKFLOW_TITLE: Record<string, string> = {
+  pins: "Pins",
+  tags: "Tags",
+  issues: "Issues",
 }
 
 const REPORT_TITLE: Record<string, string> = {
@@ -139,6 +165,10 @@ function titleFor(route: string): string {
       const t = adminTabOf(route)
       return `Admin · ${ADMIN_TITLE[t] ?? t}`
     }
+    case "workflow": {
+      const t = workflowTabOf(route)
+      return `Workflow · ${WORKFLOW_TITLE[t] ?? t}`
+    }
     case "login":
     default:
       return SECTION_TITLE[section]
@@ -171,12 +201,16 @@ export function AppShell({ children }: AppShellProps): JSX.Element {
           onLogout={() => {
             void auth.logout()
           }}
+          extraContent={<PinSidebar />}
         />
         <SidebarInset>
           <SiteHeader title={titleFor(route)} actions={<ThemeToggle />} />
           <div className="flex flex-1 flex-col">
             <div className="@container/main flex flex-1 flex-col gap-2">
               <div className="flex flex-col gap-4 py-4 md:gap-6 md:py-6">
+                <div className="px-4 lg:px-6">
+                  <WritesBanner />
+                </div>
                 {children}
               </div>
             </div>
