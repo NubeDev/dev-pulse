@@ -106,6 +106,10 @@ async fn webhook_github_stub() {}
         crate::tags::unlink_targets,
         // GitHub App permission banner (SCOPE-PROJECTS §13.6).
         crate::app_permissions::list_app_install_banner,
+        // Issue write surface (SCOPE §18 / SCOPE-PROJECTS §8).
+        crate::issues_write::create_issue,
+        crate::issues_write::patch_issue,
+        crate::issues_write::create_comment,
         // Webhooks (Phase 2 — docs-only stub, real handler in dp-fetcher).
         webhook_github_stub,
     ),
@@ -149,6 +153,14 @@ async fn webhook_github_stub() {}
         crate::app_permissions::AppInstallBannerOrgDto,
         crate::app_permissions::AppInstallBannerResponse,
         crate::app_permissions::AppManifest,
+        // Issue write surface (SCOPE §18 / SCOPE-PROJECTS §8).
+        crate::issues_write::CreateIssueRequest,
+        crate::issues_write::CreateIssueResponse,
+        crate::issues_write::PatchIssueRequest,
+        crate::issues_write::CreateCommentRequest,
+        crate::issues_write::IssuePatch,
+        crate::issues_read::IssueDto,
+        crate::issues_read::IssueStateDto,
     )),
     tags(
         (name = "reports",   description = "Per-user / team / org activity reports + freshness probe."),

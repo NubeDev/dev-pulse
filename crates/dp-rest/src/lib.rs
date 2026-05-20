@@ -40,6 +40,7 @@ pub mod error;
 pub mod inbox;
 pub mod issues;
 pub mod issues_read;
+pub mod issues_write;
 pub mod openapi;
 pub mod pins;
 pub mod reports;
@@ -70,6 +71,11 @@ pub use inbox::{
 pub use issues::{
     acquire_issue_mutation_slot, commit_issue_mutation, rollback_issue_mutation,
     sweep_pending_remote_timeouts, AcquireOutcome, AcquiredSlot, SweepReport,
+};
+pub use issues_write::{
+    create_comment, create_issue, issues_write_router, patch_issue, CreateCommentRequest,
+    CreateIssueRequest, CreateIssueResponse, IssuePatch, IssueWriteBackend, IssueWriteError,
+    PatchIssueRequest, UnconfiguredIssueWriter,
 };
 pub use issues_read::{
     get_issue_by_id, get_issue_by_number, issues_read_router, list_issues, me_queue, IssueDto,

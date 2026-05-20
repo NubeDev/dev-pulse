@@ -213,6 +213,141 @@
         }
       }
     },
+    "/issues": {
+      "post": {
+        "tags": [
+          "issues"
+        ],
+        "summary": "`POST /issues` — create a new GitHub issue.",
+        "description": "No CAS (there is no local row yet). Sequence:\n\n1. Resolve `repo_id -> (Org, Repo)`.\n2. §18.2 step 4 install-permission check.\n3. Call the backend's `create_issue`.\n4. Record the `issue.create` audit row (target = `repo_id#number`).\n\nThe fetcher / webhook receiver materialises the `dp_issues` row\non the next pass.",
+        "operationId": "create_issue",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateIssueRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Created GitHub-side; audit row written",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateIssueResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed at GitHub"
+          },
+          "403": {
+            "description": "Writes not available for the target org"
+          }
+        }
+      }
+    },
+    "/issues/{id}": {
+      "patch": {
+        "tags": [
+          "issues"
+        ],
+        "summary": "`PATCH /issues/{id}` — update an existing GitHub issue. Routes\nthe `state` transition (open/closed) to the `issue.close` /\n`issue.reopen` audit verbs; everything else is `issue.update`.",
+        "operationId": "patch_issue",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Issue id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchIssueRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Mutation committed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssueDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed at GitHub"
+          },
+          "403": {
+            "description": "Writes not available for the target org"
+          },
+          "409": {
+            "description": "Stale local version — UI should reload"
+          }
+        }
+      }
+    },
+    "/issues/{id}/comments": {
+      "post": {
+        "tags": [
+          "issues"
+        ],
+        "summary": "`POST /issues/{id}/comments` — append a comment. CAS-gated for\nsymmetry with PATCH so the UI's optimistic editor sees the same\nstale-version surface.",
+        "operationId": "create_comment",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Issue id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateCommentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Comment posted"
+          },
+          "400": {
+            "description": "Validation failed at GitHub"
+          },
+          "403": {
+            "description": "Writes not available for the target org"
+          },
+          "409": {
+            "description": "Stale local version — UI should reload"
+          }
+        }
+      }
+    },
     "/me/app-install-banner": {
       "get": {
         "tags": [
@@ -1152,6 +1287,71 @@
           }
         }
       },
+      "CreateCommentRequest": {
+        "type": "object",
+        "description": "Body for POST `/issues/{id}/comments`.",
+        "required": [
+          "expected_version",
+          "body"
+        ],
+        "properties": {
+          "body": {
+            "type": "string",
+            "description": "Comment body (Markdown)."
+          },
+          "expected_version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "CAS token (same semantics as [`PatchIssueRequest`])."
+          }
+        }
+      },
+      "CreateIssueRequest": {
+        "type": "object",
+        "description": "Body for `POST /issues`. The repo to mutate is named explicitly\n(there is no canonical row yet to derive it from).",
+        "required": [
+          "repo_id",
+          "title"
+        ],
+        "properties": {
+          "body": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional body (Markdown)."
+          },
+          "repo_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Internal repo id the new issue belongs to."
+          },
+          "title": {
+            "type": "string",
+            "description": "Issue title; required by GitHub."
+          }
+        }
+      },
+      "CreateIssueResponse": {
+        "type": "object",
+        "description": "Acknowledgement body for `POST /issues`. Returns the GitHub-side\nnumber GitHub assigned (so the UI can deep-link immediately) and\nechoes the actor's `repo_id` for symmetry with PATCH responses.",
+        "required": [
+          "repo_id",
+          "number"
+        ],
+        "properties": {
+          "number": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Repo-relative issue number GitHub assigned."
+          },
+          "repo_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Echoed parent repo id."
+          }
+        }
+      },
       "CreateTagRequest": {
         "type": "object",
         "description": "Body for `POST /tags`. Server picks `id`, `created_by`,\n`created_at`. `scope_id` is required; the caller must be a\nscope member or the request returns `403`.",
@@ -1354,6 +1554,149 @@
           }
         }
       },
+      "IssueDto": {
+        "type": "object",
+        "description": "Full issue projection. Matches the shape the frontend's\n`IssueDto` already declared (`api/client.ts`) so the existing\n§8.3 detail pane wires up without DTO shape changes.",
+        "required": [
+          "id",
+          "repo_id",
+          "org_id",
+          "number",
+          "title",
+          "state",
+          "labels",
+          "assignees",
+          "version",
+          "updated_at"
+        ],
+        "properties": {
+          "assignees": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Assignee logins."
+          },
+          "body": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Body, when present."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Internal id."
+          },
+          "labels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Labels as strings."
+          },
+          "milestone": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Milestone title, when set."
+          },
+          "number": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Repo-relative issue number."
+          },
+          "org_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Parent org id."
+          },
+          "repo_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Parent repo id."
+          },
+          "state": {
+            "$ref": "#/components/schemas/IssueStateDto",
+            "description": "State."
+          },
+          "title": {
+            "type": "string",
+            "description": "Title."
+          },
+          "unread": {
+            "type": "boolean",
+            "description": "Per-caller unread flag — `true` when the issue's `version`\nis newer than what the caller has marked seen. Only the\n`/me/queue` endpoint populates this with a meaningful value;\nevery other endpoint emits `false`. Defaults to `false` so\nolder frontend clients that ignore the field render rows\nthe same as before."
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Last update."
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "§8 CAS token."
+          }
+        }
+      },
+      "IssuePatch": {
+        "type": "object",
+        "description": "Field-level patch the PATCH handler forwards to GitHub. Every\nfield is optional — only `Some(_)` lanes are sent to GitHub. The\ncaller is the source of truth on what to mutate; the handler\nperforms no field-vs-field consistency checks.",
+        "properties": {
+          "assignees": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Replacement assignee logins. `None` leaves assignees\nuntouched."
+          },
+          "body": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "New body (omitted when not changing; explicit `null` clears)."
+          },
+          "labels": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Replacement label list. `None` leaves labels untouched."
+          },
+          "state": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "New state — `\"open\"` or `\"closed\"`. The handler routes this\nto the `issue.close` / `issue.reopen` audit verbs."
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "New title (omitted when not changing)."
+          }
+        }
+      },
+      "IssueStateDto": {
+        "type": "string",
+        "description": "Wire form of [`IssueState`]. Lower-case to match GitHub's wire\nform (`\"open\"` / `\"closed\"`).",
+        "enum": [
+          "open",
+          "closed"
+        ]
+      },
       "LinkBatchRequest": {
         "type": "object",
         "description": "Body for `POST /tags/{id}/links` — batch link.",
@@ -1482,6 +1825,28 @@
             "description": "Display name, if set."
           }
         }
+      },
+      "PatchIssueRequest": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/IssuePatch",
+            "description": "Field-level changes."
+          },
+          {
+            "type": "object",
+            "required": [
+              "expected_version"
+            ],
+            "properties": {
+              "expected_version": {
+                "type": "integer",
+                "format": "int64",
+                "description": "CAS token — the `dp_issues.version` the UI rendered the form\nagainst. The §18.2 step 5 CAS misses if this is stale, and\nthe handler returns `409 stale_local_version`."
+              }
+            }
+          }
+        ],
+        "description": "Body for PATCH `/issues/{id}`."
       },
       "PinDto": {
         "type": "object",

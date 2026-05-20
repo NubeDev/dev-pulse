@@ -288,6 +288,23 @@ pub trait Store: Send + Sync {
         Ok(0)
     }
 
+    /// Fetch a single repo row by primary key. Used by the §8 issue
+    /// write path to resolve `repo_id -> (org_id, name)` before
+    /// calling the GitHub backend. Default impl returns `None`;
+    /// in-memory test fakes that don't seed repos stay compiling.
+    async fn get_repo(&self, _id: Uuid) -> Result<Option<crate::repo::Repo>, StoreError> {
+        Ok(None)
+    }
+
+    /// Fetch a single org row by primary key. Pairs with
+    /// [`Store::get_repo`] to resolve `(org_login, repo_name)` for
+    /// the §8 GitHub call. Default impl scans [`Store::list_orgs`]
+    /// so storage implementations that override the listing surface
+    /// don't need a separate point lookup.
+    async fn get_org(&self, id: Uuid) -> Result<Option<crate::org::Org>, StoreError> {
+        Ok(self.list_orgs().await?.into_iter().find(|o| o.id == id))
+    }
+
     /// Fetch a single issue by primary key. The §8 detail pane
     /// uses this to re-read after a successful CAS write.
     async fn get_issue(&self, _id: Uuid) -> Result<Option<Issue>, StoreError> {

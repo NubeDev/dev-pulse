@@ -16,6 +16,7 @@ use std::sync::Arc;
 use dp_domain::store::Store;
 
 use crate::app_permissions::GitHubAppConfig;
+use crate::issues_write::{IssueWriteBackend, UnconfiguredIssueWriter};
 
 /// Application state shared across every dp-rest handler.
 #[derive(Clone)]
@@ -29,6 +30,18 @@ pub struct AppState {
     /// `GET /me/app-install-banner` handler. Held as `Arc` for
     /// cheap clone across handlers.
     pub github_app: Arc<GitHubAppConfig>,
+    /// GitHub I/O backend for the §8 issue write surface. The
+    /// per-verb handlers (POST `/issues`, PATCH `/issues/{id}`,
+    /// POST `/issues/{id}/comments`) call into this trait between
+    /// the §8.2 step 5 CAS and the step 7 commit. Held as an `Arc`
+    /// so cloning the state is cheap.
+    ///
+    /// The default — [`UnconfiguredIssueWriter`] — refuses every
+    /// call with a `Server { status: 503 }` error so deployments
+    /// that have not wired a real backend fail loudly instead of
+    /// silently bypassing GitHub. Wire a production backend via
+    /// [`AppState::with_issue_writer`] from the bin layer.
+    pub issue_writer: Arc<dyn IssueWriteBackend>,
 }
 
 impl AppState {
@@ -39,7 +52,15 @@ impl AppState {
         Self {
             store,
             github_app: Arc::new(GitHubAppConfig::default()),
+            issue_writer: Arc::new(UnconfiguredIssueWriter),
         }
+    }
+
+    /// Override the issue-write backend. Bin layer wires this with
+    /// the octocrab-backed implementation; tests pass a fake.
+    pub fn with_issue_writer(mut self, writer: Arc<dyn IssueWriteBackend>) -> Self {
+        self.issue_writer = writer;
+        self
     }
 
     /// Override the GitHub App config. Used by the bin layer and
