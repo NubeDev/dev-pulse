@@ -6,6 +6,10 @@
  * Users page consumes (via `useDirectory()`), so this view shares
  * the react-query cache and updates atomically when an invalidation
  * lands.
+ *
+ * Markup: semantic `<table>` with shared `HEADER_CLASS` / `CELL_CLASS`
+ * Tailwind constants (the kit doesn't ship a Table primitive — see
+ * `reports/activity-table.tsx` for the same pattern).
  */
 
 import {
@@ -15,9 +19,14 @@ import {
   CardHeader,
   CardTitle,
 } from "@nube/starter-ui-kit/components/card";
+import { Alert, AlertDescription, AlertTitle } from "@nube/starter-ui-kit/components/alert";
 import { Badge } from "@nube/starter-ui-kit/components/badge";
 
 import { useDirectory } from "./use-directory.js";
+
+const HEADER_CLASS =
+  "border-b border-border px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground";
+const CELL_CLASS = "border-b border-border px-3 py-2 align-middle text-sm";
 
 export function OrgsPage(): JSX.Element {
   const dir = useDirectory();
@@ -34,107 +43,58 @@ export function OrgsPage(): JSX.Element {
           Member count is derived from the per-org user fanout.
         </CardDescription>
       </CardHeader>
-      <CardContent style={{ display: "grid", gap: "1rem" }}>
+      <CardContent className="grid gap-4">
         {dir.error ? (
-          <p data-testid="orgs-error" style={{ color: "oklch(0.5 0.2 25)" }}>
-            Failed to load orgs: {dir.error}
-          </p>
+          <Alert variant="destructive" data-testid="orgs-error">
+            <AlertTitle>Failed to load orgs</AlertTitle>
+            <AlertDescription>{dir.error}</AlertDescription>
+          </Alert>
         ) : null}
 
         {dir.loading && sortedOrgs.length === 0 ? (
-          <p style={{ color: "var(--muted-foreground)" }}>Loading orgs…</p>
+          <p className="text-muted-foreground">Loading orgs…</p>
         ) : sortedOrgs.length === 0 ? (
-          <p data-testid="orgs-empty" style={{ color: "var(--muted-foreground)" }}>
+          <p data-testid="orgs-empty" className="text-muted-foreground">
             No orgs tracked yet.
           </p>
         ) : (
-          <div
-            data-testid="orgs-table"
-            role="table"
-            style={{
-              display: "grid",
-              gap: "0.25rem",
-              gridTemplateColumns:
-                "minmax(8rem, 1fr) minmax(12rem, 1.5fr) minmax(8rem, auto)",
-              alignItems: "center",
-              fontSize: "0.875rem",
-            }}
-          >
-            <Header>Login</Header>
-            <Header>Name</Header>
-            <Header>Members</Header>
-            {sortedOrgs.map((o) => {
-              const count = dir.memberCount.get(o.id) ?? 0;
-              return (
-                <Row key={o.id} data-org-id={o.id}>
-                  <Cell><strong>{o.login}</strong></Cell>
-                  <Cell>
-                    {o.name ? (
-                      o.name
-                    ) : (
-                      <span style={{ color: "var(--muted-foreground)" }}>—</span>
-                    )}
-                  </Cell>
-                  <Cell>
-                    <Badge variant="outline" data-testid="org-member-count">
-                      {count} {count === 1 ? "member" : "members"}
-                    </Badge>
-                  </Cell>
-                </Row>
-              );
-            })}
+          <div className="overflow-hidden rounded-md border border-border bg-card">
+            <table data-testid="orgs-table" className="w-full border-collapse">
+              <thead className="bg-muted">
+                <tr>
+                  <th className={HEADER_CLASS}>Login</th>
+                  <th className={HEADER_CLASS}>Name</th>
+                  <th className={HEADER_CLASS}>Members</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sortedOrgs.map((o) => {
+                  const count = dir.memberCount.get(o.id) ?? 0;
+                  return (
+                    <tr key={o.id} data-org-id={o.id}>
+                      <td className={CELL_CLASS}>
+                        <strong>{o.login}</strong>
+                      </td>
+                      <td className={CELL_CLASS}>
+                        {o.name ? (
+                          o.name
+                        ) : (
+                          <span className="text-muted-foreground">—</span>
+                        )}
+                      </td>
+                      <td className={CELL_CLASS}>
+                        <Badge variant="outline" data-testid="org-member-count">
+                          {count} {count === 1 ? "member" : "members"}
+                        </Badge>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
         )}
       </CardContent>
     </Card>
-  );
-}
-
-function Header({ children }: { children: React.ReactNode }): JSX.Element {
-  return (
-    <div
-      role="columnheader"
-      style={{
-        padding: "0.5rem 0.625rem",
-        fontWeight: 600,
-        borderBottom: "1px solid var(--border)",
-        color: "var(--muted-foreground)",
-        fontSize: "0.8125rem",
-        textTransform: "uppercase",
-        letterSpacing: "0.02em",
-      }}
-    >
-      {children}
-    </div>
-  );
-}
-
-function Row({
-  children,
-  ...rest
-}: {
-  children: React.ReactNode;
-} & React.HTMLAttributes<HTMLDivElement>): JSX.Element {
-  // The CSS grid above lays each cell directly, so this wrapper
-  // is just a logical fragment — but exposing `data-org-id` etc.
-  // via a single-row span is convenient for tests.
-  return (
-    <div role="row" style={{ display: "contents" }} {...rest}>
-      {children}
-    </div>
-  );
-}
-
-function Cell({ children }: { children: React.ReactNode }): JSX.Element {
-  return (
-    <div
-      role="cell"
-      style={{
-        padding: "0.625rem",
-        borderBottom: "1px solid var(--border)",
-      }}
-    >
-      {children}
-    </div>
   );
 }

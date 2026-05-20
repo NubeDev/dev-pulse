@@ -9,6 +9,11 @@
  *
  * Source data comes from `useDirectory()`, which fans out
  * `GET /users?org_id=…` across every org.
+ *
+ * Markup: shadcn `InputGroup` wraps the search input with a leading
+ * search icon, and the result list renders as a semantic `<table>`
+ * with shared `HEADER_CLASS` / `CELL_CLASS` Tailwind constants (the
+ * kit doesn't ship a Table primitive — see `reports/activity-table.tsx`).
  */
 
 import { useMemo, useState } from "react";
@@ -19,8 +24,13 @@ import {
   CardHeader,
   CardTitle,
 } from "@nube/starter-ui-kit/components/card";
+import { Alert, AlertDescription, AlertTitle } from "@nube/starter-ui-kit/components/alert";
 import { Badge } from "@nube/starter-ui-kit/components/badge";
-import { Input } from "@nube/starter-ui-kit/components/input";
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupInput,
+} from "@nube/starter-ui-kit/components/input-group";
 import { Label } from "@nube/starter-ui-kit/components/label";
 import {
   Select,
@@ -33,6 +43,30 @@ import {
 import { useDirectory } from "./use-directory.js";
 
 const ALL = "__all__";
+
+const HEADER_CLASS =
+  "border-b border-border px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground";
+const CELL_CLASS = "border-b border-border px-3 py-2 align-middle text-sm";
+
+/** Inline magnifier — we don't pull a 3rd-party icon dep in just for
+ *  this one decoration. Sized to InputGroupAddon's default 16px. */
+function SearchIcon(): JSX.Element {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="size-4"
+    >
+      <circle cx="11" cy="11" r="7" />
+      <path d="m20 20-3.5-3.5" />
+    </svg>
+  );
+}
 
 export function UsersPage(): JSX.Element {
   const dir = useDirectory();
@@ -70,26 +104,24 @@ export function UsersPage(): JSX.Element {
           this session.
         </CardDescription>
       </CardHeader>
-      <CardContent style={{ display: "grid", gap: "1rem" }}>
-        <div
-          style={{
-            display: "grid",
-            gap: "0.75rem",
-            gridTemplateColumns: "minmax(12rem, 1fr) 14rem",
-            alignItems: "end",
-          }}
-        >
-          <div style={{ display: "grid", gap: "0.25rem" }}>
+      <CardContent className="grid gap-4">
+        <div className="grid items-end gap-3 grid-cols-[minmax(12rem,1fr)_14rem]">
+          <div className="grid gap-1">
             <Label htmlFor="users-search">Search</Label>
-            <Input
-              id="users-search"
-              data-testid="users-search"
-              placeholder="login, name, email…"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-            />
+            <InputGroup>
+              <InputGroupAddon>
+                <SearchIcon />
+              </InputGroupAddon>
+              <InputGroupInput
+                id="users-search"
+                data-testid="users-search"
+                placeholder="login, name, email…"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+              />
+            </InputGroup>
           </div>
-          <div style={{ display: "grid", gap: "0.25rem" }}>
+          <div className="grid gap-1">
             <Label htmlFor="users-org-filter">Filter by org</Label>
             <Select
               value={orgFilter}
@@ -111,78 +143,57 @@ export function UsersPage(): JSX.Element {
         </div>
 
         {dir.error ? (
-          <p data-testid="users-error" style={{ color: "oklch(0.5 0.2 25)" }}>
-            Failed to load users: {dir.error}
-          </p>
+          <Alert variant="destructive" data-testid="users-error">
+            <AlertTitle>Failed to load users</AlertTitle>
+            <AlertDescription>{dir.error}</AlertDescription>
+          </Alert>
         ) : null}
 
         {dir.loading && dir.users.length === 0 ? (
-          <p style={{ color: "var(--muted-foreground)" }}>Loading users…</p>
+          <p className="text-muted-foreground">Loading users…</p>
         ) : visible.length === 0 ? (
-          <p data-testid="users-empty" style={{ color: "var(--muted-foreground)" }}>
+          <p data-testid="users-empty" className="text-muted-foreground">
             No users match the current filters.
           </p>
         ) : (
-          <div
-            data-testid="users-table"
-            role="table"
-            style={{
-              display: "grid",
-              gap: "0.25rem",
-              gridTemplateColumns:
-                "minmax(8rem, 1fr) minmax(12rem, 1.5fr) minmax(10rem, 1.5fr) minmax(8rem, 1fr)",
-              alignItems: "center",
-              fontSize: "0.875rem",
-            }}
-          >
-            <HeaderCell>Login</HeaderCell>
-            <HeaderCell>Name / email</HeaderCell>
-            <HeaderCell>Memberships</HeaderCell>
-            <HeaderCell>Home org</HeaderCell>
-            {visible.map((u) => (
-              <UserRow
-                key={u.user.id}
-                login={u.user.login}
-                name={u.user.name ?? null}
-                email={u.user.email ?? null}
-                orgLogins={u.org_ids.map(
-                  (id) => orgsById.get(id)?.login ?? id.slice(0, 8),
-                )}
-                homeOrgLogin={
-                  u.home_org !== null
-                    ? orgsById.get(u.home_org)?.login ?? u.home_org.slice(0, 8)
-                    : null
-                }
-              />
-            ))}
+          <div className="overflow-hidden rounded-md border border-border bg-card">
+            <table data-testid="users-table" className="w-full border-collapse">
+              <thead className="bg-muted">
+                <tr>
+                  <th className={HEADER_CLASS}>Login</th>
+                  <th className={HEADER_CLASS}>Name / email</th>
+                  <th className={HEADER_CLASS}>Memberships</th>
+                  <th className={HEADER_CLASS}>Home org</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visible.map((u) => (
+                  <UserRow
+                    key={u.user.id}
+                    login={u.user.login}
+                    name={u.user.name ?? null}
+                    email={u.user.email ?? null}
+                    orgLogins={u.org_ids.map(
+                      (id) => orgsById.get(id)?.login ?? id.slice(0, 8),
+                    )}
+                    homeOrgLogin={
+                      u.home_org !== null
+                        ? orgsById.get(u.home_org)?.login ?? u.home_org.slice(0, 8)
+                        : null
+                    }
+                  />
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
 
-        <p style={{ color: "var(--muted-foreground)", fontSize: "0.8125rem" }}>
+        <p className="text-[0.8125rem] text-muted-foreground">
           Showing {visible.length} of {dir.users.length} user
           {dir.users.length === 1 ? "" : "s"}.
         </p>
       </CardContent>
     </Card>
-  );
-}
-
-function HeaderCell({ children }: { children: React.ReactNode }): JSX.Element {
-  return (
-    <div
-      role="columnheader"
-      style={{
-        padding: "0.5rem 0.625rem",
-        fontWeight: 600,
-        borderBottom: "1px solid var(--border)",
-        color: "var(--muted-foreground)",
-        fontSize: "0.8125rem",
-        textTransform: "uppercase",
-        letterSpacing: "0.02em",
-      }}
-    >
-      {children}
-    </div>
   );
 }
 
@@ -200,25 +211,25 @@ function UserRow({
   homeOrgLogin: string | null;
 }): JSX.Element {
   return (
-    <>
-      <Cell>
+    <tr>
+      <td className={CELL_CLASS}>
         <strong>{login}</strong>
-      </Cell>
-      <Cell>
-        <div style={{ display: "grid" }}>
+      </td>
+      <td className={CELL_CLASS}>
+        <div className="grid">
           {name && <span>{name}</span>}
           {email && (
-            <span style={{ color: "var(--muted-foreground)", fontSize: "0.8125rem" }}>
+            <span className="text-[0.8125rem] text-muted-foreground">
               {email}
             </span>
           )}
         </div>
-      </Cell>
-      <Cell>
+      </td>
+      <td className={CELL_CLASS}>
         {orgLogins.length === 0 ? (
-          <span style={{ color: "var(--muted-foreground)" }}>—</span>
+          <span className="text-muted-foreground">—</span>
         ) : (
-          <div style={{ display: "flex", flexWrap: "wrap", gap: "0.25rem" }}>
+          <div className="flex flex-wrap gap-1">
             {orgLogins.map((og) => (
               <Badge key={og} variant="outline" data-testid="user-membership">
                 {og}
@@ -226,30 +237,16 @@ function UserRow({
             ))}
           </div>
         )}
-      </Cell>
-      <Cell>
+      </td>
+      <td className={CELL_CLASS}>
         {homeOrgLogin ? (
           <Badge data-testid="user-home-org" data-home-org={homeOrgLogin}>
             🏠 {homeOrgLogin}
           </Badge>
         ) : (
-          <span style={{ color: "var(--muted-foreground)" }}>unset</span>
+          <span className="text-muted-foreground">unset</span>
         )}
-      </Cell>
-    </>
-  );
-}
-
-function Cell({ children }: { children: React.ReactNode }): JSX.Element {
-  return (
-    <div
-      role="cell"
-      style={{
-        padding: "0.625rem",
-        borderBottom: "1px solid var(--border)",
-      }}
-    >
-      {children}
-    </div>
+      </td>
+    </tr>
   );
 }

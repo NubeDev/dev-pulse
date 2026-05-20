@@ -16,10 +16,17 @@
  * The fetch is paused (`refetchIntervalInBackground: false`) when
  * the tab is hidden so the dashboard doesn't poll when nobody is
  * watching.
+ *
+ * Markup: semantic `<table>` + Tailwind utility classes (the kit
+ * doesn't ship a Table primitive — see `reports/activity-table.tsx`
+ * for the same pattern). Status column is a shadcn `Badge` whose
+ * border + text colour is driven by a `STATUS_CLASS` className map
+ * (one of running/partial/failed/clean).
  */
 
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { Alert, AlertDescription, AlertTitle } from "@nube/starter-ui-kit/components/alert";
 import { Badge } from "@nube/starter-ui-kit/components/badge";
 import { Button } from "@nube/starter-ui-kit/components/button";
 import {
@@ -29,6 +36,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@nube/starter-ui-kit/components/card";
+import { cn } from "@nube/starter-ui-kit/lib/utils";
 
 import { api } from "../api/client.js";
 import type { FetchRunDto } from "../api/client.js";
@@ -46,12 +54,31 @@ function statusOf(run: FetchRunDto): RunStatus {
   return "clean";
 }
 
-const STATUS_STYLE: Record<RunStatus, { label: string; color: string }> = {
-  running: { label: "Running", color: "oklch(0.6 0.15 240)" },
-  partial: { label: "Partial", color: "oklch(0.62 0.16 80)" },
-  failed:  { label: "Failed",  color: "oklch(0.55 0.2 25)" },
-  clean:   { label: "Clean",   color: "oklch(0.5 0.16 145)" },
+/** className tuples drive the Badge border + text colour for each
+ *  run status. Kept off the inline `style` so the Tailwind dark-mode
+ *  variants apply without us special-casing them at render time. */
+const STATUS_CLASS: Record<RunStatus, { label: string; badge: string }> = {
+  running: {
+    label: "Running",
+    badge: "border-blue-500 text-blue-600 dark:text-blue-400",
+  },
+  partial: {
+    label: "Partial",
+    badge: "border-amber-500 text-amber-600 dark:text-amber-400",
+  },
+  failed: {
+    label: "Failed",
+    badge: "border-red-500 text-red-600 dark:text-red-400",
+  },
+  clean: {
+    label: "Clean",
+    badge: "border-emerald-500 text-emerald-600 dark:text-emerald-400",
+  },
 };
+
+const HEADER_CLASS =
+  "border-b border-border px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground";
+const CELL_CLASS = "border-b border-border px-3 py-2 align-middle text-sm";
 
 function formatDuration(startedIso: string, finishedIso: string | null | undefined): string {
   if (!finishedIso) return "—";
@@ -99,15 +126,7 @@ export function RunsPage(): JSX.Element {
   return (
     <Card>
       <CardHeader>
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "flex-start",
-            gap: "1rem",
-            flexWrap: "wrap",
-          }}
-        >
+        <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <CardTitle>Fetch runs</CardTitle>
             <CardDescription>
@@ -115,10 +134,10 @@ export function RunsPage(): JSX.Element {
               auto-refreshing every {Math.round(REFRESH_MS / 1000)}s.
             </CardDescription>
           </div>
-          <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+          <div className="flex items-center gap-2">
             <span
               data-testid="runs-refresh-status"
-              style={{ fontSize: "0.8125rem", color: "var(--muted-foreground)" }}
+              className="text-[0.8125rem] text-muted-foreground"
             >
               {runsQuery.isFetching ? "Refreshing…" : "Live"}
             </span>
@@ -134,84 +153,91 @@ export function RunsPage(): JSX.Element {
           </div>
         </div>
       </CardHeader>
-      <CardContent style={{ display: "grid", gap: "1rem" }}>
+      <CardContent className="grid gap-4">
         {runsQuery.error ? (
-          <p data-testid="runs-error" style={{ color: "oklch(0.5 0.2 25)" }}>
-            Failed to load runs: {runsQuery.error.message}
-          </p>
+          <Alert variant="destructive" data-testid="runs-error">
+            <AlertTitle>Failed to load runs</AlertTitle>
+            <AlertDescription>{runsQuery.error.message}</AlertDescription>
+          </Alert>
         ) : null}
 
         {runsQuery.isPending && runs.length === 0 ? (
-          <p style={{ color: "var(--muted-foreground)" }}>Loading runs…</p>
+          <p className="text-muted-foreground">Loading runs…</p>
         ) : runs.length === 0 ? (
-          <p data-testid="runs-empty" style={{ color: "var(--muted-foreground)" }}>
+          <p data-testid="runs-empty" className="text-muted-foreground">
             {hasPrev ? "No more runs on this page." : "No fetch runs recorded yet."}
           </p>
         ) : (
-          <div
-            data-testid="runs-table"
-            role="table"
-            style={{
-              display: "grid",
-              gap: "0.125rem",
-              gridTemplateColumns:
-                "minmax(7rem, auto) minmax(10rem, 1.2fr) minmax(10rem, 1.2fr) minmax(5rem, auto) minmax(5rem, auto) minmax(5rem, auto) minmax(6rem, auto)",
-              alignItems: "center",
-              fontSize: "0.875rem",
-            }}
-          >
-            <Header>Kind</Header>
-            <Header>Started</Header>
-            <Header>Finished</Header>
-            <Header>Duration</Header>
-            <Header>Items</Header>
-            <Header>Errors</Header>
-            <Header>Status</Header>
-            {runs.map((r) => {
-              const status = statusOf(r);
-              const style = STATUS_STYLE[status];
-              return (
-                <Row key={r.id} data-run-id={r.id} data-run-status={status}>
-                  <Cell><code>{r.kind}</code></Cell>
-                  <Cell>{formatTs(r.started)}</Cell>
-                  <Cell>{formatTs(r.finished ?? null)}</Cell>
-                  <Cell>{formatDuration(r.started, r.finished ?? null)}</Cell>
-                  <Cell>{r.items.toLocaleString()}</Cell>
-                  <Cell
-                    style={{
-                      color: r.errors > 0 ? "oklch(0.5 0.2 25)" : undefined,
-                      fontVariantNumeric: "tabular-nums",
-                    }}
-                  >
-                    {r.errors.toLocaleString()}
-                  </Cell>
-                  <Cell>
-                    <Badge
-                      variant="outline"
-                      data-testid="run-status-badge"
-                      style={{ color: style.color, borderColor: style.color }}
+          <div className="overflow-hidden rounded-md border border-border bg-card">
+            <table
+              data-testid="runs-table"
+              className="w-full border-collapse"
+            >
+              <thead className="bg-muted">
+                <tr>
+                  <th className={HEADER_CLASS}>Kind</th>
+                  <th className={HEADER_CLASS}>Started</th>
+                  <th className={HEADER_CLASS}>Finished</th>
+                  <th className={cn(HEADER_CLASS, "text-right")}>Duration</th>
+                  <th className={cn(HEADER_CLASS, "text-right")}>Items</th>
+                  <th className={cn(HEADER_CLASS, "text-right")}>Errors</th>
+                  <th className={HEADER_CLASS}>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {runs.map((r) => {
+                  const status = statusOf(r);
+                  const meta = STATUS_CLASS[status];
+                  return (
+                    <tr
+                      key={r.id}
+                      data-run-id={r.id}
+                      data-run-status={status}
                     >
-                      {style.label}
-                    </Badge>
-                  </Cell>
-                </Row>
-              );
-            })}
+                      <td className={CELL_CLASS}>
+                        <code>{r.kind}</code>
+                      </td>
+                      <td className={CELL_CLASS}>{formatTs(r.started)}</td>
+                      <td className={CELL_CLASS}>
+                        {formatTs(r.finished ?? null)}
+                      </td>
+                      <td className={cn(CELL_CLASS, "text-right tabular-nums")}>
+                        {formatDuration(r.started, r.finished ?? null)}
+                      </td>
+                      <td className={cn(CELL_CLASS, "text-right tabular-nums")}>
+                        {r.items.toLocaleString()}
+                      </td>
+                      <td
+                        className={cn(
+                          CELL_CLASS,
+                          "text-right tabular-nums",
+                          r.errors > 0 && "text-destructive",
+                        )}
+                      >
+                        {r.errors.toLocaleString()}
+                      </td>
+                      <td className={CELL_CLASS}>
+                        <Badge
+                          variant="outline"
+                          data-testid="run-status-badge"
+                          className={cn("border", meta.badge)}
+                        >
+                          {meta.label}
+                        </Badge>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
         )}
 
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            paddingTop: "0.25rem",
-          }}
-        >
-          <span style={{ fontSize: "0.8125rem", color: "var(--muted-foreground)" }}>
+        <div className="flex items-center justify-between pt-1">
+          <span className="text-[0.8125rem] text-muted-foreground">
             Page {page + 1} · showing rows {offset + 1}–{offset + runs.length}
           </span>
-          <div style={{ display: "flex", gap: "0.5rem" }}>
+          <div className="flex gap-2">
             <Button
               size="sm"
               variant="outline"
@@ -234,57 +260,6 @@ export function RunsPage(): JSX.Element {
         </div>
       </CardContent>
     </Card>
-  );
-}
-
-function Header({ children }: { children: React.ReactNode }): JSX.Element {
-  return (
-    <div
-      role="columnheader"
-      style={{
-        padding: "0.5rem 0.625rem",
-        fontWeight: 600,
-        borderBottom: "1px solid var(--border)",
-        color: "var(--muted-foreground)",
-        fontSize: "0.8125rem",
-        textTransform: "uppercase",
-        letterSpacing: "0.02em",
-      }}
-    >
-      {children}
-    </div>
-  );
-}
-
-function Row({
-  children,
-  ...rest
-}: { children: React.ReactNode } & React.HTMLAttributes<HTMLDivElement>): JSX.Element {
-  return (
-    <div role="row" style={{ display: "contents" }} {...rest}>
-      {children}
-    </div>
-  );
-}
-
-function Cell({
-  children,
-  style,
-}: {
-  children: React.ReactNode;
-  style?: React.CSSProperties;
-}): JSX.Element {
-  return (
-    <div
-      role="cell"
-      style={{
-        padding: "0.5rem 0.625rem",
-        borderBottom: "1px solid var(--border)",
-        ...style,
-      }}
-    >
-      {children}
-    </div>
   );
 }
 

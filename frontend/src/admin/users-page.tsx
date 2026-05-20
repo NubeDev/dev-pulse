@@ -10,12 +10,20 @@
  *                server already streams chunked JSON, and the user
  *                wants the bytes, not a typed object.
  *
+ *                While the download is in flight we surface a shadcn
+ *                `Progress` indicator next to the button. The dp-rest
+ *                endpoint doesn't ship a content-length header, so
+ *                the progress is a two-step "working / done" visual
+ *                cue (33% on click → 100% on settle) rather than a
+ *                byte-accurate readout.
+ *
  *   - Anonymise: `POST /admin/users/:id/anonymise` is irreversible
  *                (the server cascades scrubs across membership,
- *                event, and audit rows), so the button opens an
- *                `AlertDialog` that requires the user to retype the
- *                login as confirmation.  Cancelling closes the
- *                dialog without firing the request.
+ *                event, and audit rows), so the button opens a
+ *                shadcn `AlertDialog` (destructive variant) that
+ *                requires the user to retype the login as
+ *                confirmation. Cancelling closes the dialog without
+ *                firing the request.
  *
  * Both actions read the list of users from the same `GET /users`
  * query the directory section uses — no per-page user fanout, the
@@ -34,6 +42,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@nube/starter-ui-kit/components/alert-dialog";
+import { Alert, AlertDescription, AlertTitle } from "@nube/starter-ui-kit/components/alert";
 import { Button } from "@nube/starter-ui-kit/components/button";
 import {
   Card,
@@ -44,6 +53,7 @@ import {
 } from "@nube/starter-ui-kit/components/card";
 import { Input } from "@nube/starter-ui-kit/components/input";
 import { Label } from "@nube/starter-ui-kit/components/label";
+import { Progress } from "@nube/starter-ui-kit/components/progress";
 import {
   Select,
   SelectContent,
@@ -145,6 +155,16 @@ export function AdminUsersPage(): JSX.Element {
     typedLogin.trim() === selected.login &&
     !anonymiseMut.isPending;
 
+  // The export endpoint doesn't ship a content-length header, so the
+  // Progress bar is a two-step "working / done" affordance rather
+  // than a true byte-accurate readout. 33% while in flight, 100% on
+  // success, hidden again on the next interaction.
+  const exportProgress = exportMut.isPending
+    ? 33
+    : exportMut.isSuccess
+      ? 100
+      : null;
+
   return (
     <Card>
       <CardHeader>
@@ -154,8 +174,8 @@ export function AdminUsersPage(): JSX.Element {
           is irreversible — confirmation required.
         </CardDescription>
       </CardHeader>
-      <CardContent style={{ display: "grid", gap: "1rem" }}>
-        <div style={{ display: "grid", gap: "0.25rem", maxWidth: "28rem" }}>
+      <CardContent className="grid gap-4">
+        <div className="grid max-w-lg gap-1">
           <Label htmlFor="admin-user">User</Label>
           <Select
             value={userId ?? undefined}
@@ -179,7 +199,7 @@ export function AdminUsersPage(): JSX.Element {
           </Select>
         </div>
 
-        <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+        <div className="flex flex-wrap items-center gap-2">
           <Button
             data-testid="admin-export"
             disabled={selected === null || exportMut.isPending}
@@ -206,23 +226,27 @@ export function AdminUsersPage(): JSX.Element {
           >
             Anonymise user…
           </Button>
+          {exportProgress !== null ? (
+            <Progress
+              value={exportProgress}
+              data-testid="admin-export-progress"
+              className="ml-2 h-2 max-w-[14rem]"
+            />
+          ) : null}
         </div>
 
         {feedback ? (
-          <p
+          <Alert
+            variant={feedback.kind === "ok" ? "default" : "destructive"}
             data-testid="admin-users-feedback"
             data-kind={feedback.kind}
-            role="status"
             aria-live="polite"
-            style={{
-              fontSize: "0.875rem",
-              color: feedback.kind === "ok"
-                ? "oklch(0.45 0.16 145)"
-                : "oklch(0.5 0.2 25)",
-            }}
           >
-            {feedback.message}
-          </p>
+            <AlertTitle>
+              {feedback.kind === "ok" ? "Done" : "Action failed"}
+            </AlertTitle>
+            <AlertDescription>{feedback.message}</AlertDescription>
+          </Alert>
         ) : null}
       </CardContent>
 
@@ -249,7 +273,7 @@ export function AdminUsersPage(): JSX.Element {
               ) : null}
             </AlertDialogDescription>
           </AlertDialogHeader>
-          <div style={{ display: "grid", gap: "0.25rem" }}>
+          <div className="grid gap-1">
             <Label htmlFor="anonymise-confirm-login">Confirm login</Label>
             <Input
               id="anonymise-confirm-login"
@@ -273,6 +297,7 @@ export function AdminUsersPage(): JSX.Element {
             </AlertDialogCancel>
             <AlertDialogAction
               data-testid="anonymise-confirm-submit"
+              variant="destructive"
               disabled={!canConfirmAnonymise}
               onClick={(e) => {
                 e.preventDefault();
