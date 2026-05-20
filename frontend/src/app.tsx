@@ -1,26 +1,22 @@
 /**
  * dev-pulse SPA root.
  *
- * Stage 3 wires:
- *   - `<AuthProvider>` from `@nube/starter-ui-core/auth` with the
- *     session strategy (cookie login at `POST /auth/login`).
- *   - A hash-based route switch: `#/login` shows the login form,
- *     anything else falls through to the `<AppShell>` behind the
- *     `<ProtectedRoute>` gate.
- *   - Per-section placeholder panes (Reports / Directory / Admin); the
- *     real `§11.5` report pages land in stage 4+ and replace the
- *     `ReportsHome` body.
+ * Stage 4 promotes the reports section: `#/reports` (and the
+ * deep-linked `#/reports/user/:user_id`) now renders the SCOPE §11.5
+ * user-activity report — headline + sortable table + per-kind
+ * sparkline trend, with the three-lens toggle and "Data as of"
+ * banner. Directory / Admin remain placeholders until later stages.
  */
 
 import { useAuth, AuthProvider } from "@nube/starter-ui-core/auth";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@nube/starter-ui-kit/components/card";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@nube/starter-ui-kit/components/tabs";
 
 import { api } from "./api/client.js";
 import { authStrategy } from "./auth/strategy.js";
 import { LoginPage } from "./auth/login-page.jsx";
 import { ProtectedRoute } from "./auth/protected-route.jsx";
 import { AppShell } from "./layout/app-shell.jsx";
+import { UserReportPage } from "./reports/user-report-page.jsx";
 import { isLoginRoute, sectionOf, useRoute } from "./routes.js";
 
 export function App(): JSX.Element {
@@ -68,7 +64,7 @@ function Router(): JSX.Element {
 function SectionPane({ section }: { section: "reports" | "directory" | "admin" }): JSX.Element {
   switch (section) {
     case "reports":
-      return <ReportsHome />;
+      return <UserReportPage />;
     case "directory":
       return <DirectoryHome />;
     case "admin":
@@ -76,44 +72,12 @@ function SectionPane({ section }: { section: "reports" | "directory" | "admin" }
   }
 }
 
-function ReportsHome(): JSX.Element {
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Reports</CardTitle>
-        <CardDescription>
-          Headline + table + trend per SCOPE §11.5, with the three-lens toggle (§8.1).
-          Real pages land in stage 4+.
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        <Tabs defaultValue="single">
-          <TabsList>
-            <TabsTrigger value="single">Single org</TabsTrigger>
-            <TabsTrigger value="combined">All orgs combined</TabsTrigger>
-            <TabsTrigger value="split">Per-org split</TabsTrigger>
-          </TabsList>
-          <TabsContent value="single">
-            <p style={{ color: "var(--muted-foreground)" }}>Single-org lens placeholder.</p>
-          </TabsContent>
-          <TabsContent value="combined">
-            <p style={{ color: "var(--muted-foreground)" }}>All-orgs-combined lens placeholder.</p>
-          </TabsContent>
-          <TabsContent value="split">
-            <p style={{ color: "var(--muted-foreground)" }}>Per-org-split lens placeholder.</p>
-          </TabsContent>
-        </Tabs>
-      </CardContent>
-    </Card>
-  );
-}
-
 function DirectoryHome(): JSX.Element {
   return (
     <Card>
       <CardHeader>
         <CardTitle>Directory</CardTitle>
-        <CardDescription>Users, orgs, teams. Stage 4+ wires the listings.</CardDescription>
+        <CardDescription>Users, orgs, teams. Stage 5+ wires the listings.</CardDescription>
       </CardHeader>
       <CardContent>
         <p style={{ color: "var(--muted-foreground)" }}>Directory placeholder.</p>
@@ -127,7 +91,7 @@ function AdminHome(): JSX.Element {
     <Card>
       <CardHeader>
         <CardTitle>Admin</CardTitle>
-        <CardDescription>Refresh, run log, GDPR export / anonymise. Stage 4+.</CardDescription>
+        <CardDescription>Refresh, run log, GDPR export / anonymise. Stage 5+.</CardDescription>
       </CardHeader>
       <CardContent>
         <p style={{ color: "var(--muted-foreground)" }}>Admin placeholder.</p>
