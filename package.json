@@ -1,0 +1,7 @@
+{
+  "name": "dev-pulse-workspace",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Root of the dev-pulse pnpm workspace. Hosts the frontend/ app and pulls in @nube/starter-* packages from the sibling starter checkout. Not published.",
+  "packageManager": "pnpm@10.33.0"
+}

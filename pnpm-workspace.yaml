@@ -1,0 +1,7 @@
+packages:
+  - "frontend"
+  # Pin the starter packages into this workspace so `workspace:*`
+  # protocol references resolve. The starter checkout lives next to
+  # dev-pulse (sibling clone), matching Cargo.toml's path = "../starter/..."
+  # convention (see workspace.dependencies block).
+  - "../starter/packages/*"

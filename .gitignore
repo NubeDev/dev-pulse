@@ -2,3 +2,15 @@
 Cargo.lock.bak
 *.swp
 .DS_Store
+
+# frontend (Vite + pnpm). Ignore node_modules only — keep dist out of
+# git too via Vite's own outDir; we serve it from the Rust binary at
+# build time, not from version control.
+frontend/node_modules
+node_modules
+
+# Frontend build + Playwright e2e artefacts (stage 11).
+frontend/dist
+frontend/test-results
+frontend/playwright-report
+frontend/.playwright

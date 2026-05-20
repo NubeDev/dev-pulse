@@ -1,0 +1,27 @@
+name: phase-7-frontend
+goal: |
+  Ship the dev-pulse frontend — a Vite + React app under `frontend/`
+  that gives operators a working UI over the Phase 4 REST surface.
+  Uses `@nube/starter-client-ts` (generated from the OpenAPI snapshot),
+  `@nube/starter-ui-kit` (shadcn components), `@nube/starter-ui-core`
+  (auth provider, theme). Auth is simple session login (email/password
+  via `starter-auth-users` local admin, seeded by CLI). Every report
+  page renders the SCOPE §11.5 "headline + table + trend" shape with
+  the three-lens toggle (§8.1) and "Data as of <ts>" per §0.3.
+  No leaderboard, no single-score (§4 design constraint). The app
+  proxies to the Rust server in dev via Vite proxy, and in prod is
+  served as static files from the same binary. Phase 5 (MCP) and
+  Phase 6 (CLI) are deferred — this job is frontend only.
+
+stages:
+  - 'scaffold the frontend — `frontend/` with Vite + React + TypeScript + Tailwind v4, pnpm workspace linked to `@nube/starter-client-ts`, `@nube/starter-ui-kit`, `@nube/starter-ui-core`. Copy the notes example pattern: vite.config.ts with proxy to localhost:3000 (Rust server), tailwind.css importing starter-ui-kit tokens, tsconfig strict. package.json scripts: dev, build, preview, lint, typecheck. Add `frontend/` to the root .gitignore for node_modules only. Smoke: `pnpm install && pnpm build` produces dist/'
+  - 'generate the TypeScript API client from the OpenAPI snapshot — write `frontend/src/api/client.ts` wrapping `StarterClient` with typed methods for every endpoint in the snapshot (reports, directory, admin). Types extracted from the OpenAPI schemas: ReportResponse, CountRow, DataAsOfDto, UserDto, OrgDto, TeamDto, etc. Use zod schemas for runtime validation matching the OpenAPI spec. Export a singleton `api` instance configured with baseUrl from env. Smoke: typecheck passes, `api.getReportUser(id, params)` is fully typed'
+  - 'auth shell + layout — implement login page using `starter-ui-core/auth` AuthProvider + tokenStrategy (session cookie login via POST /auth/session). Layout: sidebar nav (Reports, Directory, Admin), top bar with user info + logout, main content area. Use starter-ui-kit Card, Button, Input, Separator, Tabs. Protected route wrapper redirects to /login if no session. Smoke: app renders login form, submitting credentials calls the session endpoint'
+  - 'user activity report page — `GET /reports/user/:user_id` with full envelope params. Three-lens toggle (SingleOrg / AllOrgsCombined / PerOrgSplit) as Tabs. Window picker (last week / last month / last quarter / custom range) with TZ anchor selector. Results render as: (1) headline sentence summarising the totals, (2) table of CountRows grouped by activity type with sort, (3) trend sparkline/chart per metric over the window buckets. "Data as of" timestamp displayed prominently per §0.3. User selector dropdown populated from GET /users. Smoke: page renders with mock data, lens toggle switches view, window picker updates query'
+  - 'team + org + home-org-split report pages — same pattern as user report: (a) GET /reports/team/:team_id with team selector from GET /teams, (b) GET /reports/org/:org_id with org selector from GET /orgs, (c) GET /reports/home-org-split (the cross-company executive view). Each has the three-lens toggle, window picker, headline + table + trend. The home-org-split page groups by home_org showing contribution proportions per company. Smoke: all four report pages render, lenses work, no leaderboard affordance anywhere'
+  - 'freshness dashboard — `GET /reports/freshness` showing data_as_of per org, webhook lag, reconciler health, last successful run timestamps. Simple card grid: one card per org with "last updated <relative time>", colour-coded (green < 1h, yellow < 4h, red > 4h). Overall system health headline. Smoke: freshness page renders with status indicators'
+  - 'directory pages — (a) Users list with search/filter by org, showing memberships + home_org badge, (b) Orgs list showing member count, (c) Teams list filtered by org. Plus the home-org assignment UI: select a user, select an org, POST /home-org to set it — with confirmation dialog and optimistic update. Smoke: directory pages render, home-org mutation works'
+  - 'admin pages — (a) Runs log: paginated table of fetch_runs (kind, started, finished, items, errors, partial) with auto-refresh. (b) Refresh trigger: button calling POST /admin/refresh with org scope selector + loading state. (c) User management: anonymise button with confirmation modal (POST /admin/users/:id/anonymise), export button that streams GET /admin/users/:id/export as a download. Smoke: admin pages render, refresh triggers correctly'
+  - 'polish + responsive + dark mode — ensure all pages work on mobile (responsive breakpoints), dark mode via starter-ui-kit theme toggle, loading skeletons for async data, error boundaries with retry, empty states for no-data scenarios. Add a 404 page. Wire react-query for all API calls (caching, refetch, optimistic updates). Smoke: lighthouse mobile score > 80, dark mode toggles correctly, error states render gracefully'
+  - 'REVIEW — full walkthrough of all pages before integration testing'
+  - 'integration smoke tests — Playwright tests against a running dev server + Rust backend (or MSW mocks): login flow, navigate to user report, toggle lens, change window, verify data_as_of displays, navigate to admin, trigger refresh, verify freshness updates. Plus: no leaderboard anywhere (grep test), boundary check still green, pnpm build produces dist/ under 2MB gzipped'
