@@ -641,3 +641,34 @@ TODO §0.1–§0.6 are settled and locked as inputs to Phase 2:
   splits fragment Phase 7 TS generation and Phase 5 MCP schemas.
 - **Revisit if:** starter crates add native utoipa annotations →
   remove the shims.
+
+### 15.15 GitHub App default permission set: `issues: write` (SCOPE-PROJECTS §13.6)
+
+- **Decision (projects-issues stage 8):** the GitHub App's default
+  permission set declares `issues: write` whenever the
+  `dp-config` flag `github.app.request_issues_write` is `true`
+  (its default in new deployments). Setting the flag to `false`
+  hard-disables the SCOPE-PROJECTS §8 issue mutation surface and
+  drops `issues` from the App manifest — the documented escape
+  hatch for deployments whose security policy forbids any App
+  with write scope.
+- **Why:** SCOPE.md §15.1 already named "permission scope can
+  grow into write access … without re-onboarding orgs" as a
+  property of the per-org App install model. SCOPE-PROJECTS §13.6
+  ratifies this for v1; stage 8 wires the toggle and the §8.4
+  "writes not available" 403 path so an org whose admin
+  consented read-only sees a deterministic refusal (code
+  `writes_not_available_for_org`) with the per-install
+  `manage_url` deep-link, not a 500.
+- **Migration (§13.6 banner).** `GET /me/app-install-banner`
+  returns one row per org the viewer is in, each marked
+  `writes_available: bool` with a copy-able admin-text snippet
+  the viewer can paste into Slack / email. The banner is the
+  one-shot prompt; the §8.4 affordance on individual issues is
+  the steady-state fallback. Both surfaces share the same
+  `dp_rest::require_issues_write` verdict so they cannot disagree.
+- **Revisit if:** a deployment needs a finer per-permission
+  toggle (e.g. some orgs writable, others not) — at which point
+  the per-org `OrgAppInstall.permissions` snapshot is already
+  the system of record and the §13.6 banner would surface the
+  finer breakdown without a SCOPE change.

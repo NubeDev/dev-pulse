@@ -33,6 +33,7 @@
 //! [`Store::set_home_org_for_user`]: dp_domain::store::Store::set_home_org_for_user
 
 pub mod admin;
+pub mod app_permissions;
 pub mod audit;
 pub mod directory;
 pub mod error;
@@ -46,6 +47,11 @@ pub use admin::{
     admin_router, anonymise_user, export_user, list_runs, AdminState, ExportEvent, FetchRunDto,
     MembershipDto, RefreshQuery, RefreshResponse, RunsQuery, UserExport, EXPORT_PAGE_SIZE,
     RUNS_DEFAULT_LIMIT, RUNS_MAX_LIMIT,
+};
+pub use app_permissions::{
+    app_manifest_permissions, app_permissions_router, list_app_install_banner,
+    require_issues_write, AppInstallBannerOrgDto, AppInstallBannerResponse, AppManifest,
+    GitHubAppConfig,
 };
 pub use audit::Principal;
 pub use directory::{

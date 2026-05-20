@@ -213,6 +213,28 @@
         }
       }
     },
+    "/me/app-install-banner": {
+      "get": {
+        "tags": [
+          "github_app"
+        ],
+        "summary": "`GET /me/app-install-banner` — the §13.6 one-shot migration\nbanner data for the caller.",
+        "description": "* Reads memberships through `Store::list_memberships_for_user`\n  so the §15.11 access gate is the only visibility check\n  (out-of-org users get an empty `orgs` list — same as the\n  `/orgs` directory surface).\n* Per-org `writes_available` is the *same* verdict\n  [`require_issues_write`] would return — no separate code\n  path, no risk of the banner saying \"you can write\" while the\n  write-gate disagrees.\n* Not audited (read-only, no mutation).",
+        "operationId": "list_app_install_banner",
+        "responses": {
+          "200": {
+            "description": "Per-org App install status + §13.6 admin copy text",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppInstallBannerResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/me/pins": {
       "get": {
         "tags": [
@@ -1020,6 +1042,94 @@
             "type": "string",
             "format": "uuid",
             "description": "`dp_repos.id` or `dp_tags.id` per [`kind`](Self::kind)."
+          }
+        }
+      },
+      "AppInstallBannerOrgDto": {
+        "type": "object",
+        "description": "One row in `GET /me/app-install-banner`.\n\n`writes_available` mirrors the write-gate verdict for the\n`(viewer, org)` pair so the frontend can render the §8.4\naffordance without re-querying. `admin_copy_text` is the\n§13.6 copy-able snippet; `manage_url` is the GitHub deep-link\n(omitted when no App slug is configured).",
+        "required": [
+          "org_id",
+          "login",
+          "writes_available",
+          "admin_copy_text"
+        ],
+        "properties": {
+          "admin_copy_text": {
+            "type": "string",
+            "description": "Copy-able admin text the viewer pastes into Slack / email\nto ask their org admin to re-consent. Always present —\neven for orgs where writes are already available, the\nfrontend hides the row but the text is harmless to carry."
+          },
+          "login": {
+            "type": "string",
+            "description": "GitHub org login (e.g. `\"NubeIO\"`)."
+          },
+          "manage_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "GitHub-side deep-link to the install's permissions page.\n`None` when no slug is configured or when no install\nrecord exists for the org."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Display name, if known."
+          },
+          "org_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "dev-pulse-local org id."
+          },
+          "writes_available": {
+            "type": "boolean",
+            "description": "`true` iff a §8 issue write against this org would succeed\n(deployment flag on AND install record allows\n`issues: write`)."
+          }
+        }
+      },
+      "AppInstallBannerResponse": {
+        "type": "object",
+        "description": "Full §13.6 banner response.\n\n`request_issues_write` mirrors the deployment-level flag so the\nUI can render the \"writes disabled in this deployment\" mode\nwithout inspecting each row's `writes_available`.",
+        "required": [
+          "request_issues_write",
+          "orgs"
+        ],
+        "properties": {
+          "orgs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AppInstallBannerOrgDto"
+            },
+            "description": "One row per org the viewer is a member of (read through\n`Store::list_memberships_for_user`). Orgs the viewer\ncannot see at all are *not* included — the §15.11 access\ngate is the single visibility check (§9 cross-ref)."
+          },
+          "request_issues_write": {
+            "type": "boolean",
+            "description": "`false` when [`GitHubAppConfig::request_issues_write`] is\noff; the §8 surface is hard-disabled deployment-wide."
+          }
+        }
+      },
+      "AppManifest": {
+        "type": "object",
+        "description": "The App's default permission set as declared in its manifest.\n\nEach key is a GitHub permission resource (e.g. `\"issues\"`,\n`\"metadata\"`); each value is the requested level (`\"read\"` or\n`\"write\"`). [`app_manifest_permissions`] renders this from\n[`GitHubAppConfig`] — `issues` is `\"write\"` when\n[`GitHubAppConfig::request_issues_write`] is `true`, omitted\notherwise. The other resources are the read-only set the v1\nreporting surface needs and do not change with the flag.\n\nUsed by deployment tooling and the (future) `/admin/app-manifest`\nsurface. Pure value; no side-effects.",
+        "required": [
+          "slug",
+          "default_permissions"
+        ],
+        "properties": {
+          "default_permissions": {
+            "type": "object",
+            "description": "`resource -> level` map. Serialised in BTreeMap order so\nthe JSON is deterministic across runs (the OpenAPI\nsnapshot test cares).",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "slug": {
+            "type": "string",
+            "description": "App slug — informational, copied verbatim from\n[`GitHubAppConfig::slug`]. Empty when unset."
           }
         }
       },
@@ -1886,6 +1996,10 @@
     {
       "name": "tags",
       "description": "Cross-org home-grown tags (SCOPE-PROJECTS §7)."
+    },
+    {
+      "name": "github_app",
+      "description": "GitHub App install permission surface (SCOPE-PROJECTS §8.4, §13.6)."
     },
     {
       "name": "webhooks",

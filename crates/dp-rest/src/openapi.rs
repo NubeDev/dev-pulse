@@ -104,6 +104,8 @@ async fn webhook_github_stub() {}
         crate::tags::update_tag,
         crate::tags::link_targets,
         crate::tags::unlink_targets,
+        // GitHub App permission banner (SCOPE-PROJECTS §13.6).
+        crate::app_permissions::list_app_install_banner,
         // Webhooks (Phase 2 — docs-only stub, real handler in dp-fetcher).
         webhook_github_stub,
     ),
@@ -143,6 +145,10 @@ async fn webhook_github_stub() {}
         crate::tags::UnlinkBatchRequest,
         crate::tags::TagDetailResponse,
         crate::tags::TagLinkDto,
+        // GitHub App permission banner (SCOPE-PROJECTS §13.6).
+        crate::app_permissions::AppInstallBannerOrgDto,
+        crate::app_permissions::AppInstallBannerResponse,
+        crate::app_permissions::AppManifest,
     )),
     tags(
         (name = "reports",   description = "Per-user / team / org activity reports + freshness probe."),
@@ -150,6 +156,7 @@ async fn webhook_github_stub() {}
         (name = "admin",     description = "Operator-only surface: refresh, run-log, GDPR cascade + export."),
         (name = "pins",      description = "Per-user pinned repos / tags (SCOPE-PROJECTS §6)."),
         (name = "tags",      description = "Cross-org home-grown tags (SCOPE-PROJECTS §7)."),
+        (name = "github_app", description = "GitHub App install permission surface (SCOPE-PROJECTS §8.4, §13.6)."),
         (name = "webhooks",  description = "GitHub webhook receiver. HMAC-authenticated, not principal-wrapped."),
     ),
 )]

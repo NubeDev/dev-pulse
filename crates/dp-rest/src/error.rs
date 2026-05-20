@@ -78,6 +78,37 @@ pub enum ApiError {
         message: String,
     },
 
+    /// The caller asked for a write against an org whose GitHub App
+    /// install was granted **read-only** (`issues: write` not in
+    /// the install's permission set) — or no install record exists
+    /// for the org yet (fail-closed). SCOPE-PROJECTS §8.4 / §13.6:
+    /// the API mirrors the UI affordance with
+    /// `403 writes_not_available_for_org` so callers that bypass
+    /// the UI get a deterministic, machine-readable refusal — not
+    /// a 500.
+    ///
+    /// The body carries the offending org's login so the frontend
+    /// can render the banner without a second lookup, and a
+    /// `manage_url` deep-link the admin-copyable text in §13.6
+    /// points at.
+    #[error("{message}")]
+    WritesNotAvailable {
+        /// Stable machine-readable code; always
+        /// `"writes_not_available_for_org"`.
+        code: &'static str,
+        /// Human-readable message; safe to render verbatim.
+        message: String,
+        /// GitHub login of the org whose install lacks
+        /// `issues: write`. Used by the frontend to highlight the
+        /// matching row in the §13.6 banner.
+        org_login: String,
+        /// GitHub-side deep-link to the install's permissions
+        /// page — the same URL the §13.6 banner offers as a
+        /// copy-able admin link. `None` when dev-pulse has no
+        /// install record for the org (fail-closed branch).
+        manage_url: Option<String>,
+    },
+
     /// Per-item validation failure inside a batch request. Used by
     /// the `POST /tags/{id}/links` / `DELETE /tags/{id}/links`
     /// transactional batch path (SCOPE-PROJECTS §7.5): the whole
@@ -148,6 +179,19 @@ struct BatchErrorBody<'a> {
     items: &'a [BatchItemError],
 }
 
+/// Body shape for the §8.4 `writes_not_available_for_org` 403.
+/// Carries the offending org's login + a `manage_url` deep-link so
+/// the frontend can render the §13.6 banner row without a second
+/// round-trip. Wire-stable.
+#[derive(Serialize)]
+struct WritesNotAvailableBody<'a> {
+    error: &'a str,
+    code: &'a str,
+    org_login: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    manage_url: Option<&'a str>,
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         match &self {
@@ -191,6 +235,21 @@ impl IntoResponse for ApiError {
                 Json(ErrorBody {
                     error: message,
                     code,
+                }),
+            )
+                .into_response(),
+            ApiError::WritesNotAvailable {
+                code,
+                message,
+                org_login,
+                manage_url,
+            } => (
+                StatusCode::FORBIDDEN,
+                Json(WritesNotAvailableBody {
+                    error: message,
+                    code,
+                    org_login,
+                    manage_url: manage_url.as_deref(),
                 }),
             )
                 .into_response(),

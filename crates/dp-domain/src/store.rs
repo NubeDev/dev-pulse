@@ -18,6 +18,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
+use crate::app_install::OrgAppInstall;
 use crate::audit::AuditEntry;
 use crate::event::{ActivityEvent, ActorRole, EventActor, EventKind};
 use crate::fetch::{FetchCursor, FetchRun, FetchRunKind, ResourceKind};
@@ -537,6 +538,37 @@ pub trait Store: Send + Sync {
         _visible_team_ids: &[Uuid],
     ) -> Result<Vec<TagLink>, StoreError> {
         Ok(Vec::new())
+    }
+
+    // ---- GitHub App installation permissions (SCOPE-PROJECTS §8.4, §13.6) ----
+    //
+    // The reconciler / install-callback writes one row per org
+    // capturing whether the install was granted `issues: write`.
+    // The §8 write surface reads through this; the §13.6 banner
+    // endpoint enumerates orgs whose row says writes are
+    // unavailable. Stage 8 lands the trait method as a `None`-by-
+    // default read; the postgres backend grows the
+    // `dp_org_app_installs` table in a later migration of this
+    // same job. Fakes / test stubs inherit the default and behave
+    // as if no orgs have writes available — a fail-closed posture
+    // that matches the §8.4 §13.6 decision.
+
+    /// Look up the per-org GitHub App install record (if any).
+    ///
+    /// Returns `Ok(None)` when no install row has been observed
+    /// for `org_id` yet — callers treat this as **writes not
+    /// available** (§8.4 fail-closed). Returns `Ok(Some(_))` with
+    /// the latest observed permissions otherwise.
+    ///
+    /// The default impl returns `Ok(None)` so existing test fakes
+    /// and the partially-migrated postgres backend stay compiling
+    /// through stage 8; a follow-up stage of this job overrides
+    /// it with the real Postgres query.
+    async fn get_org_app_install(
+        &self,
+        _org_id: Uuid,
+    ) -> Result<Option<OrgAppInstall>, StoreError> {
+        Ok(None)
     }
 
     // ---- issue mutations (SCOPE-PROJECTS §8.5) ------------------
