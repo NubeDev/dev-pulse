@@ -301,81 +301,81 @@ deletion-cascade all roll into Phases 1–2 and inflate them.
       a `sources()` returning `[starter_auth_users, dp]` per the
       starter migrations namespacing rule (consumer rules §4.5).
 
-### Phase 2 — ingestion (2–3 weeks)
+### Phase 2 — ingestion (2–3 weeks) ✅
 
 Was 3–5 days. Honest estimate after §0.1/§0.3 is much larger.
 
-- [ ] Octocrab client wrapper with rate-limit pacing in **one**
+- [x] Octocrab client wrapper with rate-limit pacing in **one**
       place. Respects `X-RateLimit-*` and conditional GETs (etag).
-- [ ] **Webhook receiver** — axum route, HMAC validation against
+- [x] **Webhook receiver** — axum route, HMAC validation against
       `starter-secrets-file` secret, enqueue to `webhook_inbox`,
       return 200 in under 100ms.
-- [ ] **Webhook worker** — drains `webhook_inbox`, applies
+- [x] **Webhook worker** — drains `webhook_inbox`, applies
       idempotent upserts via `external_id`, fans out multi-actor
       events into `event_actors` rows.
-- [ ] Co-author / squash-merge / bot / unattributed handling per
+- [x] Co-author / squash-merge / bot / unattributed handling per
       SCOPE §6 caveats — explicit unit tests for each, against
       recorded GitHub fixture payloads.
-- [ ] **Reconciler** — 4h-default tokio interval, configurable via
+- [x] **Reconciler** — 4h-default tokio interval, configurable via
       `starter-config`. Per-(org, repo, resource_kind) cursor
       pagination. Detects events missing from local store
       (missed webhooks) and fills them in.
-- [ ] Scheduler: `Mutex<Option<JoinHandle>>` for coalescing;
+- [x] Scheduler: `Mutex<Option<JoinHandle>>` for coalescing;
       `fetch-now` CLI + HTTP trigger reuses the same path.
-- [ ] **Backfill** — one-shot per org, bounded historical window
+- [x] **Backfill** — one-shot per org, bounded historical window
       (default 90 days, configurable), separately paced.
-- [ ] Run-log entries written for every webhook batch, reconciler
+- [x] Run-log entries written for every webhook batch, reconciler
       tick, backfill chunk.
 
-### Phase 3 — reports (4–6 days)
+### Phase 3 — reports (4–6 days) ✅
 
 Inflated from 2–3 days because de-dup is now `event_actors`-aware
 (§0.2) and windows go through the TZ contract (§0.4).
 
-- [ ] `dp-reports`: every report accepts the same envelope:
+- [x] `dp-reports`: every report accepts the same envelope:
       `(orgs, users, teams, window: Window, scope_mode, group_by,
       activity_types, actor_roles)`.
-- [ ] Resolve `Window` → UTC `(start, end)` server-side per §0.4.
+- [x] Resolve `Window` → UTC `(start, end)` server-side per §0.4.
       Echo the resolved window back in the response.
-- [ ] Implement the **three org-scope lenses** (SCOPE §8.1) with
+- [x] Implement the **three org-scope lenses** (SCOPE §8.1) with
       correct de-dup on "all orgs combined". De-dup operates on
       `(user_id, event_id)`, **not** event row alone — tested
       against fixtures with co-authored commits across two orgs.
-- [ ] Aggregation: counts for events (filtered by `actor_roles`),
+- [x] Aggregation: counts for events (filtered by `actor_roles`),
       p50/p90/p95 for durations (`percentile_cont`). No means.
-- [ ] `data_as_of` semantics: per-response object
+- [x] `data_as_of` semantics: per-response object
       `{ webhook_latest: tstz, reconciler_latest: tstz,
          per_org: { org_id: tstz } }`. UI picks which to render
       per lens (single-org → that org's latest; all-orgs-combined
       → `min(per_org)`; per-org split → per row).
-- [ ] Spot-check harness: fixture comparing our numbers vs a
+- [x] Spot-check harness: fixture comparing our numbers vs a
       recorded GitHub response (SCOPE §11.4 trust requirement).
 
-### Phase 4 — HTTP + auth + OpenAPI (2–3 days)
+### Phase 4 — HTTP + auth + OpenAPI (2–3 days) ✅
 
-- [ ] `dp-rest`: handlers for `GET /reports/...`, `GET /users`,
+- [x] `dp-rest`: handlers for `GET /reports/...`, `GET /users`,
       `GET /orgs`, `POST /home-org`, `POST /admin/refresh`,
       `POST /webhooks/github`, `GET /admin/runs`,
       `POST /admin/users/:id/anonymise`,
       `GET /admin/users/:id/export`.
-- [ ] utoipa annotations + `#[derive(OpenApi)] DevPulseApi`. Hand
+- [x] utoipa annotations + `#[derive(OpenApi)] DevPulseApi`. Hand
       to `ServerBuilder::with_openapi` (rule §6.7 — consumer owns
       the doc).
-- [ ] `dp-server::build()`:
+- [x] `dp-server::build()`:
       `ServerBuilder::new(AppState).merge_router(dp_rest::router())
        .merge_router(starter_auth_users::routes::session_router(...))
        .merge_router(starter_auth_oauth::routes::github_router(...))
        .with_openapi(...).with_metrics(...)`.
-- [ ] GitHub OAuth operator login via `starter-auth-oauth`
+- [x] GitHub OAuth operator login via `starter-auth-oauth`
       (first-callback auto-provisions the user row + mints the
       standard `sas_*` session). Local email+password signup
       stays `SIGNUP_MODE=disabled`; CLI admin is the break-glass
       path.
-- [ ] `github_orgs` attribute stamper writes
+- [x] `github_orgs` attribute stamper writes
       `Principal.extra.oauth.github_orgs` on session mint via
       one octocrab `GET /user/orgs` call (cached on the session,
       refreshed per `auth.github.org_refresh_interval`).
-- [ ] `starter-authz` `StaticRbacEngine` loaded from
+- [x] `starter-authz` `StaticRbacEngine` loaded from
       `crates/dp-server/policy/dev-pulse.toml` with one allow
       rule keyed on `oauth.github_orgs intersects
       auth.github.allow_orgs`. The allow-list (`["NubeIO",
@@ -384,7 +384,7 @@ Inflated from 2–3 days because de-dup is now `event_actors`-aware
       <action>)`. Out-of-org users get a row + `auth.denied_org`
       audit entry but every protected request returns `403
       awaiting_access`.
-- [ ] Wrap protected routes with
+- [x] Wrap protected routes with
       `starter_server::auth::with_principal` (auth) +
       `require_permission` (authz) and the
       `Arc<dyn Authenticator>` from `starter-auth-users`.
@@ -392,9 +392,9 @@ Inflated from 2–3 days because de-dup is now `event_actors`-aware
       authenticates via HMAC. The OAuth login / callback +
       `starter-auth-users` session routes are also outside
       `with_principal` (they authenticate themselves).
-- [ ] Every report response includes the `data_as_of` object
+- [x] Every report response includes the `data_as_of` object
       (SCOPE §11.7, §0.3 of this doc).
-- [ ] Every protected handler writes to `audit_log` (SCOPE §9)
+- [x] Every protected handler writes to `audit_log` (SCOPE §9)
       via one `dp_rest::audit::record()` helper; v1 action
       vocabulary `{report.read, home_org.set, admin.refresh,
       user.anonymise, user.export, runs.list, auth.signed_in,
@@ -491,17 +491,14 @@ Per consumer rules §5 and SCOPE §10:
 
 Pulled forward from SCOPE §12 (and the new §0 decisions):
 
-- [ ] **Auth choice** — confirm `starter-auth-users` +
+- [x] **Auth choice** — confirmed: `starter-auth-users` +
       `starter-auth-oauth` (GitHub) + `starter-authz` covers the
-      operator login + allow-list gate (Phase 4 SCOPE locks the
-      bias). If a needed hook is missing from the starter
-      crates, layer around it in `dp-server`; still no starter
-      edit.
-- [ ] **GitHub App vs PAT** — affects webhook availability (§0.1),
-      rate-limit budget, and per-org install model. App is the
-      working assumption.
-- [ ] **Backfill bound** — default 90 days; confirm with first
-      target deployment.
+      operator login + allow-list gate. Landed in Phase 4
+      (SCOPE §15.10–§15.12).
+- [x] **GitHub App vs PAT** — confirmed: GitHub App. Landed in
+      Phase 2 (SCOPE §15.1). Per-org install rate-limit bucket.
+- [x] **Backfill bound** — confirmed: 90 days default. Landed in
+      Phase 2 (SCOPE §15.2).
 - [ ] **Per-org TZ source** — do we let admins set it, or infer
       from GitHub org profile / repo activity? Affects §0.4.
 - [ ] **Materialised facts table** — decide after first load test
