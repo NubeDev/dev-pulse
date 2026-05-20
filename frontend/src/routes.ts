@@ -14,7 +14,11 @@
  *   #/reports/org[/:org_id]       — org activity report
  *   #/reports/home-org-split      — cross-company exec view
  *   #/reports/freshness           — per-org data freshness dashboard
- *   #/directory[/...]             — protected: directory
+ *   #/directory                   — protected: directory landing (= users)
+ *   #/directory/users             — users list (search + org filter)
+ *   #/directory/orgs              — orgs list with member count
+ *   #/directory/teams             — teams list (filtered by org)
+ *   #/directory/home-org          — home-org assignment UI
  *   #/admin[/...]                 — protected: admin
  *   #/                            — alias for #/reports
  */
@@ -25,6 +29,32 @@ export type Section = "reports" | "directory" | "admin" | "login";
 
 /** Sub-route under the reports section — drives the reports sub-nav. */
 export type ReportTab = "user" | "team" | "org" | "home-org-split" | "freshness";
+
+/** Sub-route under the directory section — drives the directory sub-nav.
+ *  - `users` (default): people list with search + org filter + memberships + home-org badge.
+ *  - `orgs`            : org list with member counts.
+ *  - `teams`           : team list filtered by org.
+ *  - `home-org`        : assignment UI (select user, select org, POST /home-org). */
+export type DirectoryTab = "users" | "orgs" | "teams" | "home-org";
+
+/** Parse `#/directory/...` → the active sub-tab. Defaults to `users`. */
+export function directoryTabOf(route: string): DirectoryTab {
+  const path = route.replace(/^#/, "").replace(/^\/+/, "").split("/");
+  if (path[0] !== "directory") return "users";
+  switch (path[1]) {
+    case "orgs":
+      return "orgs";
+    case "teams":
+      return "teams";
+    case "home-org":
+      return "home-org";
+    case "users":
+    case undefined:
+    case "":
+    default:
+      return "users";
+  }
+}
 
 /** Parse `#/reports/...` → the active sub-tab. Defaults to `user`
  *  (the SCOPE §11.5 landing report). */

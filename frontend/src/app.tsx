@@ -16,12 +16,24 @@ import { authStrategy } from "./auth/strategy.js";
 import { LoginPage } from "./auth/login-page.jsx";
 import { ProtectedRoute } from "./auth/protected-route.jsx";
 import { AppShell } from "./layout/app-shell.jsx";
+import { HomeOrgPage } from "./directory/home-org-page.jsx";
+import { OrgsPage } from "./directory/orgs-page.jsx";
+import { TeamsPage } from "./directory/teams-page.jsx";
+import { UsersPage } from "./directory/users-page.jsx";
 import { FreshnessPage } from "./reports/freshness-page.jsx";
 import { HomeOrgSplitReportPage } from "./reports/home-org-split-report-page.jsx";
 import { OrgReportPage } from "./reports/org-report-page.jsx";
 import { TeamReportPage } from "./reports/team-report-page.jsx";
 import { UserReportPage } from "./reports/user-report-page.jsx";
-import { isLoginRoute, reportTabOf, sectionOf, useRoute, type ReportTab } from "./routes.js";
+import {
+  directoryTabOf,
+  isLoginRoute,
+  reportTabOf,
+  sectionOf,
+  useRoute,
+  type DirectoryTab,
+  type ReportTab,
+} from "./routes.js";
 
 export function App(): JSX.Element {
   return (
@@ -76,7 +88,7 @@ function SectionPane({
     case "reports":
       return <ReportsSection tab={reportTabOf(route)} />;
     case "directory":
-      return <DirectoryHome />;
+      return <DirectorySection tab={directoryTabOf(route)} />;
     case "admin":
       return <AdminHome />;
   }
@@ -156,18 +168,73 @@ function ReportsPane({ tab }: { tab: ReportTab }): JSX.Element {
   }
 }
 
-function DirectoryHome(): JSX.Element {
+interface DirectoryNavItem {
+  readonly tab: DirectoryTab;
+  readonly label: string;
+  readonly href: string;
+}
+
+const DIRECTORY_TABS: readonly DirectoryNavItem[] = [
+  { tab: "users", label: "Users", href: "#/directory/users" },
+  { tab: "orgs", label: "Orgs", href: "#/directory/orgs" },
+  { tab: "teams", label: "Teams", href: "#/directory/teams" },
+  { tab: "home-org", label: "Home-org assignment", href: "#/directory/home-org" },
+];
+
+function DirectorySection({ tab }: { tab: DirectoryTab }): JSX.Element {
+  // Same sub-nav pattern as Reports: plain anchors so the hash
+  // route is the source of truth for the active tab.
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Directory</CardTitle>
-        <CardDescription>Users, orgs, teams. Stage 5+ wires the listings.</CardDescription>
-      </CardHeader>
-      <CardContent>
-        <p style={{ color: "var(--muted-foreground)" }}>Directory placeholder.</p>
-      </CardContent>
-    </Card>
+    <div style={{ display: "grid", gap: "1rem" }}>
+      <nav
+        aria-label="Directory"
+        data-testid="directory-subnav"
+        style={{
+          display: "flex",
+          gap: "0.25rem",
+          padding: "0.25rem",
+          background: "var(--muted)",
+          borderRadius: "var(--radius-md, 0.5rem)",
+          alignSelf: "flex-start",
+        }}
+      >
+        {DIRECTORY_TABS.map((item) => {
+          const isActive = item.tab === tab;
+          return (
+            <a
+              key={item.tab}
+              href={item.href}
+              aria-current={isActive ? "page" : undefined}
+              style={{
+                padding: "0.375rem 0.75rem",
+                borderRadius: "var(--radius-sm, 0.375rem)",
+                fontSize: "0.875rem",
+                textDecoration: "none",
+                color: isActive ? "var(--primary-foreground)" : "var(--foreground)",
+                background: isActive ? "var(--primary)" : "transparent",
+              }}
+            >
+              {item.label}
+            </a>
+          );
+        })}
+      </nav>
+      <DirectoryPane tab={tab} />
+    </div>
   );
+}
+
+function DirectoryPane({ tab }: { tab: DirectoryTab }): JSX.Element {
+  switch (tab) {
+    case "users":
+      return <UsersPage />;
+    case "orgs":
+      return <OrgsPage />;
+    case "teams":
+      return <TeamsPage />;
+    case "home-org":
+      return <HomeOrgPage />;
+  }
 }
 
 function AdminHome(): JSX.Element {
