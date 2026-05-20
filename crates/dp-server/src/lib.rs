@@ -63,6 +63,8 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod auth;
+
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -177,13 +179,15 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
         store,
         scheduler,
         authenticator,
-        // Held in AppState so the bin layer can also reach for it
-        // (e.g. the future `/authz/check` debug surface); the
-        // `with_principal`+`require_permission` boundary here just
-        // needs the authenticator. `require_permission` is a
-        // per-handler decision (audit needs the matched action
-        // string) so it does not appear at this layer.
-        policy: _policy,
+        // The policy engine handle is shared as an axum
+        // Extension on the protected fragment below (per
+        // `starter_authz::require_permission`'s middleware
+        // contract — it pulls `Arc<dyn PolicyEngine>` out of
+        // request extensions). dp-rest's per-route
+        // `require_permission(<resource>, <action>)` layer is
+        // what *invokes* the engine; this layer just makes it
+        // visible.
+        policy,
         webhook_secret,
         registry,
         metrics,
@@ -208,8 +212,19 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
         .merge(directory)
         .merge(admin);
 
+    // Hand the policy engine down via Extension. The per-route
+    // `require_permission(...)` layers in dp-rest pull this out
+    // of request extensions; without it every protected request
+    // would 403 with `engine_missing` (per
+    // `starter_authz::middleware::gate`'s fail-closed branch).
+    let protected = protected.layer(axum::Extension(policy.clone()));
+
     // `with_principal` wants an `Arc<A: Authenticator + Sized>` — the
     // dyn-trait handle becomes a `BoxedAuthenticator` newtype.
+    // Layer order matters: `with_principal` MUST wrap *outside*
+    // the policy-extension layer so the SPI `Principal` it
+    // attaches is visible to `require_permission` (which reads
+    // both the principal and the engine from extensions).
     let boxed_auth: Arc<BoxedAuthenticator> =
         Arc::new(BoxedAuthenticator(authenticator.clone()));
     let protected = with_principal(protected, boxed_auth);

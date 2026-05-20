@@ -598,13 +598,52 @@ pub async fn freshness_report(
 /// the composition root (`dp-server::build()`); auth + audit
 /// wrappers are added by the composition layer per Phase 4 stage 6.
 pub fn reports_router(state: Arc<AppState>) -> Router {
+    // Per Phase 4 stage 9 / SCOPE D4.2 every protected route
+    // wears a `require_permission(<resource>, <action>)` layer.
+    // The kind/action pair here is the same pair the report
+    // handlers audit under (`audit::REPORT_READ`); a forgotten
+    // decoration trips the `require_permission-covers-every-
+    // protected-route` smoke. The engine is inserted as an
+    // axum Extension by `dp_server::build`; for unit tests in
+    // this file the test helper inserts a NoopPolicyEngine.
+    //
+    // We use `starter_authz::with_permission` (applied to a
+    // freshly-built `Router`) rather than per-route
+    // `route(...).layer(require_permission(...))` because the
+    // return-type annotation on `require_permission` is fixed at
+    // `FromFnLayer<_, (), ()>` and axum 0.8's `MethodRouter::layer`
+    // wants the marker tuple to match the closure args
+    // (`(Request,)`); `with_permission` sidesteps the annotation
+    // by applying the layer directly to a `Router`.
+    use starter_authz::with_permission;
+    let inner: AppState = (*state).clone();
     Router::new()
-        .route("/reports/user/{user_id}", get(user_report))
-        .route("/reports/team/{team_id}", get(team_report))
-        .route("/reports/org/{org_id}", get(org_report))
-        .route("/reports/home-org-split", get(home_org_split_report))
-        .route("/reports/freshness", get(freshness_report))
-        .with_state((*state).clone())
+        .merge(with_permission(
+            Router::new().route("/reports/user/{user_id}", get(user_report)),
+            "reports",
+            "read",
+        ))
+        .merge(with_permission(
+            Router::new().route("/reports/team/{team_id}", get(team_report)),
+            "reports",
+            "read",
+        ))
+        .merge(with_permission(
+            Router::new().route("/reports/org/{org_id}", get(org_report)),
+            "reports",
+            "read",
+        ))
+        .merge(with_permission(
+            Router::new().route("/reports/home-org-split", get(home_org_split_report)),
+            "reports",
+            "read",
+        ))
+        .merge(with_permission(
+            Router::new().route("/reports/freshness", get(freshness_report)),
+            "reports",
+            "read",
+        ))
+        .with_state(inner)
 }
 
 // ---------------------------------------------------------------------------
@@ -765,8 +804,25 @@ mod tests {
     }
 
     fn build_router(store: Arc<dyn Store>) -> Router {
+        // Inject a SPI Principal + a NoopPolicyEngine so the
+        // `require_permission` layer attached to every report
+        // route in `reports_router` evaluates to Allow in unit
+        // tests. Production wiring (in `dp_server::build`)
+        // replaces the no-op engine with `StaticRbacEngine`.
+        use axum::Extension;
+        use starter_spi::auth::{Principal as SpiPrincipal, Role};
+        use starter_spi::authz::{NoopPolicyEngine, PolicyEngine};
         let state = Arc::new(AppState::new(store));
+        let engine: Arc<dyn PolicyEngine> = Arc::new(NoopPolicyEngine);
+        let spi_principal = SpiPrincipal {
+            subject: "test-user".to_string(),
+            role: Role::Admin,
+            scopes: Vec::new(),
+            extra: serde_json::Value::Null,
+        };
         reports_router(state)
+            .layer(Extension(spi_principal))
+            .layer(Extension(engine))
     }
 
     async fn get_json(app: Router, uri: &str) -> serde_json::Value {

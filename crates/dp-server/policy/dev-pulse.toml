@@ -1,0 +1,99 @@
+# dev-pulse v1 authorization policy.
+#
+# Loaded at boot by `dp_server::auth::policy::load_static_engine`
+# and handed to `starter-authz::StaticRbacEngine`. The engine is
+# inserted as `Extension(Arc<dyn PolicyEngine>)` on every protected
+# router fragment in `dp_server::build`, and dp-rest decorates each
+# protected handler with `require_permission(<resource>, <action>)`
+# so the per-route middleware can pull the engine out of extensions.
+#
+# Reference: TODO.md §"Phase 4 — HTTP + auth + OpenAPI" stage 9 and
+# SCOPE.md D4.2.
+#
+# ## Why one allow rule
+#
+# Operator access is gated by GitHub org membership. The
+# attribute-stamping path
+# (`dp_server::auth::github_orgs::GithubOrgsStamper`) calls
+# `GET /user/orgs` via the Phase 2 octocrab wrapper, writes the
+# resulting login list into `Principal.extra.oauth.github_orgs`,
+# AND derives `Principal.extra.oauth.in_allowed_org` — `true` iff
+# `github_orgs ∩ auth.github.allow_orgs ≠ ∅`.
+#
+# The condition language in `starter-authz` is the small grammar
+# defined in `starter_authz::condition` — `==`, `!=`, `in [list]`,
+# `and`/`or`/`not`. It does NOT have a literal `intersects`
+# operator (a future enhancement would add `path intersects path`
+# for two-array membership). The derived boolean
+# `oauth.in_allowed_org` is the in-bounds expression of the
+# intersection: stamping it once at session-mint is cheap, and the
+# rule below is a single deterministic truthy check that the
+# policy engine can evaluate without any list-arithmetic
+# extension. Effect: SAME semantics as the
+# `oauth.github_orgs intersects auth.github.allow_orgs` spec.
+#
+# ## Allow-list location
+#
+# The actual allow-list (e.g. `["NubeIO", "ACME"]`) lives in
+# `dp-config` under `[auth.github] allow_orgs`. Adding an org is a
+# config bump, not a policy / code change. The stamper reads
+# `allow_orgs` from config and derives `in_allowed_org`; the
+# policy file is org-agnostic and stays untouched.
+#
+# ## Out-of-org behaviour
+#
+# A user whose `github_orgs` does not intersect `allow_orgs` still
+# gets a row in `users` and a valid session (provisioned by
+# `starter-auth-oauth` on first callback); they just fail this
+# rule on every protected request. The middleware translates the
+# Deny into `403 { "error": "awaiting_access" }` (the `reason` set
+# below). The
+# `dp_rest::audit::AUTH_DENIED_ORG` action is written per denial
+# (D4.4) so leaked-invite-style abuse shows up in the audit trail.
+
+# `default_policy = true` layers in the built-in Reader/Writer/
+# Admin defaults from `starter_authz::defaults` BEFORE the rules
+# below (R7). That gives the CLI-seeded break-glass admin its
+# normal role-based access without a per-deployment policy edit.
+# The deny rule below overrides those defaults for any session
+# whose org list does not intersect `auth.github.allow_orgs`.
+default_policy = true
+
+# Org-gate ALLOW. Any principal whose `oauth.in_allowed_org` is
+# `true` clears every (resource, action) pair the dev-pulse
+# routes register. Defense-in-depth alongside the org-gate-deny
+# rule below: this allow is what lets a freshly-OAuth'd
+# Reader-role operator hit `/reports/*` even if a future policy
+# tightening narrows the built-in Reader defaults.
+[[rules]]
+id        = "org-gate-allow-in-org-everything"
+role      = "*"
+resource  = "*"
+actions   = ["*"]
+condition = "oauth.in_allowed_org == true"
+effect    = "allow"
+priority  = 100
+
+# Org-gate DENY. The reason rewriting in
+# `dp_server::auth::policy::AwaitingAccessEngine` maps the
+# resulting `explicit_deny` (matched on `org-gate-deny`) into the
+# wire-stable `awaiting_access` code. Per `starter-authz` R3 deny
+# wins over allow — so this rule overrides the built-in
+# Reader / Writer / Admin defaults from `default_policy = true`,
+# closing the loophole where a freshly-provisioned out-of-org
+# user with the implicit Reader role would otherwise be allowed
+# to `reports.read` by the default rules.
+[[rules]]
+id        = "org-gate-deny-out-of-org"
+role      = "*"
+resource  = "*"
+actions   = ["*"]
+# Logical negation: the attribute is absent OR is `false`. The
+# `starter-authz::condition` grammar treats "missing attribute"
+# as not-equal — so `not oauth.in_allowed_org == true` fires both
+# for `false` and for "never stamped". That's correct: a user
+# the stamper has never seen is just as not-in-org as one who
+# has been explicitly stamped out.
+condition = "not oauth.in_allowed_org == true"
+effect    = "deny"
+priority  = 90

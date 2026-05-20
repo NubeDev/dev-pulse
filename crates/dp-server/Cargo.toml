@@ -37,6 +37,8 @@ starter-observability  = { workspace = true }
 async-trait = { workspace = true }
 axum        = { workspace = true }
 prometheus  = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
 thiserror   = { workspace = true }
 tokio       = { workspace = true }
 tracing     = { workspace = true }

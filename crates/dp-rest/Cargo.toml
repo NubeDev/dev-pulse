@@ -15,6 +15,11 @@ path = "src/lib.rs"
 dp-domain   = { workspace = true }
 dp-reports  = { workspace = true }
 dp-fetcher  = { workspace = true }
+# starter-authz is an edge-allowed dep per §0.6 (dp-rest is an
+# edge crate). We need `require_permission` to decorate every
+# protected route per Phase 4 stage 9 / SCOPE D4.2; the engine
+# itself is wired in dp-server::build via Extension.
+starter-authz = { workspace = true }
 async-trait = { workspace = true }
 axum        = { workspace = true }
 chrono      = { workspace = true }
@@ -30,5 +35,6 @@ tokio-stream = "0.1"
 bytes        = "1"
 
 [dev-dependencies]
-tower       = { version = "0.5", features = ["util"] }
-secrecy     = "0.10"
+tower         = { version = "0.5", features = ["util"] }
+secrecy       = "0.10"
+starter-spi   = { workspace = true }

@@ -284,12 +284,35 @@ pub async fn set_home_org(
 /// `with_principal` and `require_permission` wrappers are added by
 /// the composition layer per Phase 4 stage 8.
 pub fn directory_router(state: Arc<AppState>) -> Router {
+    // See the note in `reports::reports_router` about the
+    // `with_permission` wrapping pattern. Each route group is a
+    // tiny Router wrapped in its own permission layer so the
+    // kind/action pair is per-route, mirroring the audit
+    // vocabulary in `crate::audit`.
+    use starter_authz::with_permission;
+    let inner: AppState = (*state).clone();
     Router::new()
-        .route("/users", get(list_users))
-        .route("/orgs", get(list_orgs))
-        .route("/teams", get(list_teams))
-        .route("/home-org", post(set_home_org))
-        .with_state((*state).clone())
+        .merge(with_permission(
+            Router::new().route("/users", get(list_users)),
+            "users",
+            "read",
+        ))
+        .merge(with_permission(
+            Router::new().route("/orgs", get(list_orgs)),
+            "orgs",
+            "read",
+        ))
+        .merge(with_permission(
+            Router::new().route("/teams", get(list_teams)),
+            "teams",
+            "read",
+        ))
+        .merge(with_permission(
+            Router::new().route("/home-org", post(set_home_org)),
+            "home_org",
+            "set",
+        ))
+        .with_state(inner)
 }
 
 // ---------------------------------------------------------------------------
@@ -566,8 +589,28 @@ mod tests {
     // -----------------------------------------------------------------
 
     fn build_app(store: Arc<MemStore>, principal: Principal) -> Router {
+        // Layer in (a) a Principal (the `require_permission`
+        // middleware reads `Extension<Principal>` to know who the
+        // caller is) and (b) a `NoopPolicyEngine` as the
+        // `Arc<dyn PolicyEngine>` extension so the gate always
+        // allows in unit-test contexts. Production wiring (in
+        // `dp_server::build`) replaces the no-op with the
+        // dev-pulse `StaticRbacEngine`.
+        use starter_spi::auth::{Principal as SpiPrincipal, Role};
+        use starter_spi::authz::{NoopPolicyEngine, PolicyEngine};
+        use std::sync::Arc as StdArc;
         let app_state = Arc::new(AppState::new(store));
-        directory_router(app_state).layer(Extension(principal))
+        let engine: StdArc<dyn PolicyEngine> = StdArc::new(NoopPolicyEngine);
+        let spi_principal = SpiPrincipal {
+            subject: principal.actor_user_id.to_string(),
+            role: Role::Admin,
+            scopes: Vec::new(),
+            extra: serde_json::Value::Null,
+        };
+        directory_router(app_state)
+            .layer(Extension(principal))
+            .layer(Extension(spi_principal))
+            .layer(Extension(engine))
     }
 
     async fn json_of(resp: axum::response::Response) -> serde_json::Value {

@@ -598,11 +598,33 @@ pub async fn export_user(
 /// the composition root (`dp-server::build()`); the `with_principal`
 /// + `require_permission` wrappers are layered there.
 pub fn admin_router(state: Arc<AdminState>) -> Router {
+    // See `reports::reports_router` for the rationale on the
+    // `with_permission`+merge pattern. Admin actions map to the
+    // closed `admin` resource's action vocabulary
+    // (read|refresh|anonymise|export) registered in
+    // `dp_server::auth::policy::register_dev_pulse_resources`.
+    use starter_authz::with_permission;
     Router::new()
-        .route("/admin/refresh", post(refresh))
-        .route("/admin/runs", get(list_runs))
-        .route("/admin/users/{id}/anonymise", post(anonymise_user))
-        .route("/admin/users/{id}/export", get(export_user))
+        .merge(with_permission(
+            Router::new().route("/admin/refresh", post(refresh)),
+            "admin",
+            "refresh",
+        ))
+        .merge(with_permission(
+            Router::new().route("/admin/runs", get(list_runs)),
+            "admin",
+            "read",
+        ))
+        .merge(with_permission(
+            Router::new().route("/admin/users/{id}/anonymise", post(anonymise_user)),
+            "admin",
+            "anonymise",
+        ))
+        .merge(with_permission(
+            Router::new().route("/admin/users/{id}/export", get(export_user)),
+            "admin",
+            "export",
+        ))
         .with_state(state)
 }
 
@@ -894,7 +916,24 @@ mod tests {
         let rec = Reconciler::new(store.clone(), Arc::new(client), targets);
         let sched = Arc::new(Scheduler::new(Arc::new(rec), Duration::from_secs(3600)));
         let state = Arc::new(AdminState::new(sched, store));
-        admin_router(state).layer(Extension(principal))
+        // See `directory.rs` build_app for the why: inject the
+        // SPI Principal + a NoopPolicyEngine so the per-route
+        // `require_permission` middleware sees a valid principal
+        // and an always-allow engine in tests.
+        use starter_spi::auth::{Principal as SpiPrincipal, Role};
+        use starter_spi::authz::{NoopPolicyEngine, PolicyEngine};
+        use std::sync::Arc as StdArc;
+        let engine: StdArc<dyn PolicyEngine> = StdArc::new(NoopPolicyEngine);
+        let spi_principal = SpiPrincipal {
+            subject: principal.actor_user_id.to_string(),
+            role: Role::Admin,
+            scopes: Vec::new(),
+            extra: serde_json::Value::Null,
+        };
+        admin_router(state)
+            .layer(Extension(principal))
+            .layer(Extension(spi_principal))
+            .layer(Extension(engine))
     }
 
     // -----------------------------------------------------------------
