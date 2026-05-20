@@ -34,7 +34,7 @@ use dp_domain::membership::Membership;
 use dp_domain::org::Org;
 use dp_domain::pin::{Pin, PinKind};
 use dp_domain::repo::Repo;
-use dp_domain::issue::{Issue, IssueState, RepoSummary};
+use dp_domain::issue::{Issue, IssueState, IssueUpsert, IssueUpsertOutcome, RepoSummary};
 use dp_domain::issue_mutation::{IssueMutation, IssueMutationOp, IssueMutationResult};
 use dp_domain::event::EventKind;
 use dp_domain::issue_dates::{
@@ -695,6 +695,21 @@ impl Store for PgStore {
 
     // ---- repos / issues read surface --------------------------------
 
+    async fn get_repo(&self, id: Uuid) -> Result<Option<Repo>, StoreError> {
+        // Point lookup by PK. Used by the §8 issue write path to
+        // resolve `repo_id -> (org_id, name)` before calling the
+        // GitHub backend; without this override the default trait
+        // impl returns `None` and every issue mutation 404s.
+        let row = sqlx::query(
+            "SELECT id, org_id, github_id, name FROM dp_repos WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        row.as_ref().map(row_to_repo).transpose()
+    }
+
     async fn list_repos(&self, filter: &RepoListFilter) -> Result<Vec<RepoSummary>, StoreError> {
         // Open-issue count + last-activity timestamp are computed
         // via LATERAL subselects so the repo→issue join doesn't
@@ -871,6 +886,148 @@ impl Store for PgStore {
         .await
         .map_err(map_sqlx)?;
         row.as_ref().map(row_to_issue).transpose()
+    }
+
+    async fn upsert_issue_from_github(
+        &self,
+        upsert: &IssueUpsert,
+        pending_remote_window: chrono::Duration,
+    ) -> Result<(Issue, IssueUpsertOutcome), StoreError> {
+        // The upsert is a single round-trip so insert / freshness
+        // check / version bump / §13.7 guard all happen atomically:
+        //
+        //   INSERT … ON CONFLICT (repo_id, number) DO UPDATE …
+        //   WHERE
+        //     -- §13.7 guard: skip if a recent optimistic write is
+        //     -- still in flight (the dp-rest §8 path cleared
+        //     -- `pending_remote` on completion / rollback, so a
+        //     -- TRUE flag with a fresh timestamp means "do not
+        //     -- clobber").
+        //     (dp_issues.pending_remote = FALSE
+        //      OR dp_issues.pending_remote_at <= now() - window)
+        //     -- Freshness: only bump on strictly-newer payloads.
+        //     AND excluded.updated_at > dp_issues.updated_at
+        //   RETURNING …, (xmax = 0) AS inserted
+        //
+        // `xmax = 0` is the canonical Postgres trick to tell INSERT
+        // from UPDATE inside an UPSERT — the inserted row has a
+        // zero transaction-deleter marker. We use it (combined with
+        // a follow-up `is_some()` on the rowcount) to decode the
+        // three writing outcomes.
+        let labels_json = serde_json::to_value(&upsert.labels)
+            .map_err(|e| StoreError::Invalid(format!("labels not serialisable: {e}")))?;
+        let assignees_json = serde_json::to_value(&upsert.assignees)
+            .map_err(|e| StoreError::Invalid(format!("assignees not serialisable: {e}")))?;
+        let new_id = Uuid::new_v4();
+        let row = sqlx::query(
+            "INSERT INTO dp_issues (
+                 id, org_id, repo_id, github_id, number, title, body, state,
+                 labels, assignees, milestone, author, state_reason,
+                 created_at, updated_at, closed_at, version
+             ) VALUES (
+                 $1, $2, $3, $4, $5, $6, $7, $8,
+                 $9, $10, $11, $12, $13,
+                 $14, $15, $16, 1
+             )
+             ON CONFLICT (repo_id, number) DO UPDATE SET
+                 title        = EXCLUDED.title,
+                 body         = EXCLUDED.body,
+                 state        = EXCLUDED.state,
+                 labels       = EXCLUDED.labels,
+                 assignees    = EXCLUDED.assignees,
+                 milestone    = EXCLUDED.milestone,
+                 author       = EXCLUDED.author,
+                 state_reason = EXCLUDED.state_reason,
+                 updated_at   = EXCLUDED.updated_at,
+                 closed_at    = EXCLUDED.closed_at,
+                 -- github_id stays put — once we learn an issue's
+                 -- numeric id, it never changes (transfers move
+                 -- the number, not the id).
+                 version      = dp_issues.version + 1
+             WHERE
+                 (dp_issues.pending_remote = FALSE
+                  OR dp_issues.pending_remote_at IS NULL
+                  OR dp_issues.pending_remote_at <= (now() - ($17::bigint || ' seconds')::interval))
+                 AND EXCLUDED.updated_at > dp_issues.updated_at
+             RETURNING
+                 id, org_id, repo_id, github_id, number, title, body, state,
+                 labels, assignees, milestone, version, updated_at,
+                 (xmax = 0) AS inserted",
+        )
+        .bind(new_id)
+        .bind(upsert.org_id)
+        .bind(upsert.repo_id)
+        .bind(upsert.github_id)
+        .bind(upsert.number)
+        .bind(&upsert.title)
+        .bind(upsert.body.as_deref())
+        .bind(upsert.state.as_str())
+        .bind(&labels_json)
+        .bind(&assignees_json)
+        .bind(upsert.milestone.as_deref())
+        .bind(upsert.author.as_deref())
+        .bind(upsert.state_reason.as_deref())
+        .bind(upsert.created_at)
+        .bind(upsert.updated_at)
+        .bind(upsert.closed_at)
+        .bind(pending_remote_window.num_seconds())
+        .fetch_optional(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+
+        if let Some(row) = row {
+            let inserted: bool = row.try_get("inserted").map_err(map_sqlx)?;
+            let issue = row_to_issue(&row)?;
+            let outcome = if inserted {
+                IssueUpsertOutcome::Inserted
+            } else {
+                IssueUpsertOutcome::Updated
+            };
+            return Ok((issue, outcome));
+        }
+
+        // No row returned → either the freshness guard fired
+        // (stale payload — local copy is at least as new) or the
+        // §13.7 reconciler guard fired (pending_remote within
+        // window). Disambiguate with a single follow-up read so
+        // the caller's metrics are accurate and so the caller
+        // always receives the *current* local row.
+        let existing = sqlx::query(
+            "SELECT id, org_id, repo_id, github_id, number, title, body, state,
+                    labels, assignees, milestone, version, updated_at,
+                    pending_remote, pending_remote_at
+             FROM dp_issues
+             WHERE repo_id = $1 AND number = $2",
+        )
+        .bind(upsert.repo_id)
+        .bind(upsert.number)
+        .fetch_optional(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?
+        .ok_or_else(|| {
+            // Can't happen unless someone deleted the row between
+            // the upsert and the follow-up read — surface loudly.
+            StoreError::Invalid(format!(
+                "upsert for ({}, {}) returned no row and follow-up read missed",
+                upsert.repo_id, upsert.number
+            ))
+        })?;
+
+        let issue = row_to_issue(&existing)?;
+        let pending: bool = existing.try_get("pending_remote").map_err(map_sqlx)?;
+        let pending_at: Option<DateTime<Utc>> =
+            existing.try_get("pending_remote_at").map_err(map_sqlx)?;
+        let now = Utc::now();
+        let in_pending_window = pending
+            && pending_at
+                .map(|at| now.signed_duration_since(at) < pending_remote_window)
+                .unwrap_or(false);
+        let outcome = if in_pending_window {
+            IssueUpsertOutcome::Deferred
+        } else {
+            IssueUpsertOutcome::Skipped
+        };
+        Ok((issue, outcome))
     }
 
     // ---- per-user inbox (triage spine, slice 1) -------------------

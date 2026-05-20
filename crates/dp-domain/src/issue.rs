@@ -97,3 +97,82 @@ pub struct RepoSummary {
     /// the repo has no issues yet.
     pub last_activity_at: Option<DateTime<Utc>>,
 }
+
+/// Ingest-side projection of a GitHub issue payload, ready to be
+/// upserted into `dp_issues`. Constructed by the fetcher (webhook
+/// handler or REST backfill) and consumed by
+/// [`crate::store::Store::upsert_issue_from_github`].
+///
+/// The shape mirrors the columns the §13.7 reconciler guard +
+/// slice-2 read endpoints care about. Fields the fetcher does not
+/// authoritatively know (the local `id`, the `version` bump, the
+/// `pending_remote_*` triad) stay on the store side; the upsert
+/// allocates `id` on first sighting, bumps `version`, and leaves
+/// the pending-remote columns alone.
+///
+/// `org_id` / `repo_id` are resolved *before* this struct is
+/// built — typically by the caller's `upsert_repo_from_payload`
+/// helper — so the upsert never touches `dp_orgs` / `dp_repos`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IssueUpsert {
+    /// Parent org id (`dp_orgs.id`).
+    pub org_id: Uuid,
+    /// Parent repo id (`dp_repos.id`).
+    pub repo_id: Uuid,
+    /// GitHub's numeric issue id (stable across transfers).
+    pub github_id: i64,
+    /// Repo-relative issue number.
+    pub number: i64,
+    /// Title.
+    pub title: String,
+    /// Body (nullable on the GitHub side).
+    pub body: Option<String>,
+    /// Open / closed.
+    pub state: IssueState,
+    /// Labels as a vector of label names (GitHub's `label.name`).
+    pub labels: Vec<String>,
+    /// Assignee logins as a vector of GitHub `user.login` values.
+    pub assignees: Vec<String>,
+    /// Milestone title, if assigned.
+    pub milestone: Option<String>,
+    /// Author login (GitHub `user.login`). Stored on
+    /// `dp_issues.author` for the per-author filter pill (§5.5).
+    pub author: Option<String>,
+    /// GitHub's `state_reason` (`completed` / `not_planned` /
+    /// `reopened` / NULL). Stored on `dp_issues.state_reason`
+    /// for the throughput / lead-time reports (slice 3).
+    pub state_reason: Option<String>,
+    /// Wall-clock GitHub `created_at`.
+    pub created_at: DateTime<Utc>,
+    /// Wall-clock GitHub `updated_at`. Bumped by the upsert iff
+    /// the value moved forward.
+    pub updated_at: DateTime<Utc>,
+    /// Wall-clock GitHub `closed_at`; `None` while the issue is
+    /// open.
+    pub closed_at: Option<DateTime<Utc>>,
+}
+
+/// Outcome reported by [`crate::store::Store::upsert_issue_from_github`].
+/// Useful to the caller (webhook handler / CLI backfill) for
+/// metrics — "how many rows did I actually insert vs update vs
+/// skip because §13.7 deferred the write?".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IssueUpsertOutcome {
+    /// Row did not exist; one was inserted with `version = 1`.
+    Inserted,
+    /// Row existed and was updated; `version` bumped by 1 and the
+    /// projected columns refreshed.
+    Updated,
+    /// Row existed but [`updated_at`](IssueUpsert::updated_at) was
+    /// not newer than the local copy. No write, no version bump —
+    /// the local copy is at least as fresh as the inbound payload.
+    /// This is the common case during a re-backfill.
+    Skipped,
+    /// Row existed and is in `pending_remote = TRUE` state inside
+    /// the §13.7 timeout window. The upsert refused to clobber it
+    /// so the in-flight optimistic write can land first. The
+    /// caller should buffer (the webhook drain loop already does)
+    /// or simply skip (the CLI backfill does — the next sweep
+    /// will pick the row up after the timeout clears).
+    Deferred,
+}

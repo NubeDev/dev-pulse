@@ -76,9 +76,11 @@ import {
   TableHeader,
   TableRow,
 } from "../components/table.jsx";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 
 import { api, type IssueDto, type ListIssuesQuery } from "../api/client.js";
+import { Markdown } from "../components/markdown.jsx";
 import { PageHeading } from "../components/page-heading.jsx";
 import {
   navigate,
@@ -852,11 +854,30 @@ function IssueFormBody({
         </div>
         <div className="flex flex-col gap-1">
           <Label>Body</Label>
-          <Textarea
-            value={body}
-            onChange={(e) => setBody(e.target.value)}
-            rows={6}
-          />
+          <Tabs defaultValue="preview">
+            <TabsList variant="line">
+              <TabsTrigger value="preview">Preview</TabsTrigger>
+              <TabsTrigger value="edit">Edit</TabsTrigger>
+            </TabsList>
+            <TabsContent value="preview">
+              {body.trim() ? (
+                <div className="rounded-md border border-border bg-background px-3 py-2">
+                  <Markdown>{body}</Markdown>
+                </div>
+              ) : (
+                <p className="px-3 py-2 text-sm italic text-muted-foreground">
+                  No description.
+                </p>
+              )}
+            </TabsContent>
+            <TabsContent value="edit">
+              <Textarea
+                value={body}
+                onChange={(e) => setBody(e.target.value)}
+                rows={10}
+              />
+            </TabsContent>
+          </Tabs>
         </div>
         <div className="flex items-center gap-2">
           <Button type="submit" disabled={update.isPending}>

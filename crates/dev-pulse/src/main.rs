@@ -58,6 +58,7 @@ use anyhow::{anyhow, Context, Result};
 use clap::{Arg, ArgMatches, Command};
 use secrecy::SecretString;
 use serde::Deserialize;
+use serde_json::Value;
 use starter_observability::metrics::StandardMetrics;
 use starter_observability::tracing::Format;
 use starter_spi::auth::Authenticator;
@@ -403,6 +404,55 @@ async fn main() -> Result<()> {
                 ),
         )
         .subcommand(
+            Command::new("backfill-issues")
+                .about(
+                    "Paginate `GET /repos/{owner}/{repo}/issues?state=all` \
+                     for every repo in `dp_repos` and upsert the result \
+                     into `dp_issues`. Pull requests (rows with a \
+                     `pull_request` payload) are skipped — only true \
+                     issues land in the mirror.",
+                )
+                .arg(
+                    Arg::new("config")
+                        .long("config")
+                        .required(true)
+                        .help("Path to the dev-pulse TOML config."),
+                )
+                .arg(
+                    Arg::new("orgs")
+                        .long("orgs")
+                        .help(
+                            "Comma-separated allow-list of owner logins \
+                             (case-insensitive). Only repos owned by one \
+                             of these logins are backfilled.",
+                        ),
+                )
+                .arg(
+                    Arg::new("repos")
+                        .long("repos")
+                        .help(
+                            "Comma-separated allow-list of `owner/name` \
+                             pairs (case-insensitive). Overrides --orgs.",
+                        ),
+                )
+                .arg(
+                    Arg::new("max-pages")
+                        .long("max-pages")
+                        .default_value("10")
+                        .help(
+                            "Hard cap on pages per repo (100 issues each). \
+                             Use 0 for unbounded.",
+                        ),
+                )
+                .arg(
+                    Arg::new("state")
+                        .long("state")
+                        .default_value("all")
+                        .value_parser(["all", "open", "closed"])
+                        .help("Filter passed to GitHub's `state` query param."),
+                ),
+        )
+        .subcommand(
             Command::new("prune-stale-repos")
                 .about(
                     "Remove already-imported repos that haven't seen any \
@@ -480,6 +530,7 @@ async fn main() -> Result<()> {
         Some(("create-admin", sub)) => run_create_admin(sub).await,
         Some(("import-my-orgs", sub)) => run_import_my_orgs(sub).await,
         Some(("import-my-repos", sub)) => run_import_my_repos(sub).await,
+        Some(("backfill-issues", sub)) => run_backfill_issues(sub).await,
         Some(("prune-stale-repos", sub)) => run_prune_stale_repos(sub).await,
         Some(("purge-data", sub)) => run_purge_data(sub).await,
         Some(("fetch-now", sub)) => run_fetch_now(sub).await,
@@ -1256,6 +1307,201 @@ async fn run_import_my_repos(matches: &ArgMatches) -> Result<()> {
     println!(
         "\nimported {imported} repo(s); skipped {skipped_forks} fork(s), \
          {skipped_org_filter} out-of-scope, {skipped_stale} stale (no recent push)"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------- backfill-issues
+
+/// One row from `dp_repos JOIN dp_orgs`. The backfill is keyed by
+/// `(owner_login, repo_name)` for the GitHub REST path, plus the
+/// resolved UUIDs so the issue upsert can land without a second
+/// round-trip per repo.
+struct RepoTarget {
+    org_id: Uuid,
+    repo_id: Uuid,
+    owner: String,
+    name: String,
+}
+
+async fn run_backfill_issues(matches: &ArgMatches) -> Result<()> {
+    let cfg_path = matches.get_one::<String>("config").unwrap();
+    let max_pages: u32 = matches
+        .get_one::<String>("max-pages")
+        .unwrap()
+        .parse()
+        .context("--max-pages must be an integer")?;
+    let state = matches.get_one::<String>("state").unwrap().to_string();
+    let orgs_allow: Option<Vec<String>> = matches.get_one::<String>("orgs").map(|s| {
+        s.split(',')
+            .map(|t| t.trim().to_ascii_lowercase())
+            .filter(|t| !t.is_empty())
+            .collect()
+    });
+    let repos_allow: Option<Vec<(String, String)>> =
+        matches.get_one::<String>("repos").map(|s| {
+            s.split(',')
+                .filter_map(|t| {
+                    let t = t.trim();
+                    let (o, n) = t.split_once('/')?;
+                    Some((o.to_ascii_lowercase(), n.to_ascii_lowercase()))
+                })
+                .collect()
+        });
+
+    let (cfg, pool) = load_cfg_and_pool(cfg_path).await?;
+    let client = build_pat_client(&cfg)?;
+    let store = dp_store_pg::PgStore::new(pool.clone());
+    use dp_domain::Store as _;
+
+    // Pull every repo with its owning org's login in one shot;
+    // the loop below filters in-Rust so --orgs and --repos can be
+    // combined / overridden without re-querying.
+    let targets: Vec<RepoTarget> = sqlx::query_as::<_, (Uuid, Uuid, String, String)>(
+        "SELECT r.id, r.org_id, o.login, r.name
+           FROM dp_repos r
+           JOIN dp_orgs  o ON o.id = r.org_id
+          ORDER BY o.login, r.name",
+    )
+    .fetch_all(pool.sqlx())
+    .await
+    .context("select repos for backfill")?
+    .into_iter()
+    .map(|(repo_id, org_id, owner, name)| RepoTarget {
+        repo_id,
+        org_id,
+        owner,
+        name,
+    })
+    .filter(|t| {
+        if let Some(allow) = &repos_allow {
+            allow
+                .iter()
+                .any(|(o, n)| *o == t.owner.to_ascii_lowercase() && *n == t.name.to_ascii_lowercase())
+        } else if let Some(allow) = &orgs_allow {
+            allow.contains(&t.owner.to_ascii_lowercase())
+        } else {
+            true
+        }
+    })
+    .collect();
+
+    if targets.is_empty() {
+        println!("no repos matched the filters; nothing to backfill.");
+        return Ok(());
+    }
+    println!("backfilling {} repo(s); state={state}, max_pages={max_pages}", targets.len());
+
+    // Per-repo + grand totals. Outcomes mirror the trait's enum so
+    // operators can tell apart "we wrote it" from "stale payload"
+    // from "guarded by §13.7". `errors` collects soft per-row
+    // parse failures — we keep going on bad rows so one malformed
+    // issue can't kill a 100-issue page.
+    let mut total_in = 0u64;
+    let mut total_up = 0u64;
+    let mut total_sk = 0u64;
+    let mut total_df = 0u64;
+    let mut total_pr = 0u64;
+    let mut total_err = 0u64;
+
+    for t in &targets {
+        let mut page = 1u32;
+        let mut r_in = 0u64;
+        let mut r_up = 0u64;
+        let mut r_sk = 0u64;
+        let mut r_df = 0u64;
+        let mut r_pr = 0u64;
+        let mut r_err = 0u64;
+        loop {
+            if max_pages > 0 && page > max_pages {
+                break;
+            }
+            let path = format!(
+                "/repos/{}/{}/issues?state={state}&per_page=100&page={page}&sort=updated&direction=desc",
+                t.owner, t.name
+            );
+            let issues = match client
+                .get_conditional::<Vec<Value>>(&path, None)
+                .await
+                .with_context(|| format!("GET {path}"))?
+            {
+                dp_fetcher::client::Fetched::Ok { body, .. } => body,
+                dp_fetcher::client::Fetched::NotModified { .. } => break,
+            };
+            if issues.is_empty() {
+                break;
+            }
+            let page_len = issues.len();
+            for issue in issues {
+                if issue.get("pull_request").is_some() {
+                    r_pr += 1;
+                    continue;
+                }
+                let upsert = match dp_fetcher::worker::handlers::parse_issue_upsert(
+                    t.org_id, t.repo_id, &issue,
+                ) {
+                    Ok(u) => u,
+                    Err(e) => {
+                        r_err += 1;
+                        tracing::warn!(
+                            target: "dev_pulse::backfill_issues",
+                            repo = format!("{}/{}", t.owner, t.name),
+                            error = %e,
+                            "parse_issue_upsert failed; skipping row"
+                        );
+                        continue;
+                    }
+                };
+                // 0-second window: there's no concurrent §8
+                // optimistic writer during a CLI backfill — any
+                // `pending_remote` flag we see is a stale crumb
+                // from a previous crashed mutation and we'd rather
+                // clobber it than defer indefinitely.
+                match store
+                    .upsert_issue_from_github(&upsert, chrono::Duration::seconds(0))
+                    .await
+                {
+                    Ok((_, dp_domain::IssueUpsertOutcome::Inserted)) => r_in += 1,
+                    Ok((_, dp_domain::IssueUpsertOutcome::Updated)) => r_up += 1,
+                    Ok((_, dp_domain::IssueUpsertOutcome::Skipped)) => r_sk += 1,
+                    Ok((_, dp_domain::IssueUpsertOutcome::Deferred)) => r_df += 1,
+                    Err(e) => {
+                        r_err += 1;
+                        tracing::warn!(
+                            target: "dev_pulse::backfill_issues",
+                            repo = format!("{}/{}", t.owner, t.name),
+                            number = upsert.number,
+                            error = %e,
+                            "upsert_issue_from_github failed"
+                        );
+                    }
+                }
+            }
+            // GitHub returns a short page (<100) on the last page;
+            // bail rather than spending a follow-up call on an
+            // empty 200.
+            if page_len < 100 {
+                break;
+            }
+            page += 1;
+        }
+        if r_in + r_up + r_sk + r_df + r_pr + r_err > 0 {
+            println!(
+                "  {}/{}: +{r_in} ~{r_up} ={r_sk} def={r_df} pr={r_pr} err={r_err}",
+                t.owner, t.name
+            );
+        }
+        total_in += r_in;
+        total_up += r_up;
+        total_sk += r_sk;
+        total_df += r_df;
+        total_pr += r_pr;
+        total_err += r_err;
+    }
+
+    println!(
+        "\ndone. inserted={total_in} updated={total_up} skipped={total_sk} \
+         deferred={total_df} pr_skipped={total_pr} errors={total_err}"
     );
     Ok(())
 }

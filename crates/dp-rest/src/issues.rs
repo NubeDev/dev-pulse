@@ -911,8 +911,12 @@ mod tests {
                 },
                 "issue": {
                     "id": github_issue_id,
+                    "number": github_issue_id,
                     "node_id": format!("I_{delivery_id}"),
+                    "title": "test",
+                    "state": if action == "closed" { "closed" } else { "open" },
                     "created_at": "2024-01-01T00:00:00Z",
+                    "updated_at": "2024-01-02T00:00:00Z",
                     "closed_at": "2024-01-02T00:00:00Z",
                     "user": { "id": 7, "login": "alice" },
                     "assignees": []

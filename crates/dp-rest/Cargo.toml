@@ -20,6 +20,12 @@ dp-fetcher  = { workspace = true }
 # protected route per Phase 4 stage 9 / SCOPE D4.2; the engine
 # itself is wired in dp-server::build via Extension.
 starter-authz = { workspace = true }
+# starter-auth-oauth is the source of truth for the OAuth identity
+# rows the `/me/identities` surface (§3.0 / §10) projects. We
+# import the `IdentityStore` trait + `OAuthIdentity` row shape here
+# so the handler can read through whatever sqlite/postgres impl the
+# bin layer wires; the engine and providers stay in starter-auth-oauth.
+starter-auth-oauth = { workspace = true }
 async-trait = { workspace = true }
 axum        = { workspace = true }
 chrono      = { workspace = true }

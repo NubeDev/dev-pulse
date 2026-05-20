@@ -42,6 +42,7 @@ pub mod issue_dates;
 pub mod issues;
 pub mod issues_read;
 pub mod issues_write;
+pub mod me_identities;
 pub mod openapi;
 pub mod pins;
 pub mod reports;
@@ -104,6 +105,9 @@ pub use reports::{
     IssuesReportResponse, IssuesReportRow, ReportQuery, ReportResponse,
 };
 pub use state::AppState;
+pub use me_identities::{
+    list_me_identities, me_identities_router, MeIdentitiesResponse, MeIdentityDto,
+};
 pub use tags::{
     create_tag, get_tag, link_targets, list_my_tags, list_tags, tags_router, unlink_targets,
     update_tag, CreateTagRequest, LinkBatchRequest, LinkBatchResponse, LinkRequestItem,

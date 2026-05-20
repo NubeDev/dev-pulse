@@ -155,7 +155,7 @@ export function workflowTriageRoute(opts: {
 }
 
 /** Sub-route under the reports section — drives the reports sub-nav. */
-export type ReportTab = "user" | "team" | "org" | "home-org-split" | "leaderboard" | "freshness";
+export type ReportTab = "user" | "team" | "org" | "home-org-split" | "leaderboard" | "repo-activity" | "freshness";
 
 /** Sub-route under the admin section — drives the admin sub-nav.
  *  - `runs` (default): paginated fetch_runs log.
@@ -220,6 +220,8 @@ export function reportTabOf(route: string): ReportTab {
       return "home-org-split";
     case "leaderboard":
       return "leaderboard";
+    case "repo-activity":
+      return "repo-activity";
     case "freshness":
       return "freshness";
     case "user":

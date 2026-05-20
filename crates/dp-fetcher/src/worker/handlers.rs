@@ -41,8 +41,9 @@
 
 use chrono::{DateTime, Utc};
 use dp_domain::{
-    ActivityEvent, ActorRole, EventActor, EventKind, Membership, MembershipRole, Org, Repo, Store,
-    StoreError, Team, User, WebhookDelivery,
+    ActivityEvent, ActorRole, EventActor, EventKind, IssueState, IssueUpsert,
+    IssueUpsertOutcome, Membership, MembershipRole, Org, Repo, Store, StoreError, Team, User,
+    WebhookDelivery,
 };
 use serde_json::Value;
 use uuid::Uuid;
@@ -499,12 +500,165 @@ async fn handle_pr_review_comment(
 
 // ---------- issues -------------------------------------------------
 
+/// Best-effort defensive secondary window for the `dp_issues`
+/// upsert's §13.7 reconciler guard. The *primary* guard runs in
+/// `crate::reconciler::guard::apply_or_defer_delivery` before the
+/// handler dispatches; this constant is the fallback that protects
+/// against a TOCTOU between guard check and store write (a second
+/// optimistic write that landed in the µs between the two).
+///
+/// Threading the real `issues.pending_remote_timeout_secs` through
+/// the handler call graph is a follow-up: today the value sits in
+/// `dp-config` and is read by the guard call site in the drain
+/// loop, not by the handlers. The defensive window stays tight (a
+/// minute) so a stale flag from a crashed mutation does not block
+/// real ingest indefinitely.
+const HANDLER_PENDING_REMOTE_FALLBACK_SECS: i64 = 60;
+
+/// Parse a GitHub `issue` object into the [`IssueUpsert`] the
+/// store layer consumes. Pulled out of [`handle_issues`] so the
+/// REST-side backfill in `dp-cli` can call the same parser — the
+/// shape of a webhook `payload.issue` and the items in
+/// `GET /repos/{owner}/{repo}/issues` is identical (this is the
+/// shared "issue" object in GitHub's API surface).
+///
+/// `org_id` / `repo_id` are resolved by the caller (the webhook
+/// handler uses `upsert_repo_from_payload`; the backfill resolves
+/// them from the loop's repo cursor) so the parser stays pure
+/// and store-free.
+pub fn parse_issue_upsert(
+    org_id: Uuid,
+    repo_id: Uuid,
+    issue: &Value,
+) -> Result<IssueUpsert, HandlerError> {
+    let github_id = issue
+        .get("id")
+        .and_then(Value::as_i64)
+        .ok_or(HandlerError::MissingField("issue.id"))?;
+    let number = issue
+        .get("number")
+        .and_then(Value::as_i64)
+        .ok_or(HandlerError::MissingField("issue.number"))?;
+    let title = issue
+        .get("title")
+        .and_then(Value::as_str)
+        .ok_or(HandlerError::MissingField("issue.title"))?
+        .to_string();
+    let body = issue
+        .get("body")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let state_text = issue
+        .get("state")
+        .and_then(Value::as_str)
+        .ok_or(HandlerError::MissingField("issue.state"))?;
+    let state = IssueState::from_str(state_text)
+        .ok_or(HandlerError::MissingField("issue.state"))?;
+    let labels = issue
+        .get("labels")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|l| l.get("name").and_then(Value::as_str).map(str::to_string))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let assignees = issue
+        .get("assignees")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|a| a.get("login").and_then(Value::as_str).map(str::to_string))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let milestone = issue
+        .get("milestone")
+        .and_then(|m| m.get("title"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let author = issue
+        .get("user")
+        .and_then(|u| u.get("login"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let state_reason = issue
+        .get("state_reason")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let created_at = parse_ts(issue, "created_at")?;
+    let updated_at = parse_ts(issue, "updated_at")?;
+    let closed_at = match issue.get("closed_at") {
+        Some(Value::String(s)) => Some(
+            DateTime::parse_from_rfc3339(s)
+                .map_err(|_| HandlerError::MissingField("issue.closed_at"))?
+                .with_timezone(&Utc),
+        ),
+        _ => None,
+    };
+    Ok(IssueUpsert {
+        org_id,
+        repo_id,
+        github_id,
+        number,
+        title,
+        body,
+        state,
+        labels,
+        assignees,
+        milestone,
+        author,
+        state_reason,
+        created_at,
+        updated_at,
+        closed_at,
+    })
+}
+
 async fn handle_issues(store: &dyn Store, p: &Value) -> Result<HandlerOutcome, HandlerError> {
     let action = action_str(p).ok_or(HandlerError::MissingField("action"))?;
     let (org_id, repo_id) = upsert_repo_from_payload(store, p).await?;
     let issue = p
         .get("issue")
         .ok_or(HandlerError::MissingField("issue"))?;
+    // GitHub's `/repos/{owner}/{repo}/issues` REST endpoint returns
+    // both issues and pull requests; webhooks share the same
+    // distinction. Skip PR rows — we mirror only the issue spine.
+    if issue.get("pull_request").is_some() {
+        return Err(HandlerError::Ignored {
+            kind: "issues".into(),
+            action: format!("{action} (pull_request payload)"),
+        });
+    }
+    // Mirror the issue row into `dp_issues` regardless of action.
+    // Slice-2 read endpoints (`/issues`, `/me/queue`) and the §5.5
+    // filter pills all read from `dp_issues`; the activity-event
+    // table the previous version of this handler only wrote to is
+    // *also* needed (for slice-3 throughput / lead-time reports)
+    // but is no longer sufficient on its own.
+    let upsert = parse_issue_upsert(org_id, repo_id, issue)?;
+    let window = chrono::Duration::seconds(HANDLER_PENDING_REMOTE_FALLBACK_SECS);
+    match store.upsert_issue_from_github(&upsert, window).await? {
+        (_, IssueUpsertOutcome::Deferred) => {
+            // Concurrent §8 optimistic write is in flight. The
+            // primary guard's drain loop would have caught this
+            // for webhook deliveries; for backfill / re-delivery
+            // we tolerate it and let the next sweep retry.
+            tracing::debug!(
+                target: "dp_fetcher::handlers",
+                repo_id = %repo_id,
+                number = upsert.number,
+                "issue upsert deferred by §13.7 pending_remote guard"
+            );
+        }
+        (_, IssueUpsertOutcome::Inserted | IssueUpsertOutcome::Updated | IssueUpsertOutcome::Skipped) => {}
+    }
+
+    // After the mirror lands, the activity-event slice keeps its
+    // existing locked vocabulary — only `opened` / `closed` map to
+    // an `EventKind`. Other actions (edited / assigned / labeled
+    // / …) mutate the row but never emit an activity event, which
+    // matches the slice-1 contract.
     let (kind, ts) = match action {
         "opened" => (EventKind::IssueOpened, parse_ts(issue, "created_at")?),
         "closed" => (EventKind::IssueClosed, parse_ts(issue, "closed_at")?),
@@ -1095,10 +1249,15 @@ mod tests {
                     "action": "opened",
                     "repository": repo_block(),
                     "issue": {
-                        "node_id":   "I_1",
-                        "created_at":"2024-01-01T00:00:00Z",
-                        "user":      { "id": 1, "login": "alice" },
-                        "assignees": [ { "id": 2, "login": "bob" } ]
+                        "id":         9001,
+                        "number":     1,
+                        "node_id":    "I_1",
+                        "title":      "first",
+                        "state":      "open",
+                        "created_at": "2024-01-01T00:00:00Z",
+                        "updated_at": "2024-01-01T00:00:00Z",
+                        "user":       { "id": 1, "login": "alice" },
+                        "assignees":  [ { "id": 2, "login": "bob" } ]
                     }
                 }),
             ),
@@ -1114,10 +1273,15 @@ mod tests {
                     "repository": repo_block(),
                     "sender": { "id": 3, "login": "carol" },
                     "issue": {
-                        "node_id":   "I_1",
-                        "created_at":"2024-01-01T00:00:00Z",
-                        "closed_at": "2024-01-02T00:00:00Z",
-                        "user":      { "id": 1, "login": "alice" }
+                        "id":         9001,
+                        "number":     1,
+                        "node_id":    "I_1",
+                        "title":      "first",
+                        "state":      "closed",
+                        "created_at": "2024-01-01T00:00:00Z",
+                        "updated_at": "2024-01-02T00:00:00Z",
+                        "closed_at":  "2024-01-02T00:00:00Z",
+                        "user":       { "id": 1, "login": "alice" }
                     }
                 }),
             ),
@@ -1132,6 +1296,109 @@ mod tests {
             .find_event_by_kind(EventKind::IssueClosed)
             .expect("closed event");
         assert!(s.roles_for_login(closed.id, "carol").contains(&ActorRole::Closer));
+    }
+
+    #[test]
+    fn parse_issue_upsert_extracts_full_payload() {
+        // Trimmed-down `/repos/{owner}/{repo}/issues` row — same
+        // shape as the webhook `payload.issue`. We assert every
+        // field the store impl persists so a future refactor of
+        // the parser can't silently drop a column.
+        let org_id = Uuid::new_v4();
+        let repo_id = Uuid::new_v4();
+        let body = json!({
+            "id": 4242,
+            "number": 17,
+            "title": "fix the thing",
+            "body": "details",
+            "state": "closed",
+            "state_reason": "completed",
+            "labels": [
+                { "name": "bug" },
+                { "name": "p1" }
+            ],
+            "assignees": [
+                { "login": "alice" },
+                { "login": "bob" }
+            ],
+            "milestone": { "title": "v0.2" },
+            "user": { "login": "reporter" },
+            "created_at": "2024-01-01T00:00:00Z",
+            "updated_at": "2024-01-03T12:00:00Z",
+            "closed_at":  "2024-01-03T12:00:00Z"
+        });
+        let u = parse_issue_upsert(org_id, repo_id, &body).unwrap();
+        assert_eq!(u.org_id, org_id);
+        assert_eq!(u.repo_id, repo_id);
+        assert_eq!(u.github_id, 4242);
+        assert_eq!(u.number, 17);
+        assert_eq!(u.title, "fix the thing");
+        assert_eq!(u.body.as_deref(), Some("details"));
+        assert!(matches!(u.state, IssueState::Closed));
+        assert_eq!(u.state_reason.as_deref(), Some("completed"));
+        assert_eq!(u.labels, vec!["bug".to_string(), "p1".to_string()]);
+        assert_eq!(u.assignees, vec!["alice".to_string(), "bob".to_string()]);
+        assert_eq!(u.milestone.as_deref(), Some("v0.2"));
+        assert_eq!(u.author.as_deref(), Some("reporter"));
+        assert_eq!(
+            u.created_at,
+            chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap()
+        );
+        assert_eq!(
+            u.updated_at,
+            chrono::Utc.with_ymd_and_hms(2024, 1, 3, 12, 0, 0).unwrap()
+        );
+        assert_eq!(
+            u.closed_at.unwrap(),
+            chrono::Utc.with_ymd_and_hms(2024, 1, 3, 12, 0, 0).unwrap()
+        );
+    }
+
+    #[test]
+    fn parse_issue_upsert_tolerates_open_issue_without_closed_at() {
+        // Open issues come back with `closed_at: null`. Optional
+        // fields (`body`, `milestone`, `state_reason`) are absent
+        // entirely — the parser must accept both `null` and
+        // missing-key for them.
+        let u = parse_issue_upsert(
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            &json!({
+                "id": 1,
+                "number": 1,
+                "title": "open one",
+                "state": "open",
+                "user": { "login": "alice" },
+                "created_at": "2024-01-01T00:00:00Z",
+                "updated_at": "2024-01-01T00:00:00Z",
+                "closed_at":  null
+            }),
+        )
+        .unwrap();
+        assert!(matches!(u.state, IssueState::Open));
+        assert!(u.body.is_none());
+        assert!(u.milestone.is_none());
+        assert!(u.state_reason.is_none());
+        assert!(u.closed_at.is_none());
+        assert!(u.labels.is_empty());
+        assert!(u.assignees.is_empty());
+    }
+
+    #[test]
+    fn parse_issue_upsert_rejects_unknown_state() {
+        let err = parse_issue_upsert(
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            &json!({
+                "id": 1, "number": 1, "title": "x",
+                "state": "draft",
+                "user": { "login": "a" },
+                "created_at": "2024-01-01T00:00:00Z",
+                "updated_at": "2024-01-01T00:00:00Z"
+            }),
+        )
+        .unwrap_err();
+        assert!(matches!(err, HandlerError::MissingField("issue.state")));
     }
 
     #[tokio::test]

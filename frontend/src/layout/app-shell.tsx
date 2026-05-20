@@ -64,6 +64,7 @@ const NAV_MAIN: NavMainItem[] = [
       { title: "Team", url: "#/reports/team", icon: IconUsers },
       { title: "Org", url: "#/reports/org", icon: IconBuilding },
       { title: "Leaderboard", url: "#/reports/leaderboard", icon: IconTrophy },
+      { title: "Repo activity", url: "#/reports/repo-activity", icon: IconBuilding },
       { title: "Home-org split", url: "#/reports/home-org-split", icon: IconColumns },
       { title: "Freshness", url: "#/reports/freshness", icon: IconClockHour4 },
     ],

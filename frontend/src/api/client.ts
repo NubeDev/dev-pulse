@@ -238,6 +238,9 @@ export interface ReportParams {
   orgs?: string[];
   users?: string[];
   teams?: string[];
+  /** Repo UUIDs — server narrows the event stream to these repos
+   *  (CSV-encoded on the wire). */
+  repos?: string[];
   /** snake_case `EventKind` names. */
   activity_types?: string[];
   /** snake_case `ActorRole` names. */
@@ -260,6 +263,7 @@ function reportParamsToQuery(params: ReportParams | undefined): string {
   csv("orgs", params.orgs);
   csv("users", params.users);
   csv("teams", params.teams);
+  csv("repos", params.repos);
   csv("activity_types", params.activity_types);
   csv("actor_roles", params.actor_roles);
   const s = usp.toString();

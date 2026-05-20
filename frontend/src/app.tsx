@@ -28,6 +28,7 @@ import { FreshnessPage } from "./reports/freshness-page.jsx";
 import { HomeOrgSplitReportPage } from "./reports/home-org-split-report-page.jsx";
 import { LeaderboardPage } from "./reports/leaderboard-page.jsx";
 import { OrgReportPage } from "./reports/org-report-page.jsx";
+import { RepoActivityPage } from "./reports/repo-activity-page.jsx";
 import { TeamReportPage } from "./reports/team-report-page.jsx";
 import { UserReportPage } from "./reports/user-report-page.jsx";
 import { IssuesPage } from "./workflow/issues-page.jsx";
@@ -153,6 +154,8 @@ function ReportsPane({ tab }: { tab: ReportTab }): JSX.Element {
       return <HomeOrgSplitReportPage />;
     case "leaderboard":
       return <LeaderboardPage />;
+    case "repo-activity":
+      return <RepoActivityPage />;
     case "freshness":
       return <FreshnessPage />;
   }

@@ -9,9 +9,10 @@
  */
 
 import { useMemo, useState } from "react";
-import { Check, ChevronDown } from "lucide-react";
+import { Check, ChevronDown, Search } from "lucide-react";
 import { Popover as PopoverPrimitive } from "radix-ui";
 
+import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
 export interface MultiSelectOption {
@@ -35,6 +36,12 @@ export interface MultiSelectProps {
   "data-testid"?: string;
   /** Optional max-height for the scroll area (default `18rem`). */
   contentMaxHeight?: string;
+  /** When set, the popover renders a search input that filters the
+   *  visible options by case-insensitive substring match against
+   *  `label` + `hint`. Auto-enabled for lists with >= 8 options. */
+  searchable?: boolean;
+  /** Placeholder for the search input. */
+  searchPlaceholder?: string;
 }
 
 export function MultiSelect({
@@ -47,14 +54,28 @@ export function MultiSelect({
   className,
   id,
   contentMaxHeight = "18rem",
+  searchable,
+  searchPlaceholder = "Search…",
   ...rest
 }: MultiSelectProps): JSX.Element {
   const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
   const selectedSet = useMemo(() => new Set(value), [value]);
   const selectedOptions = useMemo(
     () => options.filter((o) => selectedSet.has(o.value)),
     [options, selectedSet],
   );
+
+  const showSearch = searchable ?? options.length >= 8;
+  const visibleOptions = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return options;
+    return options.filter(
+      (o) =>
+        o.label.toLowerCase().includes(q) ||
+        (o.hint?.toLowerCase().includes(q) ?? false),
+    );
+  }, [options, query]);
 
   function toggle(v: string): void {
     const next = selectedSet.has(v)
@@ -76,7 +97,13 @@ export function MultiSelect({
     options.length > 0 && selectedOptions.length === options.length;
 
   return (
-    <PopoverPrimitive.Root open={open} onOpenChange={setOpen}>
+    <PopoverPrimitive.Root
+      open={open}
+      onOpenChange={(o) => {
+        setOpen(o);
+        if (!o) setQuery("");
+      }}
+    >
       <PopoverPrimitive.Trigger
         id={id}
         disabled={disabled}
@@ -124,6 +151,22 @@ export function MultiSelect({
             ) : null}
           </div>
           <div className="-mx-1 my-1 h-px bg-border" />
+          {showSearch ? (
+            <div className="relative px-1 pb-1">
+              <Search
+                className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground"
+                aria-hidden
+              />
+              <Input
+                type="text"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder={searchPlaceholder}
+                className="h-8 pl-7 text-xs"
+                aria-label={searchPlaceholder}
+              />
+            </div>
+          ) : null}
           <div
             role="listbox"
             aria-multiselectable
@@ -134,8 +177,12 @@ export function MultiSelect({
               <p className="px-2 py-3 text-xs text-muted-foreground">
                 No options available.
               </p>
+            ) : visibleOptions.length === 0 ? (
+              <p className="px-2 py-3 text-xs text-muted-foreground">
+                No matches for &ldquo;{query}&rdquo;.
+              </p>
             ) : (
-              options.map((o) => {
+              visibleOptions.map((o) => {
                 const checked = selectedSet.has(o.value);
                 return (
                   <button

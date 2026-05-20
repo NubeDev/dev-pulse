@@ -131,6 +131,8 @@ async fn webhook_github_stub() {}
         crate::inbox::mark_seen,
         crate::inbox::set_inbox_state,
         crate::inbox::bulk_inbox,
+        // Multi-identity surface (§3.0 / §10).
+        crate::me_identities::list_me_identities,
         // Webhooks (Phase 2 — docs-only stub, real handler in dp-fetcher).
         webhook_github_stub,
     ),
@@ -204,6 +206,9 @@ async fn webhook_github_stub() {}
         crate::inbox::BulkInboxOp,
         crate::inbox::BulkInboxRequest,
         crate::inbox::BulkInboxResponse,
+        // Multi-identity surface (§3.0 / §10).
+        crate::me_identities::MeIdentityDto,
+        crate::me_identities::MeIdentitiesResponse,
     )),
     tags(
         (name = "reports",   description = "Per-user / team / org activity reports + freshness probe."),
@@ -212,6 +217,7 @@ async fn webhook_github_stub() {}
         (name = "pins",      description = "Per-user pinned repos / tags (SCOPE-PROJECTS §6)."),
         (name = "tags",      description = "Cross-org home-grown tags (SCOPE-PROJECTS §7)."),
         (name = "github_app", description = "GitHub App install permission surface (SCOPE-PROJECTS §8.4, §13.6)."),
+        (name = "identities", description = "Linked OAuth identities for the caller (linear-projects-idea.md §3.0 / §10)."),
         (name = "webhooks",  description = "GitHub webhook receiver. HMAC-authenticated, not principal-wrapped."),
     ),
 )]

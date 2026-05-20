@@ -17,6 +17,7 @@
 //! Reads are not audited (low-sensitivity directory traversal, same
 //! rationale as `GET /repos` / `GET /users`).
 
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use axum::{
@@ -100,6 +101,13 @@ pub struct IssueDto {
     pub version: i64,
     /// Last update.
     pub updated_at: DateTime<Utc>,
+    /// Short `owner/repo` label rendered in list rows. Populated
+    /// by a per-page join through `repo_id -> (org_login, name)`.
+    /// Omitted when the join is unavailable (point-lookup detail
+    /// handlers backfill this too so the peek panel and the row
+    /// it was selected from agree).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_slug: Option<String>,
     /// Per-caller unread flag — `true` when the issue's `version`
     /// is newer than what the caller has marked seen. Only the
     /// `/me/queue` endpoint populates this with a meaningful value;
@@ -132,9 +140,58 @@ impl From<Issue> for IssueDto {
             milestone: i.milestone,
             version: i.version,
             updated_at: i.updated_at,
+            repo_slug: None,
             unread: false,
         }
     }
+}
+
+/// Resolve `repo_id -> "owner/repo"` for every distinct repo
+/// referenced by `rows` and stamp it onto `dto.repo_slug`.
+///
+/// Implemented with point lookups (`get_repo` + `get_org`) keyed
+/// by the distinct ids only — a 50-row page usually covers a
+/// handful of repos, so the round-trip count stays bounded. Repos
+/// that fail to resolve leave `repo_slug = None` rather than
+/// failing the whole request, matching the §14.3 contract that
+/// the slug is decorative.
+async fn attach_repo_slugs(
+    store: &dyn dp_domain::store::Store,
+    dtos: &mut [IssueDto],
+) -> Result<(), ApiError> {
+    let repo_ids: HashSet<Uuid> = dtos.iter().map(|d| d.repo_id).collect();
+    let mut slugs: HashMap<Uuid, String> = HashMap::with_capacity(repo_ids.len());
+    let mut org_cache: HashMap<Uuid, String> = HashMap::new();
+    for repo_id in repo_ids {
+        let Some(repo) = store.get_repo(repo_id).await? else { continue };
+        let login = if let Some(l) = org_cache.get(&repo.org_id) {
+            l.clone()
+        } else {
+            let Some(org) = store.get_org(repo.org_id).await? else { continue };
+            org_cache.insert(org.id, org.login.clone());
+            org.login
+        };
+        slugs.insert(repo.id, format!("{login}/{}", repo.name));
+    }
+    for d in dtos.iter_mut() {
+        if let Some(s) = slugs.get(&d.repo_id) {
+            d.repo_slug = Some(s.clone());
+        }
+    }
+    Ok(())
+}
+
+/// Single-issue variant of [`attach_repo_slugs`] for the detail
+/// handlers. Same fallback behaviour — a missing repo or org leaves
+/// the slug unset.
+async fn attach_repo_slug_one(
+    store: &dyn dp_domain::store::Store,
+    dto: &mut IssueDto,
+) -> Result<(), ApiError> {
+    let Some(repo) = store.get_repo(dto.repo_id).await? else { return Ok(()) };
+    let Some(org) = store.get_org(repo.org_id).await? else { return Ok(()) };
+    dto.repo_slug = Some(format!("{}/{}", org.login, repo.name));
+    Ok(())
 }
 
 impl From<dp_domain::inbox::InboxIssueRow> for IssueDto {

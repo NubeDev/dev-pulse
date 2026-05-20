@@ -24,6 +24,7 @@ import type {
   UserDto,
 } from "../api/client.js";
 import { navigate, useRoute } from "../routes.js";
+import { SearchableSelect } from "../components/searchable-select.jsx";
 
 import { ACTIVITY_KINDS } from "./activity-types.js";
 import { ReportShell, type PerKind } from "./report-shell.jsx";
@@ -248,23 +249,20 @@ export function UserReportPage(): JSX.Element {
           </div>
           <div className="grid gap-1.5">
             <Label htmlFor={dropdownId}>User</Label>
-            <Select
-              value={activeUserId ?? ""}
-              onValueChange={selectUser}
+            <SearchableSelect
+              id={dropdownId}
+              data-testid="user-select"
+              placeholder={usersQuery.isPending ? "Loading users…" : "Select a user"}
+              searchPlaceholder="Search users…"
+              options={users.map((u) => ({
+                value: u.id,
+                label: u.name ?? u.login,
+                hint: u.name ? u.login : u.email ?? undefined,
+              }))}
+              value={activeUserId}
+              onChange={selectUser}
               disabled={usersQuery.isPending || users.length === 0}
-            >
-              <SelectTrigger id={dropdownId} data-testid="user-select">
-                <SelectValue placeholder={usersQuery.isPending ? "Loading users…" : "Select a user"} />
-              </SelectTrigger>
-              <SelectContent>
-                {users.map((u) => (
-                  <SelectItem key={u.id} value={u.id}>
-                    {u.name ?? u.login}
-                    {u.name ? <span className="text-muted-foreground"> · {u.login}</span> : null}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            />
           </div>
           <WindowPicker value={windowState} onChange={setWindowState} />
         </div>

@@ -24,7 +24,7 @@ use crate::event::{ActivityEvent, ActorRole, EventActor, EventKind};
 use crate::fetch::{FetchCursor, FetchRun, FetchRunKind, ResourceKind};
 use crate::freshness::DataAsOf;
 use crate::inbox::{InboxIssueRow, InboxStatus, UserIssueState};
-use crate::issue::{Issue, IssueState, RepoSummary};
+use crate::issue::{Issue, IssueState, IssueUpsert, IssueUpsertOutcome, RepoSummary};
 use crate::issue_dates::{
     IssueDates, ProjectV2MirrorTask, ProjectV2MirrorTaskKind, RepoProjectLink,
 };
@@ -323,6 +323,55 @@ pub trait Store: Send + Sync {
         _number: i64,
     ) -> Result<Option<Issue>, StoreError> {
         Ok(None)
+    }
+
+    /// Insert-or-update an issue row from an ingest payload
+    /// (`IssueUpsert`). Returns the post-write [`Issue`] (so the
+    /// caller can echo it / hand it to the inbox layer) plus an
+    /// [`IssueUpsertOutcome`] reporting what actually happened.
+    ///
+    /// **Versioning.** On insert `version = 1`. On update, the
+    /// store bumps `version` by 1 *only* when the inbound
+    /// `updated_at` is strictly newer than the row's local
+    /// `updated_at`; otherwise the call is a no-op
+    /// ([`IssueUpsertOutcome::Skipped`]) — this keeps the §8 CAS
+    /// counter monotonic without churn from re-backfills.
+    ///
+    /// **§13.7 reconciler guard.** When the row is in
+    /// `pending_remote = TRUE` and `pending_remote_at` is younger
+    /// than `pending_remote_window`, the upsert refuses to write
+    /// and returns [`IssueUpsertOutcome::Deferred`]. The caller
+    /// (webhook drain loop or CLI backfill) decides whether to
+    /// buffer or skip — the row stays untouched either way so the
+    /// in-flight optimistic write lands first.
+    ///
+    /// The default impl returns
+    /// (synthetic `Issue` from `upsert`, `Skipped`) so in-memory
+    /// fakes that don't implement the column compile unchanged.
+    /// Production stores override.
+    async fn upsert_issue_from_github(
+        &self,
+        upsert: &IssueUpsert,
+        _pending_remote_window: chrono::Duration,
+    ) -> Result<(Issue, IssueUpsertOutcome), StoreError> {
+        // Synthetic row — never persisted; tests that exercise the
+        // real ingest path use the dp-store-pg impl.
+        let issue = Issue {
+            id: Uuid::nil(),
+            org_id: upsert.org_id,
+            repo_id: upsert.repo_id,
+            github_id: upsert.github_id,
+            number: upsert.number,
+            title: upsert.title.clone(),
+            body: upsert.body.clone(),
+            state: upsert.state,
+            labels: upsert.labels.clone(),
+            assignees: upsert.assignees.clone(),
+            milestone: upsert.milestone.clone(),
+            version: 1,
+            updated_at: upsert.updated_at,
+        };
+        Ok((issue, IssueUpsertOutcome::Skipped))
     }
 
     // ---- per-user inbox (triage spine, slice 1) -------------------

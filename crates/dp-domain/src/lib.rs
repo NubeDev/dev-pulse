@@ -49,7 +49,7 @@ pub use event::{ActivityEvent, ActorRole, EventActor, EventKind};
 pub use fetch::{FetchCursor, FetchRun, FetchRunKind, ResourceKind};
 pub use freshness::DataAsOf;
 pub use inbox::{InboxIssueRow, InboxStatus, UserIssueState};
-pub use issue::{Issue, IssueState, RepoSummary};
+pub use issue::{Issue, IssueState, IssueUpsert, IssueUpsertOutcome, RepoSummary};
 pub use issue_dates::{
     IssueDates, ProjectV2MirrorTask, ProjectV2MirrorTaskKind, RepoProjectLink,
 };

@@ -442,7 +442,7 @@ async fn fetch_rows(
         .list_event_actor_rows_in_window(
             window,
             &request.orgs,
-            &[],
+            &request.repos,
             &request.users,
             &request.actor_roles,
         )
@@ -697,7 +697,7 @@ pub async fn home_org_split_report(
         .list_event_actor_rows_in_window(
             &window,
             &request.orgs,
-            &[],
+            &request.repos,
             &request.users,
             &request.actor_roles,
         )

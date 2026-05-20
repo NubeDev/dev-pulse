@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 use dp_domain::store::Store;
 use dp_fetcher::reconciler::Scheduler;
+use starter_auth_oauth::IdentityStore;
 
 use crate::app_permissions::GitHubAppConfig;
 use crate::issue_dates::{ProjectV2MirrorBackend, UnconfiguredProjectV2Mirror};
@@ -56,6 +57,15 @@ pub struct AppState {
     /// the best-effort enqueue / spawn entirely; the local
     /// upsert remains authoritative.
     pub projectv2_mirror: Arc<dyn ProjectV2MirrorBackend>,
+    /// OAuth identity store handle. The `/me/identities` surface
+    /// (§3.0 / §10) reads through it to project the viewer's
+    /// linked third-party identities for the Account → Identities
+    /// page. `None` in test builds and any composition root that
+    /// has not yet wired the starter-auth-oauth `IdentityStore`;
+    /// the handler degrades to a 503 in that case so a
+    /// misconfigured deployment fails loudly instead of silently
+    /// returning an empty list.
+    pub identity_store: Option<Arc<dyn IdentityStore>>,
 }
 
 impl AppState {
@@ -69,6 +79,7 @@ impl AppState {
             issue_writer: Arc::new(UnconfiguredIssueWriter),
             scheduler: None,
             projectv2_mirror: Arc::new(UnconfiguredProjectV2Mirror),
+            identity_store: None,
         }
     }
 
@@ -102,6 +113,20 @@ impl AppState {
     /// = false` branch without rebuilding the whole state.
     pub fn with_github_app(mut self, github_app: Arc<GitHubAppConfig>) -> Self {
         self.github_app = github_app;
+        self
+    }
+
+    /// Wire the OAuth identity store so `GET /me/identities`
+    /// can project the viewer's linked third-party identities.
+    /// The bin layer passes the same `Arc<dyn IdentityStore>` it
+    /// hands to the OAuth router (so the two surfaces agree on
+    /// what's linked); tests can leave it unset and the handler
+    /// returns 503.
+    pub fn with_identity_store(
+        mut self,
+        identity_store: Arc<dyn IdentityStore>,
+    ) -> Self {
+        self.identity_store = Some(identity_store);
         self
     }
 }

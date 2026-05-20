@@ -142,6 +142,16 @@ pub fn register_dev_pulse_resources(registry: &StaticRegistry) {
         "Per-user / shared tag taxonomy (SCOPE-PROJECTS §6). `write` covers \
          create / rename / delete / assignment.",
     ));
+    registry.register_spec(ResourceSpec::from_static(
+        "identities",
+        &["read"],
+        Ownership::None,
+        "Identities",
+        "Linked OAuth identities for the caller (linear-projects-idea.md §3.0 / §10). \
+         `read` powers `GET /me/identities`; write verbs land in a follow-up \
+         once the `is_primary` column + `dp_membership_identities` provenance \
+         table ship.",
+    ));
 }
 
 /// Load + compile the policy file, wrap it in

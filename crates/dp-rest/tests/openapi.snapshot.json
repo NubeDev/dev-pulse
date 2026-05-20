@@ -634,6 +634,30 @@
         }
       }
     },
+    "/me/identities": {
+      "get": {
+        "tags": [
+          "identities"
+        ],
+        "summary": "`GET /me/identities`.",
+        "operationId": "list_me_identities",
+        "responses": {
+          "200": {
+            "description": "Linked OAuth identities for the caller",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeIdentitiesResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Identity store not wired in this deployment"
+          }
+        }
+      }
+    },
     "/me/inbox/bulk": {
       "post": {
         "tags": [
@@ -2762,6 +2786,72 @@
           }
         }
       },
+      "MeIdentitiesResponse": {
+        "type": "object",
+        "description": "Top-level response. JSON object (not bare list) so additive\nfields like `principal_dirty` / pagination metadata can land\nwithout a breaking change.",
+        "required": [
+          "identities"
+        ],
+        "properties": {
+          "identities": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MeIdentityDto"
+            },
+            "description": "The viewer's linked identities, ordered by `linked_at`\n**descending** (newest first — the §10 page renders the\nprimary at the top of the stack)."
+          },
+          "primary_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The `id` of the row marked `is_primary == true`, or `None`\nif the viewer has no linked identities (i.e. local-password\nonly). The SPA reads this instead of re-scanning the list."
+          }
+        }
+      },
+      "MeIdentityDto": {
+        "type": "object",
+        "description": "One linked identity in the response. `id` is a synthetic\nstable handle the SPA can key on — it is `\"{provider}:{sub}\"`\nrather than the bare `provider_sub` so two rows from different\nproviders can never collide and so the SPA never has to assume\na specific provider's sub format.",
+        "required": [
+          "id",
+          "provider",
+          "linked_at",
+          "is_primary"
+        ],
+        "properties": {
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Display name the provider returned at link / last sign-in.\nOften the GitHub login or the Google given-name — the wire\nshape is provider-defined."
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Email the provider returned at link / last sign-in."
+          },
+          "id": {
+            "type": "string",
+            "description": "Synthetic stable id: `\"{provider}:{provider_sub}\"`. Safe to\nexpose because the SPA already sees `provider`, and\n`provider_sub` for the *currently signed-in* identity is\nalready in the OAuth callback URL flow — wrapping it in a\ncomposite `id` keys React renders without inviting the SPA\nto parse the sub out by itself."
+          },
+          "is_primary": {
+            "type": "boolean",
+            "description": "`true` for the row currently treated as the primary\nidentity (the most-recent `linked_at`, matching\n[`starter_auth_oauth::OAuthPrincipalExtras`])."
+          },
+          "linked_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Wall-clock time the identity was first linked. v1 doubles\nas \"last login\" because `IdentityStore` does not yet touch\nthe row on sign-in; the contract here is the same as\n`starter_auth_oauth::IdentitySummary`'s `last_login_at`."
+          },
+          "provider": {
+            "type": "string",
+            "description": "Provider id (`\"github\"`, `\"google\"`)."
+          }
+        }
+      },
       "MembershipDto": {
         "type": "object",
         "description": "`dp_memberships` projection inside the export.",
@@ -3654,6 +3744,10 @@
     {
       "name": "github_app",
       "description": "GitHub App install permission surface (SCOPE-PROJECTS §8.4, §13.6)."
+    },
+    {
+      "name": "identities",
+      "description": "Linked OAuth identities for the caller (linear-projects-idea.md §3.0 / §10)."
     },
     {
       "name": "webhooks",

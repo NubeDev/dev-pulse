@@ -1196,8 +1196,12 @@ mod tests {
                     },
                     "issue": {
                         "id": rig.issue.github_id,
+                        "number": rig.issue.number,
                         "node_id": "I_test",
+                        "title": rig.issue.title,
+                        "state": "closed",
                         "created_at": "2024-01-01T00:00:00Z",
+                        "updated_at": "2024-01-02T00:00:00Z",
                         "closed_at": "2024-01-02T00:00:00Z",
                         "user": { "id": 7, "login": "alice" },
                         "assignees": []

@@ -431,6 +431,307 @@ impl Client {
         let path = format!("/orgs/{org_login}/members?per_page=100");
         self.get_conditional(&path, etag).await
     }
+
+    // ---- repos -------------------------------------------------------
+
+    /// Get a single repo by owner + name.
+    pub async fn get_repo(
+        &self,
+        owner: &str,
+        repo: &str,
+    ) -> Result<Fetched<serde_json::Value>, ClientError> {
+        let path = format!("/repos/{owner}/{repo}");
+        self.get_conditional(&path, None).await
+    }
+
+    /// List repos in an org. `etag` enables 304 short-circuit.
+    pub async fn list_org_repos(
+        &self,
+        org_login: &str,
+        etag: Option<&str>,
+    ) -> Result<Fetched<serde_json::Value>, ClientError> {
+        let path = format!("/orgs/{org_login}/repos?type=all&sort=updated&per_page=100");
+        self.get_conditional(&path, etag).await
+    }
+
+    /// List repos for an authenticated user (the token owner).
+    pub async fn list_user_repos(
+        &self,
+        username: &str,
+        etag: Option<&str>,
+    ) -> Result<Fetched<serde_json::Value>, ClientError> {
+        let path = format!("/users/{username}/repos?type=all&sort=updated&per_page=100");
+        self.get_conditional(&path, etag).await
+    }
+
+    // ---- git tags / releases -----------------------------------------
+
+    /// List git tags on a repo (lightweight + annotated tags).
+    pub async fn list_tags(
+        &self,
+        owner: &str,
+        repo: &str,
+        etag: Option<&str>,
+    ) -> Result<Fetched<serde_json::Value>, ClientError> {
+        let path = format!("/repos/{owner}/{repo}/tags?per_page=100");
+        self.get_conditional(&path, etag).await
+    }
+
+    /// Get a single git tag by name (annotated tag object).
+    pub async fn get_tag(
+        &self,
+        owner: &str,
+        repo: &str,
+        tag_name: &str,
+    ) -> Result<Fetched<serde_json::Value>, ClientError> {
+        let path = format!("/repos/{owner}/{repo}/git/ref/tags/{tag_name}");
+        self.get_conditional(&path, None).await
+    }
+
+    /// List releases (GitHub's higher-level tag + release-notes surface).
+    pub async fn list_releases(
+        &self,
+        owner: &str,
+        repo: &str,
+        etag: Option<&str>,
+    ) -> Result<Fetched<serde_json::Value>, ClientError> {
+        let path = format!("/repos/{owner}/{repo}/releases?per_page=100");
+        self.get_conditional(&path, etag).await
+    }
+
+    /// Get the latest release for a repo.
+    pub async fn get_latest_release(
+        &self,
+        owner: &str,
+        repo: &str,
+    ) -> Result<Fetched<serde_json::Value>, ClientError> {
+        let path = format!("/repos/{owner}/{repo}/releases/latest");
+        self.get_conditional(&path, None).await
+    }
+
+    /// Get a specific release by id.
+    pub async fn get_release(
+        &self,
+        owner: &str,
+        repo: &str,
+        release_id: u64,
+    ) -> Result<Fetched<serde_json::Value>, ClientError> {
+        let path = format!("/repos/{owner}/{repo}/releases/{release_id}");
+        self.get_conditional(&path, None).await
+    }
+
+    // ---- users -------------------------------------------------------
+
+    /// Get a single user by GitHub login.
+    pub async fn get_user(
+        &self,
+        login: &str,
+    ) -> Result<Fetched<serde_json::Value>, ClientError> {
+        let path = format!("/users/{login}");
+        self.get_conditional(&path, None).await
+    }
+
+    /// Get the authenticated user (the token / installation actor).
+    pub async fn get_authenticated_user(
+        &self,
+    ) -> Result<Fetched<serde_json::Value>, ClientError> {
+        self.get_conditional("/user", None).await
+    }
+
+    /// List public repos for a user by login.
+    pub async fn list_public_repos_for_user(
+        &self,
+        login: &str,
+        etag: Option<&str>,
+    ) -> Result<Fetched<serde_json::Value>, ClientError> {
+        let path = format!("/users/{login}/repos?sort=updated&per_page=100");
+        self.get_conditional(&path, etag).await
+    }
+
+    // ---- orgs --------------------------------------------------------
+
+    /// Get a single org by login.
+    pub async fn get_org(
+        &self,
+        org_login: &str,
+    ) -> Result<Fetched<serde_json::Value>, ClientError> {
+        let path = format!("/orgs/{org_login}");
+        self.get_conditional(&path, None).await
+    }
+
+    /// List orgs the authenticated user (or a named user) belongs to.
+    pub async fn list_orgs_for_user(
+        &self,
+        login: &str,
+        etag: Option<&str>,
+    ) -> Result<Fetched<serde_json::Value>, ClientError> {
+        let path = format!("/users/{login}/orgs?per_page=100");
+        self.get_conditional(&path, etag).await
+    }
+
+    // ---- teams -------------------------------------------------------
+
+    /// Get a single team by org + slug.
+    pub async fn get_team(
+        &self,
+        org_login: &str,
+        team_slug: &str,
+    ) -> Result<Fetched<serde_json::Value>, ClientError> {
+        let path = format!("/orgs/{org_login}/teams/{team_slug}");
+        self.get_conditional(&path, None).await
+    }
+
+    /// List team members by org + slug.
+    pub async fn list_team_members(
+        &self,
+        org_login: &str,
+        team_slug: &str,
+        etag: Option<&str>,
+    ) -> Result<Fetched<serde_json::Value>, ClientError> {
+        let path = format!("/orgs/{org_login}/teams/{team_slug}/members?per_page=100");
+        self.get_conditional(&path, etag).await
+    }
+
+    /// List team repos by org + slug.
+    pub async fn list_team_repos(
+        &self,
+        org_login: &str,
+        team_slug: &str,
+        etag: Option<&str>,
+    ) -> Result<Fetched<serde_json::Value>, ClientError> {
+        let path = format!("/orgs/{org_login}/teams/{team_slug}/repos?per_page=100");
+        self.get_conditional(&path, etag).await
+    }
+
+    // ---- branches / refs --------------------------------------------
+
+    /// List branches on a repo.
+    pub async fn list_branches(
+        &self,
+        owner: &str,
+        repo: &str,
+        etag: Option<&str>,
+    ) -> Result<Fetched<serde_json::Value>, ClientError> {
+        let path = format!("/repos/{owner}/{repo}/branches?per_page=100");
+        self.get_conditional(&path, etag).await
+    }
+
+    /// Get a single branch by name.
+    pub async fn get_branch(
+        &self,
+        owner: &str,
+        repo: &str,
+        branch: &str,
+    ) -> Result<Fetched<serde_json::Value>, ClientError> {
+        let path = format!("/repos/{owner}/{repo}/branches/{branch}");
+        self.get_conditional(&path, None).await
+    }
+
+    // ---- issue comments ----------------------------------------------
+
+    /// List comments on an issue or PR by number.
+    pub async fn list_issue_comments(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+        since: Option<DateTime<Utc>>,
+        etag: Option<&str>,
+    ) -> Result<Fetched<serde_json::Value>, ClientError> {
+        let mut path =
+            format!("/repos/{owner}/{repo}/issues/{number}/comments?per_page=100");
+        if let Some(ts) = since {
+            path.push_str(&format!("&since={}", ts.to_rfc3339()));
+        }
+        self.get_conditional(&path, etag).await
+    }
+
+    // ---- PR reviews --------------------------------------------------
+
+    /// List reviews on a PR by number.
+    pub async fn list_pull_request_reviews(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+        etag: Option<&str>,
+    ) -> Result<Fetched<serde_json::Value>, ClientError> {
+        let path =
+            format!("/repos/{owner}/{repo}/pulls/{number}/reviews?per_page=100");
+        self.get_conditional(&path, etag).await
+    }
+
+    // ---- workflows ---------------------------------------------------
+
+    /// List workflow runs for a repo.
+    pub async fn list_workflow_runs(
+        &self,
+        owner: &str,
+        repo: &str,
+        etag: Option<&str>,
+    ) -> Result<Fetched<serde_json::Value>, ClientError> {
+        let path = format!("/repos/{owner}/{repo}/actions/runs?per_page=100");
+        self.get_conditional(&path, etag).await
+    }
+
+    /// Get a single workflow run by id.
+    pub async fn get_workflow_run(
+        &self,
+        owner: &str,
+        repo: &str,
+        run_id: u64,
+    ) -> Result<Fetched<serde_json::Value>, ClientError> {
+        let path = format!("/repos/{owner}/{repo}/actions/runs/{run_id}");
+        self.get_conditional(&path, None).await
+    }
+
+    // ---- milestones --------------------------------------------------
+
+    /// List milestones on a repo.
+    pub async fn list_milestones(
+        &self,
+        owner: &str,
+        repo: &str,
+        etag: Option<&str>,
+    ) -> Result<Fetched<serde_json::Value>, ClientError> {
+        let path = format!("/repos/{owner}/{repo}/milestones?state=all&per_page=100");
+        self.get_conditional(&path, etag).await
+    }
+
+    /// Get a single milestone by number.
+    pub async fn get_milestone(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<Fetched<serde_json::Value>, ClientError> {
+        let path = format!("/repos/{owner}/{repo}/milestones/{number}");
+        self.get_conditional(&path, None).await
+    }
+
+    // ---- labels ------------------------------------------------------
+
+    /// List labels defined on a repo.
+    pub async fn list_labels(
+        &self,
+        owner: &str,
+        repo: &str,
+        etag: Option<&str>,
+    ) -> Result<Fetched<serde_json::Value>, ClientError> {
+        let path = format!("/repos/{owner}/{repo}/labels?per_page=100");
+        self.get_conditional(&path, etag).await
+    }
+
+    /// Get a single label by name.
+    pub async fn get_label(
+        &self,
+        owner: &str,
+        repo: &str,
+        label_name: &str,
+    ) -> Result<Fetched<serde_json::Value>, ClientError> {
+        let path = format!("/repos/{owner}/{repo}/labels/{label_name}");
+        self.get_conditional(&path, None).await
+    }
 }
 
 fn transport<E: std::fmt::Display>(e: E) -> ClientError {
