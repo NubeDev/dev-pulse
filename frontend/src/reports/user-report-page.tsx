@@ -188,7 +188,7 @@ export function UserReportPage(): JSX.Element {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Filters</CardTitle>
+          <CardTitle className="text-lg font-medium">Filters</CardTitle>
         </CardHeader>
         <CardContent>
           <div className={FILTER_GRID_CLASS}>
@@ -221,7 +221,7 @@ export function UserReportPage(): JSX.Element {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Activity</CardTitle>
+          <CardTitle className="text-lg font-medium">Activity</CardTitle>
         </CardHeader>
         <CardContent>
           <LensTabs value={lens} onChange={setLens}>

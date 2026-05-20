@@ -233,7 +233,7 @@ export function HomeOrgSplitReportPage(): JSX.Element {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Filters</CardTitle>
+          <CardTitle className="text-lg font-medium">Filters</CardTitle>
         </CardHeader>
         <CardContent>
           <div className={FILTER_GRID_CLASS}>
@@ -246,7 +246,7 @@ export function HomeOrgSplitReportPage(): JSX.Element {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Contribution split</CardTitle>
+          <CardTitle className="text-lg font-medium">Contribution split</CardTitle>
         </CardHeader>
         <CardContent>
           <LensTabs value={lens} onChange={setLens}>

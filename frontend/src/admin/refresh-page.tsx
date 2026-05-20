@@ -125,7 +125,7 @@ export function RefreshPage(): JSX.Element {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Trigger reconciler</CardTitle>
+          <CardTitle className="text-lg font-medium">Trigger reconciler</CardTitle>
         </CardHeader>
         <CardContent className="grid gap-4">
           <div className="grid max-w-md gap-1.5">

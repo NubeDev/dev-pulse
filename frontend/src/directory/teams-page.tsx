@@ -65,7 +65,7 @@ export function TeamsPage(): JSX.Element {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Filters</CardTitle>
+          <CardTitle className="text-lg font-medium">Filters</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="grid max-w-xs gap-1.5">
@@ -93,7 +93,7 @@ export function TeamsPage(): JSX.Element {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Results</CardTitle>
+          <CardTitle className="text-lg font-medium">Results</CardTitle>
         </CardHeader>
         <CardContent className="grid gap-4">
           {dir.error ? (

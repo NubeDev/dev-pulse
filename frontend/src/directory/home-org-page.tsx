@@ -136,7 +136,7 @@ export function HomeOrgPage(): JSX.Element {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Assign home org</CardTitle>
+          <CardTitle className="text-lg font-medium">Assign home org</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="grid gap-4">

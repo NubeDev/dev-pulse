@@ -175,7 +175,7 @@ export function RunsPage(): JSX.Element {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Recent runs</CardTitle>
+          <CardTitle className="text-lg font-medium">Recent runs</CardTitle>
         </CardHeader>
         <CardContent className="grid gap-4">
           {runsQuery.error ? (

@@ -181,7 +181,7 @@ export function AdminUsersPage(): JSX.Element {
 
       <Card>
       <CardHeader>
-        <CardTitle className="text-base">Pick a user</CardTitle>
+        <CardTitle className="text-lg font-medium">Pick a user</CardTitle>
         <CardDescription>
           Export streams the user's full record as JSON; anonymise scrubs
           identifying fields and cascades the redaction.
