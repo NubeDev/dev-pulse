@@ -16,6 +16,7 @@ import { authStrategy } from "./auth/strategy.js";
 import { LoginPage } from "./auth/login-page.jsx";
 import { ProtectedRoute } from "./auth/protected-route.jsx";
 import { AppShell } from "./layout/app-shell.jsx";
+import { FreshnessPage } from "./reports/freshness-page.jsx";
 import { HomeOrgSplitReportPage } from "./reports/home-org-split-report-page.jsx";
 import { OrgReportPage } from "./reports/org-report-page.jsx";
 import { TeamReportPage } from "./reports/team-report-page.jsx";
@@ -92,6 +93,7 @@ const REPORT_TABS: readonly ReportNavItem[] = [
   { tab: "team", label: "Team", href: "#/reports/team" },
   { tab: "org", label: "Org", href: "#/reports/org" },
   { tab: "home-org-split", label: "Home-org split", href: "#/reports/home-org-split" },
+  { tab: "freshness", label: "Freshness", href: "#/reports/freshness" },
 ];
 
 function ReportsSection({ tab }: { tab: ReportTab }): JSX.Element {
@@ -149,6 +151,8 @@ function ReportsPane({ tab }: { tab: ReportTab }): JSX.Element {
       return <OrgReportPage />;
     case "home-org-split":
       return <HomeOrgSplitReportPage />;
+    case "freshness":
+      return <FreshnessPage />;
   }
 }
 

@@ -13,6 +13,7 @@
  *   #/reports/team[/:team_id]     — team activity report
  *   #/reports/org[/:org_id]       — org activity report
  *   #/reports/home-org-split      — cross-company exec view
+ *   #/reports/freshness           — per-org data freshness dashboard
  *   #/directory[/...]             — protected: directory
  *   #/admin[/...]                 — protected: admin
  *   #/                            — alias for #/reports
@@ -23,7 +24,7 @@ import { useSyncExternalStore } from "react";
 export type Section = "reports" | "directory" | "admin" | "login";
 
 /** Sub-route under the reports section — drives the reports sub-nav. */
-export type ReportTab = "user" | "team" | "org" | "home-org-split";
+export type ReportTab = "user" | "team" | "org" | "home-org-split" | "freshness";
 
 /** Parse `#/reports/...` → the active sub-tab. Defaults to `user`
  *  (the SCOPE §11.5 landing report). */
@@ -37,6 +38,8 @@ export function reportTabOf(route: string): ReportTab {
       return "org";
     case "home-org-split":
       return "home-org-split";
+    case "freshness":
+      return "freshness";
     case "user":
     case undefined:
     case "":
