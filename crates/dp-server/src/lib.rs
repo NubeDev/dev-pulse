@@ -235,7 +235,9 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
     // composes into the `ServerBuilder<()>` accumulator below.
     // -----------------------------------------------------------------
     let rest_state = Arc::new(
-        RestAppState::new(store.clone()).with_github_app(github_app.clone()),
+        RestAppState::new(store.clone())
+            .with_github_app(github_app.clone())
+            .with_scheduler(scheduler.clone()),
     );
     let admin_state = Arc::new(AdminState::new(scheduler.clone(), store.clone()));
 

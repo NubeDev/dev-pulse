@@ -78,11 +78,13 @@ pub use issues_write::{
     PatchIssueRequest, UnconfiguredIssueWriter,
 };
 pub use issues_read::{
-    get_issue_by_id, get_issue_by_number, issues_read_router, list_issues, me_queue, IssueDto,
-    IssueListResponse, IssueStateDto, ListIssuesQuery, StateFilter,
+    get_issue_by_id, get_issue_by_number, get_issue_timeline, issues_read_router, list_issues,
+    me_queue, IssueDto, IssueListResponse, IssueStateDto, ListIssuesQuery, StateFilter,
+    TimelineEntryDto, TimelineQuery, TimelineResponse,
 };
 pub use repos::{
-    list_repos, repos_router, ListReposQuery, RepoListResponse, RepoSummaryDto,
+    get_repo_sync_status, list_repos, repos_router, request_repo_sync, ListReposQuery,
+    RepoListResponse, RepoSummaryDto, RepoSyncQueuedDto, RepoSyncStatusDto,
 };
 pub use openapi::DevPulseApi;
 pub use pins::{
@@ -90,8 +92,9 @@ pub use pins::{
     PinKindDto, ReorderRequest, PIN_CAP,
 };
 pub use reports::{
-    freshness_report, home_org_split_report, org_report, reports_router, team_report,
-    user_report, CountRow, DataAsOfDto, HomeOrgSplitRow, ReportQuery, ReportResponse,
+    freshness_report, home_org_split_report, issues_report, org_report, reports_router,
+    team_report, user_report, CountRow, DataAsOfDto, HomeOrgSplitRow, IssuesReportQuery,
+    IssuesReportResponse, IssuesReportRow, ReportQuery, ReportResponse,
 };
 pub use state::AppState;
 pub use tags::{

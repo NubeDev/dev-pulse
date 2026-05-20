@@ -14,6 +14,7 @@
 use std::sync::Arc;
 
 use dp_domain::store::Store;
+use dp_fetcher::reconciler::Scheduler;
 
 use crate::app_permissions::GitHubAppConfig;
 use crate::issues_write::{IssueWriteBackend, UnconfiguredIssueWriter};
@@ -42,6 +43,11 @@ pub struct AppState {
     /// silently bypassing GitHub. Wire a production backend via
     /// [`AppState::with_issue_writer`] from the bin layer.
     pub issue_writer: Arc<dyn IssueWriteBackend>,
+    /// Reconciler scheduler — used by `POST /repos/{id}/sync` to
+    /// hand-trigger a per-repo reconciler tick. `None` in test
+    /// builds and the §5.9 handler degrades to "queued: false" /
+    /// 503 in that case.
+    pub scheduler: Option<Arc<Scheduler>>,
 }
 
 impl AppState {
@@ -53,7 +59,16 @@ impl AppState {
             store,
             github_app: Arc::new(GitHubAppConfig::default()),
             issue_writer: Arc::new(UnconfiguredIssueWriter),
+            scheduler: None,
         }
+    }
+
+    /// Wire a reconciler scheduler so `POST /repos/{id}/sync` can
+    /// hand-trigger a tick. Bin layer calls this; tests can leave
+    /// it unset and the handler returns 503.
+    pub fn with_scheduler(mut self, scheduler: Arc<Scheduler>) -> Self {
+        self.scheduler = Some(scheduler);
+        self
     }
 
     /// Override the issue-write backend. Bin layer wires this with

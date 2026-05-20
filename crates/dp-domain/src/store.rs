@@ -412,6 +412,65 @@ pub trait Store: Send + Sync {
         ))
     }
 
+    // ---- issue timeline (triage slice 2 — §5.6) -------------------
+
+    /// Page of `dp_activity_events` rows scoped to one issue, used
+    /// by `GET /issues/{id}/timeline`. Rows are produced newest
+    /// first so the peek panel can render without re-sorting.
+    ///
+    /// Implementations match on the §6 expression-index predicate:
+    /// `repo_id = $repo_id AND kind IN ('issue_opened',
+    /// 'issue_closed', 'issue_comment') AND payload ? 'number' AND
+    /// payload->>'number' ~ '^[0-9]+$' AND
+    /// (payload->>'number')::int = $number`. The guard makes the
+    /// cast safe under malformed history.
+    ///
+    /// Default impl returns empty so non-Postgres fakes (used in
+    /// other crates' tests) don't fail; only `dp-store-pg`
+    /// provides a real implementation.
+    async fn list_events_for_issue(
+        &self,
+        _repo_id: Uuid,
+        _number: i64,
+        _limit: i64,
+        _offset: i64,
+    ) -> Result<Vec<IssueTimelineRow>, StoreError> {
+        Ok(Vec::new())
+    }
+
+    /// Total event count matching [`list_events_for_issue`]. Same
+    /// scope; used for the `total` envelope field.
+    async fn count_events_for_issue(
+        &self,
+        _repo_id: Uuid,
+        _number: i64,
+    ) -> Result<i64, StoreError> {
+        Ok(0)
+    }
+
+    // ---- repo sync status (triage slice 2 — §5.9) -----------------
+
+    /// Read sync freshness for one repo, synthesised from the
+    /// per-resource [`FetchCursor`] rows. Returns `None` if no
+    /// cursor exists yet (the repo has never been synced).
+    async fn get_repo_sync_status(
+        &self,
+        _repo_id: Uuid,
+    ) -> Result<Option<RepoSyncStatus>, StoreError> {
+        Ok(None)
+    }
+
+    // ---- issue metrics report (triage slice 2 — §5.10) ------------
+
+    /// Compute one issue-report metric over the §5.10 SQL shapes.
+    /// Implementations dispatch on the metric kind.
+    async fn issue_metrics(
+        &self,
+        _filter: &IssueMetricsFilter,
+    ) -> Result<Vec<IssueMetricRow>, StoreError> {
+        Ok(Vec::new())
+    }
+
     // ---- events + actors -----------------------------------------
 
     /// Insert (or upsert by `external_id`) one event row.
@@ -983,6 +1042,101 @@ pub struct PendingRemoteIssue {
     pub pending_remote_at: DateTime<Utc>,
 }
 
+/// One row in the timeline returned by
+/// [`Store::list_events_for_issue`]. Mirrors the shape `GET
+/// /issues/{id}/timeline` emits — see `linear-projects-idea.md`
+/// §5.6.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IssueTimelineRow {
+    /// `dp_activity_events.id`.
+    pub id: Uuid,
+    /// Event kind, parsed back into the typed enum.
+    pub kind: EventKind,
+    /// Source timestamp (`ts`), UTC.
+    pub ts: DateTime<Utc>,
+    /// One-line summary derived from `payload` — `"opened"`,
+    /// `"closed"`, `"commented: <body excerpt>"`, …
+    pub payload_summary: String,
+}
+
+/// Repo sync freshness — synthesised from `dp_fetch_cursors` plus
+/// scheduler state. See `linear-projects-idea.md` §3.9 / §5.9.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoSyncStatus {
+    /// Newest `dp_fetch_cursors.updated_at` seen for this repo.
+    pub last_synced_at: Option<DateTime<Utc>>,
+    /// Same source as `last_synced_at` until the schema grows a
+    /// dedicated `attempted_at` column (no error column exists
+    /// today; treat success and attempt as the same instant).
+    pub last_attempt_at: Option<DateTime<Utc>>,
+    /// Last sync error message, or `None` when the latest sync
+    /// succeeded. Currently always `None` — the cursor row carries
+    /// no error column; an explicit error projection would arrive
+    /// in a follow-up migration.
+    pub last_error: Option<String>,
+}
+
+/// Which §5.10 report metric to compute.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IssueMetric {
+    /// Closed issues per bucket.
+    Throughput,
+    /// Median open → close duration per bucket (seconds).
+    LeadTime,
+    /// Currently-open assigned count.
+    Wip,
+    /// Open + idle (`updated_at < now() - interval '30 days'`).
+    Stale,
+    /// Open + no assignee + no label.
+    Untriaged,
+}
+
+/// Group-by axis for §5.10 metrics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IssueMetricGroupBy {
+    /// Group by `repo_id`.
+    Repo,
+    /// Group by `org_id`.
+    Org,
+    /// Group by per-row `assignee` (`jsonb_array_elements_text`).
+    Assignee,
+    /// Group by ISO week (`date_trunc('week', ...)`).
+    Week,
+    /// Group by ISO day (`date_trunc('day', ...)`).
+    Day,
+}
+
+/// Filter passed to [`Store::issue_metrics`].
+#[derive(Debug, Clone)]
+pub struct IssueMetricsFilter {
+    /// Which metric to compute.
+    pub metric: IssueMetric,
+    /// Group-by axis.
+    pub group_by: IssueMetricGroupBy,
+    /// Inclusive lower bound on the event timestamp (`since`).
+    pub since: Option<DateTime<Utc>>,
+    /// Exclusive upper bound on the event timestamp (`until`).
+    pub until: Option<DateTime<Utc>>,
+    /// Restrict to these orgs (caller's `org_ids ∩ wire scope`).
+    pub org_ids: Vec<Uuid>,
+    /// Restrict to these repos.
+    pub repo_ids: Vec<Uuid>,
+}
+
+/// One row in the §5.10 reports response.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IssueMetricRow {
+    /// Bucket label — repo slug, org login, login, or RFC3339 date.
+    pub bucket: String,
+    /// Metric value. Unit depends on the metric: count for
+    /// throughput / wip / stale / untriaged, seconds (median) for
+    /// lead_time.
+    pub value: f64,
+    /// Row count contributing to `value` (used by the lead-time
+    /// median so the frontend can show "n=12").
+    pub count: i64,
+}
+
 /// Filter for [`Store::list_repos`] / [`Store::count_repos`].
 ///
 /// All fields are conjunctive. `limit` is capped at
@@ -1066,6 +1220,12 @@ pub struct IssueListFilter {
     /// with **no** assignees and **no** labels. Combines with the
     /// rest of the filter (so "Untriaged in org X" is one call).
     pub untriaged_only: bool,
+    /// Optional keyset cursor used by `/me/queue` pagination.
+    /// When `Some((ts, id))`, the store emits a strictly-less-than
+    /// page on `(updated_at, id)` so concurrent inbox mutations do
+    /// not produce drift across pages. Empty for non-keyset
+    /// callers.
+    pub keyset_after: Option<(DateTime<Utc>, Uuid)>,
 }
 
 /// Hard upper bound on `limit` across the workflow read surface.

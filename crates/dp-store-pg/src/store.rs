@@ -36,7 +36,12 @@ use dp_domain::pin::{Pin, PinKind};
 use dp_domain::repo::Repo;
 use dp_domain::issue::{Issue, IssueState, RepoSummary};
 use dp_domain::issue_mutation::{IssueMutation, IssueMutationOp, IssueMutationResult};
-use dp_domain::store::{EventActorRow, IssueListFilter, PendingRemoteIssue, RepoListFilter, Store, StoreError};
+use dp_domain::event::EventKind;
+use dp_domain::store::{
+    EventActorRow, IssueListFilter, IssueMetric, IssueMetricGroupBy, IssueMetricRow,
+    IssueMetricsFilter, IssueTimelineRow, PendingRemoteIssue, RepoListFilter, RepoSyncStatus,
+    Store, StoreError,
+};
 use dp_domain::team::Team;
 use dp_domain::user::User;
 use dp_domain::webhook::WebhookDelivery;
@@ -178,6 +183,36 @@ fn labels_or_assignees_json(values: &[String]) -> Option<JsonValue> {
             .map(|s| JsonValue::String(s.clone()))
             .collect(),
     ))
+}
+
+/// One-line `payload_summary` for issue-timeline rows. The text
+/// is intentionally compact — the frontend prepends an icon /
+/// actor list, so we just describe the change. Falls back to the
+/// kind label if the payload doesn't carry an obvious summary
+/// field.
+fn summarise_timeline_payload(kind: EventKind, payload: &JsonValue) -> String {
+    match kind {
+        EventKind::IssueOpened => "opened the issue".to_string(),
+        EventKind::IssueClosed => match payload.get("state_reason").and_then(|v| v.as_str()) {
+            Some("not_planned") => "closed as not planned".to_string(),
+            Some("completed") => "closed as completed".to_string(),
+            _ => "closed the issue".to_string(),
+        },
+        EventKind::IssueComment => {
+            let body = payload
+                .get("body")
+                .and_then(|v| v.as_str())
+                .or_else(|| payload.get("body_excerpt").and_then(|v| v.as_str()))
+                .unwrap_or("");
+            let trimmed: String = body.chars().take(120).collect();
+            if trimmed.is_empty() {
+                "commented".to_string()
+            } else {
+                format!("commented: {trimmed}")
+            }
+        }
+        _ => format!("{:?}", kind),
+    }
 }
 
 fn row_to_issue(r: &sqlx::postgres::PgRow) -> Result<Issue, StoreError> {
@@ -876,7 +911,9 @@ impl Store for PgStore {
                AND ($13::text  IS NULL OR i.state_reason = $13)
                AND ($14::timestamptz IS NULL OR i.updated_at >= $14)
                AND (NOT $15::bool OR (i.assignees = '[]'::jsonb AND i.labels = '[]'::jsonb))
-             ORDER BY i.updated_at DESC
+               AND ($17::timestamptz IS NULL
+                    OR (i.updated_at, i.id) < ($17::timestamptz, $18::uuid))
+             ORDER BY i.updated_at DESC, i.id DESC
              LIMIT $6 OFFSET $7",
         )
         .bind(filter.repo_id)
@@ -895,6 +932,8 @@ impl Store for PgStore {
         .bind(filter.updated_since)
         .bind(filter.untriaged_only)
         .bind(user_id)
+        .bind(filter.keyset_after.map(|(ts, _)| ts))
+        .bind(filter.keyset_after.map(|(_, id)| id))
         .fetch_all(self.pool.sqlx())
         .await
         .map_err(map_sqlx)?;
@@ -1031,6 +1070,216 @@ impl Store for PgStore {
         .await
         .map_err(map_sqlx)?;
         Ok(())
+    }
+
+    // ---- issue timeline (triage slice 2 — §5.6) ------------------
+
+    async fn list_events_for_issue(
+        &self,
+        repo_id: Uuid,
+        number: i64,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<IssueTimelineRow>, StoreError> {
+        // The §6 guarded expression index on dp_activity_events
+        // ensures the cast cannot raise on malformed rows — the
+        // `payload ? 'number' AND payload->>'number' ~ '^[0-9]+$'`
+        // predicate is repeated in the WHERE clause verbatim so
+        // the planner picks the partial expression index.
+        let rows = sqlx::query(
+            "SELECT id, kind, ts, payload
+             FROM dp_activity_events
+             WHERE repo_id = $1
+               AND kind = ANY(ARRAY['issue_opened','issue_closed','issue_comment']::text[])
+               AND payload ? 'number'
+               AND payload->>'number' ~ '^[0-9]+$'
+               AND (payload->>'number')::int = $2
+             ORDER BY ts DESC, id DESC
+             LIMIT $3 OFFSET $4",
+        )
+        .bind(repo_id)
+        .bind(number)
+        .bind(limit.max(1))
+        .bind(offset.max(0))
+        .fetch_all(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for r in rows.iter() {
+            let id: Uuid = r.try_get("id").map_err(map_sqlx)?;
+            let kind_text: String = r.try_get("kind").map_err(map_sqlx)?;
+            let ts: DateTime<Utc> = r.try_get("ts").map_err(map_sqlx)?;
+            let payload: JsonValue = r.try_get("payload").map_err(map_sqlx)?;
+            let kind: EventKind = serde_json::from_value(JsonValue::String(kind_text.clone()))
+                .map_err(|e| StoreError::Invalid(format!("unknown event kind {kind_text}: {e}")))?;
+            let payload_summary = summarise_timeline_payload(kind, &payload);
+            out.push(IssueTimelineRow {
+                id,
+                kind,
+                ts,
+                payload_summary,
+            });
+        }
+        Ok(out)
+    }
+
+    async fn count_events_for_issue(
+        &self,
+        repo_id: Uuid,
+        number: i64,
+    ) -> Result<i64, StoreError> {
+        let (count,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*)::bigint
+             FROM dp_activity_events
+             WHERE repo_id = $1
+               AND kind = ANY(ARRAY['issue_opened','issue_closed','issue_comment']::text[])
+               AND payload ? 'number'
+               AND payload->>'number' ~ '^[0-9]+$'
+               AND (payload->>'number')::int = $2",
+        )
+        .bind(repo_id)
+        .bind(number)
+        .fetch_one(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        Ok(count)
+    }
+
+    // ---- repo sync status (triage slice 2 — §5.9) -----------------
+
+    async fn get_repo_sync_status(
+        &self,
+        repo_id: Uuid,
+    ) -> Result<Option<RepoSyncStatus>, StoreError> {
+        // Synthesise per-repo freshness from dp_fetch_cursors. The
+        // table carries one row per (org, repo, resource_kind);
+        // newest `updated_at` is the most recent successful pull.
+        let row: Option<(Option<DateTime<Utc>>,)> = sqlx::query_as(
+            "SELECT MAX(updated_at)
+             FROM dp_fetch_cursors
+             WHERE repo_id = $1",
+        )
+        .bind(repo_id)
+        .fetch_optional(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        match row {
+            Some((Some(ts),)) => Ok(Some(RepoSyncStatus {
+                last_synced_at: Some(ts),
+                last_attempt_at: Some(ts),
+                last_error: None,
+            })),
+            _ => Ok(Some(RepoSyncStatus {
+                last_synced_at: None,
+                last_attempt_at: None,
+                last_error: None,
+            })),
+        }
+    }
+
+    // ---- issue metrics (triage slice 2 — §5.10) -------------------
+
+    async fn issue_metrics(
+        &self,
+        filter: &IssueMetricsFilter,
+    ) -> Result<Vec<IssueMetricRow>, StoreError> {
+        // Common scope: caller-supplied org / repo id sets are
+        // applied as `= ANY(...)` so an empty slice = "no
+        // restriction". The §5.10 SQL shapes are spelled out
+        // inline so the planner sees a stable shape per metric.
+        let bucket_sql = match (filter.metric, filter.group_by) {
+            // `wip` group-by is fixed to assignee (§5.10).
+            (IssueMetric::Wip, _) => "assignee_login",
+            (_, IssueMetricGroupBy::Repo) => "i.repo_id::text",
+            (_, IssueMetricGroupBy::Org) => "i.org_id::text",
+            (_, IssueMetricGroupBy::Assignee) => "assignee_login",
+            (_, IssueMetricGroupBy::Week) => {
+                "to_char(date_trunc('week', coalesce(i.closed_at, i.updated_at)), 'YYYY-MM-DD')"
+            }
+            (_, IssueMetricGroupBy::Day) => {
+                "to_char(date_trunc('day', coalesce(i.closed_at, i.updated_at)), 'YYYY-MM-DD')"
+            }
+        };
+
+        // The §5.10 corrected SQL — see header comments in
+        // linear-projects-idea.md §5.10:
+        //
+        //   * `wip`         uses `CROSS JOIN LATERAL jsonb_array_elements_text(assignees)`
+        //   * `untriaged`   uses `jsonb_array_length(...) = 0`
+        //   * `lead_time`   uses `EXTRACT(EPOCH FROM (closed_at - created_at))`
+        let (select_clause, from_extra, where_extra) = match filter.metric {
+            IssueMetric::Throughput => (
+                "COUNT(*)::float8 AS value, COUNT(*)::bigint AS cnt",
+                "",
+                "i.state = 'closed' AND ($3::timestamptz IS NULL OR i.closed_at >= $3)
+                 AND ($4::timestamptz IS NULL OR i.closed_at < $4)",
+            ),
+            IssueMetric::LeadTime => (
+                "COALESCE(percentile_cont(0.5) WITHIN GROUP (
+                     ORDER BY EXTRACT(EPOCH FROM (i.closed_at - i.created_at))
+                 ), 0)::float8 AS value,
+                 COUNT(*)::bigint AS cnt",
+                "",
+                "i.state = 'closed' AND i.closed_at IS NOT NULL
+                 AND ($3::timestamptz IS NULL OR i.closed_at >= $3)
+                 AND ($4::timestamptz IS NULL OR i.closed_at < $4)",
+            ),
+            IssueMetric::Wip => (
+                "COUNT(*)::float8 AS value, COUNT(*)::bigint AS cnt",
+                "CROSS JOIN LATERAL jsonb_array_elements_text(i.assignees) AS assignee_login",
+                "i.state = 'open'",
+            ),
+            IssueMetric::Stale => (
+                "COUNT(*)::float8 AS value, COUNT(*)::bigint AS cnt",
+                "",
+                "i.state = 'open' AND i.updated_at < now() - interval '30 days'",
+            ),
+            IssueMetric::Untriaged => (
+                "COUNT(*)::float8 AS value, COUNT(*)::bigint AS cnt",
+                "",
+                "i.state = 'open'
+                 AND jsonb_array_length(i.assignees) = 0
+                 AND jsonb_array_length(i.labels)    = 0",
+            ),
+        };
+
+        let sql = format!(
+            "SELECT {bucket} AS bucket, {select}
+             FROM dp_issues i
+             {from_extra}
+             WHERE (cardinality($1::uuid[]) = 0 OR i.org_id  = ANY($1::uuid[]))
+               AND (cardinality($2::uuid[]) = 0 OR i.repo_id = ANY($2::uuid[]))
+               AND {where_extra}
+             GROUP BY bucket
+             ORDER BY bucket",
+            bucket = bucket_sql,
+            select = select_clause,
+            from_extra = from_extra,
+            where_extra = where_extra,
+        );
+
+        let rows = sqlx::query(&sql)
+            .bind(&filter.org_ids)
+            .bind(&filter.repo_ids)
+            .bind(filter.since)
+            .bind(filter.until)
+            .fetch_all(self.pool.sqlx())
+            .await
+            .map_err(map_sqlx)?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for r in rows.iter() {
+            let bucket: String = r.try_get("bucket").map_err(map_sqlx)?;
+            let value: f64 = r.try_get("value").map_err(map_sqlx)?;
+            let count: i64 = r.try_get("cnt").map_err(map_sqlx)?;
+            out.push(IssueMetricRow {
+                bucket,
+                value,
+                count,
+            });
+        }
+        Ok(out)
     }
 
     // ---- events + actors ------------------------------------------

@@ -110,6 +110,23 @@ async fn webhook_github_stub() {}
         crate::issues_write::create_issue,
         crate::issues_write::patch_issue,
         crate::issues_write::create_comment,
+        // Issue read surface — present since slice 1, registered
+        // here in slice 2 so the OpenAPI document covers every
+        // mounted handler.
+        crate::issues_read::list_issues,
+        crate::issues_read::me_queue,
+        crate::issues_read::get_issue_by_id,
+        crate::issues_read::get_issue_by_number,
+        crate::issues_read::get_issue_timeline,
+        // Repo read surface + slice-2 sync endpoints.
+        crate::repos::list_repos,
+        crate::repos::get_repo_sync_status,
+        crate::repos::request_repo_sync,
+        // Reports — slice 2 issue-metric surface.
+        crate::reports::issues_report,
+        // Inbox endpoints (slice 1) — were missing from the spec.
+        crate::inbox::mark_seen,
+        crate::inbox::set_inbox_state,
         // Webhooks (Phase 2 — docs-only stub, real handler in dp-fetcher).
         webhook_github_stub,
     ),
@@ -161,6 +178,22 @@ async fn webhook_github_stub() {}
         crate::issues_write::IssuePatch,
         crate::issues_read::IssueDto,
         crate::issues_read::IssueStateDto,
+        crate::issues_read::IssueListResponse,
+        crate::issues_read::TimelineEntryDto,
+        crate::issues_read::TimelineResponse,
+        // Repo wire DTOs.
+        crate::repos::RepoSummaryDto,
+        crate::repos::RepoListResponse,
+        crate::repos::RepoSyncStatusDto,
+        crate::repos::RepoSyncQueuedDto,
+        // Issue-metrics reports (slice 2).
+        crate::reports::IssuesReportResponse,
+        crate::reports::IssuesReportRow,
+        // Inbox DTOs (slice 1, registered now).
+        crate::inbox::UserIssueStateDto,
+        crate::inbox::InboxStatusDto,
+        crate::inbox::MarkSeenRequest,
+        crate::inbox::SetInboxStateRequest,
     )),
     tags(
         (name = "reports",   description = "Per-user / team / org activity reports + freshness probe."),

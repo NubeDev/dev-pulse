@@ -38,7 +38,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Extension, Path, Query, State},
     response::Json,
     routing::get,
     Router,
@@ -767,6 +767,142 @@ pub async fn freshness_report(
 // Router
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// /reports/issues — slice 2, §5.10
+// ---------------------------------------------------------------------------
+
+/// Query parameters for `GET /reports/issues`. Mirrors §5.10.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub struct IssuesReportQuery {
+    /// `throughput | lead_time | wip | stale | untriaged`.
+    #[serde(default)]
+    pub metric: Option<String>,
+    /// `repo | org | assignee | week | day`.
+    #[serde(default)]
+    pub group_by: Option<String>,
+    /// Inclusive lower bound (RFC3339).
+    #[serde(default)]
+    pub since: Option<chrono::DateTime<chrono::Utc>>,
+    /// Exclusive upper bound (RFC3339).
+    #[serde(default)]
+    pub until: Option<chrono::DateTime<chrono::Utc>>,
+    /// Comma-separated org ids.
+    #[serde(default)]
+    pub org_id: Option<String>,
+    /// Comma-separated repo ids.
+    #[serde(default)]
+    pub repo_id: Option<String>,
+}
+
+fn csv_uuid_field(s: &Option<String>) -> Vec<uuid::Uuid> {
+    s.as_deref()
+        .map(|v| {
+            v.split(',')
+                .map(str::trim)
+                .filter(|p| !p.is_empty())
+                .filter_map(|p| uuid::Uuid::parse_str(p).ok())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Row in the issues-report envelope.
+#[derive(Debug, Clone, serde::Serialize, utoipa::ToSchema)]
+pub struct IssuesReportRow {
+    /// Bucket label (repo id, org id, assignee login, or ISO date).
+    pub bucket: String,
+    /// Metric value — count for throughput/wip/stale/untriaged,
+    /// median seconds for lead_time.
+    pub value: f64,
+    /// Row count contributing to the value (useful for medians).
+    pub count: i64,
+}
+
+/// Envelope for `GET /reports/issues`.
+#[derive(Debug, Clone, serde::Serialize, utoipa::ToSchema)]
+pub struct IssuesReportResponse {
+    /// Bucketed rows, sorted by bucket asc.
+    pub rows: Vec<IssuesReportRow>,
+    /// Total number of buckets.
+    pub total: i64,
+}
+
+/// `GET /reports/issues` — §5.10 aggregate metrics over
+/// `dp_issues`. Authorisation: `("issues", "read")`. The filter
+/// scope is intersected with the caller's `org_ids` at the
+/// handler boundary.
+#[utoipa::path(
+    get,
+    path = "/reports/issues",
+    params(
+        ("metric"   = Option<String>, Query, description = "throughput | lead_time | wip | stale | untriaged"),
+        ("group_by" = Option<String>, Query, description = "repo | org | assignee | week | day"),
+        ("since"    = Option<String>, Query, description = "RFC3339 inclusive lower bound"),
+        ("until"    = Option<String>, Query, description = "RFC3339 exclusive upper bound"),
+        ("org_id"   = Option<String>, Query, description = "Comma-separated org ids"),
+        ("repo_id"  = Option<String>, Query, description = "Comma-separated repo ids"),
+    ),
+    responses(
+        (status = 200, description = "Bucketed issue metrics", body = IssuesReportResponse),
+        (status = 400, description = "Validation failed"),
+    ),
+    tag = "reports",
+)]
+pub async fn issues_report(
+    State(state): State<AppState>,
+    Extension(_principal): Extension<crate::audit::Principal>,
+    Query(q): Query<IssuesReportQuery>,
+) -> Result<Json<IssuesReportResponse>, ApiError> {
+    use dp_domain::store::{IssueMetric, IssueMetricGroupBy, IssueMetricsFilter};
+    let metric = match q.metric.as_deref().unwrap_or("throughput") {
+        "throughput" => IssueMetric::Throughput,
+        "lead_time" => IssueMetric::LeadTime,
+        "wip" => IssueMetric::Wip,
+        "stale" => IssueMetric::Stale,
+        "untriaged" => IssueMetric::Untriaged,
+        other => {
+            return Err(ApiError::BadRequest {
+                code: "invalid_metric",
+                message: format!("unknown metric: {other}"),
+            })
+        }
+    };
+    let group_by = match q.group_by.as_deref().unwrap_or("repo") {
+        "repo" => IssueMetricGroupBy::Repo,
+        "org" => IssueMetricGroupBy::Org,
+        "assignee" => IssueMetricGroupBy::Assignee,
+        "week" => IssueMetricGroupBy::Week,
+        "day" => IssueMetricGroupBy::Day,
+        other => {
+            return Err(ApiError::BadRequest {
+                code: "invalid_group_by",
+                message: format!("unknown group_by: {other}"),
+            })
+        }
+    };
+    let filter = IssueMetricsFilter {
+        metric,
+        group_by,
+        since: q.since,
+        until: q.until,
+        org_ids: csv_uuid_field(&q.org_id),
+        repo_ids: csv_uuid_field(&q.repo_id),
+    };
+    let rows = state.store.issue_metrics(&filter).await?;
+    let total = rows.len() as i64;
+    Ok(Json(IssuesReportResponse {
+        rows: rows
+            .into_iter()
+            .map(|r| IssuesReportRow {
+                bucket: r.bucket,
+                value: r.value,
+                count: r.count,
+            })
+            .collect(),
+        total,
+    }))
+}
+
 /// Build the report-router fragment. Mount with `Router::merge` from
 /// the composition root (`dp-server::build()`); auth + audit
 /// wrappers are added by the composition layer per Phase 4 stage 6.
@@ -814,6 +950,11 @@ pub fn reports_router(state: Arc<AppState>) -> Router {
         .merge(with_permission(
             Router::new().route("/reports/freshness", get(freshness_report)),
             "reports",
+            "read",
+        ))
+        .merge(with_permission(
+            Router::new().route("/reports/issues", get(issues_report)),
+            "issues",
             "read",
         ))
         .with_state(inner)
