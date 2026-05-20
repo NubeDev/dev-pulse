@@ -78,6 +78,39 @@ pub const TAG_LINK: &str = "tag.link";
 /// `tag.unlink` — one row per detached link in
 /// `DELETE /tags/{id}/links`. Same tuple format as [`TAG_LINK`].
 pub const TAG_UNLINK: &str = "tag.unlink";
+/// `issue.create` — `POST /repos/{owner}/{repo}/issues` mirrored
+/// to GitHub via the §8.2 write path (SCOPE-PROJECTS §8.5).
+pub const ISSUE_CREATE: &str = "issue.create";
+/// `issue.update` — `PATCH /repos/{owner}/{repo}/issues/{n}`
+/// partial update (title / body / labels / assignees / milestone).
+pub const ISSUE_UPDATE: &str = "issue.update";
+/// `issue.close` — explicit close transition via §8.2 write path.
+pub const ISSUE_CLOSE: &str = "issue.close";
+/// `issue.reopen` — explicit reopen transition via §8.2 write path.
+pub const ISSUE_REOPEN: &str = "issue.reopen";
+/// `issue.comment` — `POST /repos/{owner}/{repo}/issues/{n}/comments`.
+pub const ISSUE_COMMENT: &str = "issue.comment";
+/// `issue.pending_remote_timeout` — emitted by the §8.5 sweeper
+/// when a `dp_issues.pending_remote` flag has lingered past
+/// `issues.pending_remote_timeout_secs`. The audit target carries
+/// the issue id; the corresponding `dp_issue_mutations.result`
+/// row (if one was recorded) is updated to
+/// `pending_remote_timeout` in the same tick.
+pub const ISSUE_PENDING_REMOTE_TIMEOUT: &str = "issue.pending_remote_timeout";
+
+/// Pick the §8.5 audit verb for a given
+/// [`IssueMutationOp`][dp_domain::issue_mutation::IssueMutationOp].
+/// Single source of truth so handlers do not open-code the match.
+pub fn issue_audit_verb(op: dp_domain::issue_mutation::IssueMutationOp) -> &'static str {
+    use dp_domain::issue_mutation::IssueMutationOp as Op;
+    match op {
+        Op::Create => ISSUE_CREATE,
+        Op::Update => ISSUE_UPDATE,
+        Op::Close => ISSUE_CLOSE,
+        Op::Reopen => ISSUE_REOPEN,
+        Op::Comment => ISSUE_COMMENT,
+    }
+}
 
 // ---- principal stub ------------------------------------------------------
 

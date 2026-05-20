@@ -37,6 +37,7 @@ pub mod app_permissions;
 pub mod audit;
 pub mod directory;
 pub mod error;
+pub mod issues;
 pub mod openapi;
 pub mod pins;
 pub mod reports;
@@ -59,6 +60,10 @@ pub use directory::{
     OrgRequired, SetHomeOrgRequest, TeamDto, UserDto,
 };
 pub use error::ApiError;
+pub use issues::{
+    acquire_issue_mutation_slot, commit_issue_mutation, rollback_issue_mutation,
+    sweep_pending_remote_timeouts, AcquireOutcome, AcquiredSlot, SweepReport,
+};
 pub use openapi::DevPulseApi;
 pub use pins::{
     add_pin, list_pins, pins_router, remove_pin, reorder_pins, AddPinRequest, PinDto, PinKeyDto,

@@ -33,7 +33,8 @@ use dp_domain::membership::Membership;
 use dp_domain::org::Org;
 use dp_domain::pin::{Pin, PinKind};
 use dp_domain::repo::Repo;
-use dp_domain::store::{EventActorRow, Store, StoreError};
+use dp_domain::issue_mutation::{IssueMutation, IssueMutationOp, IssueMutationResult};
+use dp_domain::store::{EventActorRow, PendingRemoteIssue, Store, StoreError};
 use dp_domain::team::Team;
 use dp_domain::user::User;
 use dp_domain::webhook::WebhookDelivery;
@@ -1087,6 +1088,282 @@ impl Store for PgStore {
         tx.commit().await.map_err(map_sqlx)?;
         Ok(())
     }
+
+    // ---- issue mutations (SCOPE-PROJECTS §8.2 + §8.5 + §13.7) ----
+
+    async fn try_acquire_issue_pending_remote(
+        &self,
+        issue_id: Uuid,
+        expected_version: i64,
+        actor_user_id: Uuid,
+    ) -> Result<Option<i64>, StoreError> {
+        // One atomic statement does the §8.2 step 5 CAS: bump
+        // version, raise pending_remote, stamp _at + _actor. The
+        // WHERE clause rejects both `expected_version` mismatch
+        // and a second concurrent writer (`pending_remote = false`
+        // guard). RETURNING gives us the post-bump version so the
+        // caller can plumb it into the IssueMutation audit row.
+        let row: Option<(i64,)> = sqlx::query_as(
+            "UPDATE dp_issues
+                SET version = version + 1,
+                    pending_remote = TRUE,
+                    pending_remote_at = now(),
+                    pending_remote_actor = $3
+              WHERE id = $1
+                AND version = $2
+                AND pending_remote = FALSE
+              RETURNING version",
+        )
+        .bind(issue_id)
+        .bind(expected_version)
+        .bind(actor_user_id)
+        .fetch_optional(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        Ok(row.map(|(v,)| v))
+    }
+
+    async fn release_issue_pending_remote(
+        &self,
+        issue_id: Uuid,
+        bump_version_again: bool,
+    ) -> Result<i64, StoreError> {
+        // §8.2 step 7 (success) clears the flag only; §8.2 step 8
+        // (failure) additionally bumps `version` again so any
+        // concurrent reader sees the rollback as a change. The
+        // CHECK constraint dp_issues_pending_remote_consistent
+        // means we have to NULL all three pending_* columns
+        // together.
+        let sql = if bump_version_again {
+            "UPDATE dp_issues
+                SET pending_remote = FALSE,
+                    pending_remote_at = NULL,
+                    pending_remote_actor = NULL,
+                    version = version + 1
+              WHERE id = $1
+              RETURNING version"
+        } else {
+            "UPDATE dp_issues
+                SET pending_remote = FALSE,
+                    pending_remote_at = NULL,
+                    pending_remote_actor = NULL
+              WHERE id = $1
+              RETURNING version"
+        };
+        let row: Option<(i64,)> = sqlx::query_as(sql)
+            .bind(issue_id)
+            .fetch_optional(self.pool.sqlx())
+            .await
+            .map_err(map_sqlx)?;
+        match row {
+            Some((v,)) => Ok(v),
+            None => Err(not_found("issue", issue_id)),
+        }
+    }
+
+    async fn get_issue_version(&self, issue_id: Uuid) -> Result<i64, StoreError> {
+        let row: Option<(i64,)> =
+            sqlx::query_as("SELECT version FROM dp_issues WHERE id = $1")
+                .bind(issue_id)
+                .fetch_optional(self.pool.sqlx())
+                .await
+                .map_err(map_sqlx)?;
+        row.map(|(v,)| v).ok_or_else(|| not_found("issue", issue_id))
+    }
+
+    async fn list_issues_with_pending_remote_older_than(
+        &self,
+        cutoff: DateTime<Utc>,
+    ) -> Result<Vec<PendingRemoteIssue>, StoreError> {
+        // Partial index `dp_issues_pending_remote_idx` covers this
+        // exactly — empty / near-empty in steady state.
+        let rows = sqlx::query(
+            "SELECT id, repo_id, version, pending_remote_actor, pending_remote_at
+               FROM dp_issues
+              WHERE pending_remote = TRUE
+                AND pending_remote_at < $1
+              ORDER BY pending_remote_at ASC",
+        )
+        .bind(cutoff)
+        .fetch_all(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        let mut out = Vec::with_capacity(rows.len());
+        for r in &rows {
+            let issue_id: Uuid = r.try_get("id").map_err(map_sqlx)?;
+            let repo_id: Uuid = r.try_get("repo_id").map_err(map_sqlx)?;
+            let version: i64 = r.try_get("version").map_err(map_sqlx)?;
+            // `pending_remote_actor` is NOT NULL whenever
+            // `pending_remote = TRUE` per the CHECK constraint, so
+            // the unwrap-via-Option is safe.
+            let actor_user_id: Uuid =
+                r.try_get("pending_remote_actor").map_err(map_sqlx)?;
+            let pending_remote_at: DateTime<Utc> =
+                r.try_get("pending_remote_at").map_err(map_sqlx)?;
+            out.push(PendingRemoteIssue {
+                issue_id,
+                repo_id,
+                version,
+                actor_user_id,
+                pending_remote_at,
+            });
+        }
+        Ok(out)
+    }
+
+    async fn record_issue_mutation(
+        &self,
+        mutation: &IssueMutation,
+    ) -> Result<IssueMutation, StoreError> {
+        sqlx::query(
+            "INSERT INTO dp_issue_mutations (
+                 id, actor_user_id, issue_id, repo_id,
+                 op, version_before, version_after, diff, result,
+                 github_delivery_id, error,
+                 created_at, finished_at
+             ) VALUES (
+                 $1, $2, $3, $4,
+                 $5, $6, $7, $8, $9,
+                 $10, $11,
+                 $12, $13
+             )",
+        )
+        .bind(mutation.id)
+        .bind(mutation.actor_user_id)
+        .bind(mutation.issue_id)
+        .bind(mutation.repo_id)
+        .bind(issue_mutation_op_to_text(mutation.op))
+        .bind(mutation.version_before)
+        .bind(mutation.version_after)
+        .bind(&mutation.diff)
+        .bind(issue_mutation_result_to_text(mutation.result))
+        .bind(mutation.github_delivery_id.as_deref())
+        .bind(mutation.error.as_deref())
+        .bind(mutation.created_at)
+        .bind(mutation.finished_at)
+        .execute(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        Ok(mutation.clone())
+    }
+
+    async fn update_issue_mutation_result(
+        &self,
+        id: Uuid,
+        result: IssueMutationResult,
+        github_delivery_id: Option<&str>,
+        error: Option<&str>,
+    ) -> Result<(), StoreError> {
+        // Stamp `finished_at = now()` whenever the row leaves
+        // `pending` — the CHECK on the table requires this. We
+        // pass `now()` from Postgres, not the host's clock, so the
+        // sweeper's audit row timestamp matches the wall-clock
+        // observation.
+        let n = sqlx::query(
+            "UPDATE dp_issue_mutations
+                SET result = $2,
+                    github_delivery_id = COALESCE($3, github_delivery_id),
+                    error = COALESCE($4, error),
+                    finished_at = now()
+              WHERE id = $1
+                AND result = 'pending'",
+        )
+        .bind(id)
+        .bind(issue_mutation_result_to_text(result))
+        .bind(github_delivery_id)
+        .bind(error)
+        .execute(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        if n.rows_affected() == 0 {
+            // Either the id is bogus or the row already left
+            // `pending`. The sweeper / handler interleave is
+            // designed so this is never a race; surface it
+            // explicitly so a bug shows up loudly.
+            return Err(not_found("dp_issue_mutations(pending)", id));
+        }
+        Ok(())
+    }
+
+    async fn list_pending_issue_mutations_older_than(
+        &self,
+        cutoff: DateTime<Utc>,
+    ) -> Result<Vec<IssueMutation>, StoreError> {
+        let rows = sqlx::query(
+            "SELECT id, actor_user_id, issue_id, repo_id, op,
+                    version_before, version_after, diff, result,
+                    github_delivery_id, error, created_at, finished_at
+               FROM dp_issue_mutations
+              WHERE result = 'pending'
+                AND created_at < $1
+              ORDER BY created_at ASC",
+        )
+        .bind(cutoff)
+        .fetch_all(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        rows.iter().map(row_to_issue_mutation).collect()
+    }
+}
+
+fn issue_mutation_op_to_text(op: IssueMutationOp) -> &'static str {
+    match op {
+        IssueMutationOp::Create => "create",
+        IssueMutationOp::Update => "update",
+        IssueMutationOp::Close => "close",
+        IssueMutationOp::Reopen => "reopen",
+        IssueMutationOp::Comment => "comment",
+    }
+}
+
+fn issue_mutation_op_from_text(s: &str) -> Result<IssueMutationOp, StoreError> {
+    match s {
+        "create" => Ok(IssueMutationOp::Create),
+        "update" => Ok(IssueMutationOp::Update),
+        "close" => Ok(IssueMutationOp::Close),
+        "reopen" => Ok(IssueMutationOp::Reopen),
+        "comment" => Ok(IssueMutationOp::Comment),
+        other => Err(invalid(format!("unknown issue mutation op: {other}"))),
+    }
+}
+
+fn issue_mutation_result_to_text(r: IssueMutationResult) -> &'static str {
+    match r {
+        IssueMutationResult::Pending => "pending",
+        IssueMutationResult::Committed => "committed",
+        IssueMutationResult::Failed => "failed",
+        IssueMutationResult::PendingRemoteTimeout => "pending_remote_timeout",
+    }
+}
+
+fn issue_mutation_result_from_text(s: &str) -> Result<IssueMutationResult, StoreError> {
+    match s {
+        "pending" => Ok(IssueMutationResult::Pending),
+        "committed" => Ok(IssueMutationResult::Committed),
+        "failed" => Ok(IssueMutationResult::Failed),
+        "pending_remote_timeout" => Ok(IssueMutationResult::PendingRemoteTimeout),
+        other => Err(invalid(format!("unknown issue mutation result: {other}"))),
+    }
+}
+
+fn row_to_issue_mutation(r: &sqlx::postgres::PgRow) -> Result<IssueMutation, StoreError> {
+    let op_s: String = r.try_get("op").map_err(map_sqlx)?;
+    let result_s: String = r.try_get("result").map_err(map_sqlx)?;
+    Ok(IssueMutation {
+        id: r.try_get("id").map_err(map_sqlx)?,
+        actor_user_id: r.try_get("actor_user_id").map_err(map_sqlx)?,
+        issue_id: r.try_get("issue_id").map_err(map_sqlx)?,
+        repo_id: r.try_get("repo_id").map_err(map_sqlx)?,
+        op: issue_mutation_op_from_text(&op_s)?,
+        version_before: r.try_get("version_before").map_err(map_sqlx)?,
+        version_after: r.try_get("version_after").map_err(map_sqlx)?,
+        diff: r.try_get::<JsonValue, _>("diff").map_err(map_sqlx)?,
+        result: issue_mutation_result_from_text(&result_s)?,
+        github_delivery_id: r.try_get("github_delivery_id").map_err(map_sqlx)?,
+        error: r.try_get("error").map_err(map_sqlx)?,
+        created_at: r.try_get("created_at").map_err(map_sqlx)?,
+        finished_at: r.try_get("finished_at").map_err(map_sqlx)?,
+    })
 }
 
 #[cfg(test)]

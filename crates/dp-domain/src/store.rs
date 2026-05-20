@@ -571,16 +571,98 @@ pub trait Store: Send + Sync {
         Ok(None)
     }
 
-    // ---- issue mutations (SCOPE-PROJECTS §8.5) ------------------
+    // ---- issue mutations (SCOPE-PROJECTS §8.2 + §8.5 + §13.7) ----
     //
-    // Storage for these lands in `0007_issues_optimistic_cas.sql`
-    // (later stage of this same job). The trait signatures live
-    // here so the dp-rest write-path scaffold can compile against
-    // the Postgres backend incrementally.
+    // Storage landed in `0007_issues_optimistic_cas.sql` (stage 9 of
+    // this same job): four new columns on `dp_issues` (`version`,
+    // `pending_remote`, `pending_remote_at`, `pending_remote_actor`)
+    // plus the `dp_issue_mutations` audit table. The trait surface
+    // exposed here is the *primitive* set the §8.2 write path and
+    // the §8.5 sweeper compose against — no GitHub I/O, no
+    // octocrab; that wiring lives in the dp-rest handler.
+    //
+    // The CAS is split into two halves on purpose: writers
+    // `try_acquire_issue_pending_remote` (bumps version, sets the
+    // pending flag) *before* the GitHub round-trip, and
+    // `release_issue_pending_remote` (clears the flag, optionally
+    // bumps version again for the §8.2 step 8 rollback) *after*.
+    // No row-lock is held across the network call (§13.4).
+
+    /// §8.2 step 5: atomic CAS that bumps `dp_issues.version` and
+    /// raises the `pending_remote` flag in one statement.
+    ///
+    /// The SQL clause is `WHERE id = ? AND version = ? AND
+    /// pending_remote = false` — that is, the CAS rejects both
+    /// `expected_version` mismatch *and* the case where another
+    /// in-flight write already holds the slot.
+    ///
+    /// Returns:
+    ///
+    /// * `Ok(Some(new_version))` — one row updated, write may
+    ///   proceed; `new_version = expected_version + 1`.
+    /// * `Ok(None)` — zero rows updated; the dp-rest handler
+    ///   translates this into the `409 stale_local_version`
+    ///   response (§8.3).
+    async fn try_acquire_issue_pending_remote(
+        &self,
+        _issue_id: Uuid,
+        _expected_version: i64,
+        _actor_user_id: Uuid,
+    ) -> Result<Option<i64>, StoreError> {
+        Err(StoreError::Invalid(
+            "issue mutations not supported by this store".into(),
+        ))
+    }
+
+    /// §8.2 step 7 (success) or §8.2 step 8 (failure / rollback) —
+    /// clears `pending_remote`, `pending_remote_at`, and
+    /// `pending_remote_actor` in a single statement. When
+    /// `bump_version_again` is `true` (the §8.2 step 8 path) the
+    /// SQL also runs `version = version + 1` so any concurrent
+    /// reader sees the rollback as a change. Returns the row's
+    /// `version` after this update.
+    ///
+    /// Idempotent: a row that is no longer pending (e.g. a sweeper
+    /// already touched it) does not error — the method updates
+    /// zero rows in that case and returns the current version.
+    async fn release_issue_pending_remote(
+        &self,
+        _issue_id: Uuid,
+        _bump_version_again: bool,
+    ) -> Result<i64, StoreError> {
+        Err(StoreError::Invalid(
+            "issue mutations not supported by this store".into(),
+        ))
+    }
+
+    /// Read `dp_issues.version` only. Tests and the §8.3 conflict
+    /// response use this to surface the current version to the UI
+    /// without rehydrating the whole row.
+    async fn get_issue_version(
+        &self,
+        _issue_id: Uuid,
+    ) -> Result<i64, StoreError> {
+        Err(StoreError::Invalid(
+            "issue mutations not supported by this store".into(),
+        ))
+    }
+
+    /// §13.7 reconciler guard helper. Returns rows where
+    /// `pending_remote = true` and `pending_remote_at < cutoff`.
+    /// Drives the §8.5 timeout sweeper — every row returned needs
+    /// (a) `release_issue_pending_remote(_, true)` to bump version
+    /// and clear the flag and (b) a `pending_remote_timeout` audit
+    /// row.
+    async fn list_issues_with_pending_remote_older_than(
+        &self,
+        _cutoff: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<PendingRemoteIssue>, StoreError> {
+        Ok(Vec::new())
+    }
 
     /// Record a new [`IssueMutation`] row in `Pending` state. Called
-    /// from §8.2 step 5, after the local CAS on `dp_issues.version`
-    /// has succeeded. Returns the persisted row.
+    /// from §8.2 step 5, immediately after
+    /// `try_acquire_issue_pending_remote` succeeded.
     async fn record_issue_mutation(
         &self,
         _mutation: &IssueMutation,
@@ -591,8 +673,12 @@ pub trait Store: Send + Sync {
     }
 
     /// Transition an [`IssueMutation`] out of `Pending` (§8.2 step 7
-    /// or step 8). Sets `result`, optionally `github_delivery_id`
-    /// / `error`, and stamps `finished_at = now()`.
+    /// / step 8 / sweeper). Sets `result`, optionally
+    /// `github_delivery_id` / `error`, and stamps `finished_at =
+    /// now()`. Updating an already-finished row is a no-op (the
+    /// CHECK constraint on `dp_issue_mutations.result` would not
+    /// catch the race, but the sweeper / handler interleaving is
+    /// designed so only one writer ever calls this for a given id).
     async fn update_issue_mutation_result(
         &self,
         _id: Uuid,
@@ -605,15 +691,37 @@ pub trait Store: Send + Sync {
         ))
     }
 
-    /// Find mutations stuck in `Pending` past the
-    /// `issues.pending_remote_timeout_secs` window. Drives the §8.5
-    /// `pending_remote_timeout` sweeper.
+    /// Find audit rows stuck in `Pending` past the
+    /// `issues.pending_remote_timeout_secs` window. Mirror of
+    /// [`Store::list_issues_with_pending_remote_older_than`] for
+    /// the audit table — the sweeper joins the two by `issue_id`
+    /// to decide whether to emit a fresh `pending_remote_timeout`
+    /// row or update the existing one.
     async fn list_pending_issue_mutations_older_than(
         &self,
         _cutoff: chrono::DateTime<chrono::Utc>,
     ) -> Result<Vec<IssueMutation>, StoreError> {
         Ok(Vec::new())
     }
+}
+
+/// Compact projection of `dp_issues` rows the §8.5 sweeper needs:
+/// the issue id, the version after the abandoned CAS, the actor
+/// who started the write, and the `pending_remote_at` timestamp.
+/// Returned by [`Store::list_issues_with_pending_remote_older_than`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingRemoteIssue {
+    /// `dp_issues.id`.
+    pub issue_id: Uuid,
+    /// `dp_issues.repo_id`. Denormalised for the audit row.
+    pub repo_id: Uuid,
+    /// Current `dp_issues.version` (post-CAS, pre-rollback).
+    pub version: i64,
+    /// The dp-pulse user who initiated the abandoned write.
+    pub actor_user_id: Uuid,
+    /// When the abandoned CAS landed. The sweeper picks rows where
+    /// this is older than `now() - pending_remote_timeout_secs`.
+    pub pending_remote_at: DateTime<Utc>,
 }
 
 #[cfg(test)]
