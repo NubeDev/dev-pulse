@@ -12,18 +12,21 @@ publish = false
 path = "src/lib.rs"
 
 [dependencies]
-dp-domain  = { workspace = true }
-dp-reports = { workspace = true }
-dp-fetcher = { workspace = true }
-axum       = { workspace = true }
-serde      = { workspace = true }
-serde_json = { workspace = true }
-tokio      = { workspace = true }
-tracing    = { workspace = true }
-uuid       = { workspace = true }
+dp-domain   = { workspace = true }
+dp-reports  = { workspace = true }
+dp-fetcher  = { workspace = true }
+async-trait = { workspace = true }
+axum        = { workspace = true }
+chrono      = { workspace = true }
+chrono-tz   = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+thiserror   = { workspace = true }
+tokio       = { workspace = true }
+tracing     = { workspace = true }
+utoipa      = { workspace = true }
+uuid        = { workspace = true }
 
 [dev-dependencies]
 tower       = { version = "0.5", features = ["util"] }
 secrecy     = "0.10"
-async-trait = { workspace = true }
-chrono      = { workspace = true }
