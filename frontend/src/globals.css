@@ -38,6 +38,12 @@
     --color-chart-3: var(--chart-3);
     --color-chart-2: var(--chart-2);
     --color-chart-1: var(--chart-1);
+    --color-accent-reports: var(--accent-reports);
+    --color-accent-directory: var(--accent-directory);
+    --color-accent-admin: var(--accent-admin);
+    --color-accent-success: var(--accent-success);
+    --color-accent-warning: var(--accent-warning);
+    --color-accent-info: var(--accent-info);
     --color-ring: var(--ring);
     --color-input: var(--input);
     --color-border: var(--border);
@@ -100,6 +106,16 @@
     --sidebar-accent-foreground: oklch(0.218 0.008 223.9);
     --sidebar-border: oklch(0.925 0.005 214.3);
     --sidebar-ring: oklch(0.723 0.014 214.4);
+    /* dev-pulse section accents — additive, never override the
+     * codeless-ui base tokens above. Used for sidebar section icons,
+     * KPI deltas, and the activity area chart. Hues picked to be
+     * distinguishable in both themes while staying calm. */
+    --accent-reports: oklch(0.62 0.18 250);   /* indigo */
+    --accent-directory: oklch(0.66 0.16 165);  /* teal */
+    --accent-admin: oklch(0.62 0.2 25);        /* warm red */
+    --accent-success: oklch(0.62 0.16 150);    /* green */
+    --accent-warning: oklch(0.72 0.17 70);     /* amber */
+    --accent-info: oklch(0.62 0.18 250);       /* indigo (chart) */
 }
 
 .dark {
@@ -134,6 +150,14 @@
     --sidebar-accent-foreground: oklch(0.987 0.002 197.1);
     --sidebar-border: oklch(1 0 0 / 10%);
     --sidebar-ring: oklch(0.56 0.021 213.5);
+    /* dev-pulse section accents — dark variants, brighter chroma
+     * to stay legible against the dark sidebar/card backgrounds. */
+    --accent-reports: oklch(0.72 0.17 250);
+    --accent-directory: oklch(0.74 0.15 165);
+    --accent-admin: oklch(0.72 0.18 25);
+    --accent-success: oklch(0.72 0.16 150);
+    --accent-warning: oklch(0.8 0.17 70);
+    --accent-info: oklch(0.72 0.17 250);
 }
 
 @layer base {

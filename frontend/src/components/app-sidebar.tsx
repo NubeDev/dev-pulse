@@ -47,7 +47,7 @@ export function AppSidebar({
               className="data-[slot=sidebar-menu-button]:p-1.5!"
             >
               <a href={brand.url}>
-                <IconActivity className="size-5!" />
+                <IconActivity className="size-5!" style={{ color: "var(--accent-reports)" }} />
                 <span className="text-base font-semibold">{brand.title}</span>
               </a>
             </SidebarMenuButton>

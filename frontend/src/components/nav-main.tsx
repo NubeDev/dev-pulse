@@ -6,6 +6,7 @@
  * by `activeUrl` so the hash router stays the source of truth.
  */
 
+import type * as React from "react"
 import { type Icon } from "@tabler/icons-react"
 
 import {
@@ -22,12 +23,15 @@ import {
 export interface NavMainSubItem {
   title: string
   url: string
+  icon?: Icon
 }
 
 export interface NavMainItem {
   title: string
   url: string
   icon?: Icon
+  /** CSS color value for the section icon (e.g. `var(--accent-reports)`). */
+  accent?: string
   items?: NavMainSubItem[]
   /** Optional test id stamped on the SidebarMenuSub wrapper (used
    *  by the Playwright smoke suite to pin section sub-navs). */
@@ -59,8 +63,11 @@ export function NavMain({
                   <a
                     href={item.url}
                     aria-current={isSectionActive && !item.items ? "page" : undefined}
+                    style={item.accent ? ({ "--nav-accent": item.accent } as React.CSSProperties) : undefined}
                   >
-                    {item.icon && <item.icon />}
+                    {item.icon && (
+                      <item.icon className={item.accent ? "text-(--nav-accent)" : undefined} />
+                    )}
                     <span>{item.title}</span>
                   </a>
                 </SidebarMenuButton>
@@ -74,7 +81,13 @@ export function NavMain({
                             <a
                               href={sub.url}
                               aria-current={isSubActive ? "page" : undefined}
+                              style={item.accent ? ({ "--nav-accent": item.accent } as React.CSSProperties) : undefined}
                             >
+                              {sub.icon && (
+                                <sub.icon
+                                  className={item.accent ? "text-(--nav-accent) opacity-80" : "text-muted-foreground"}
+                                />
+                              )}
                               <span>{sub.title}</span>
                             </a>
                           </SidebarMenuSubButton>

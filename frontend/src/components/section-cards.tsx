@@ -54,7 +54,15 @@ export function SectionCards({ cards }: { cards: SectionCard[] }) {
               </CardTitle>
               {card.delta ? (
                 <CardAction>
-                  <Badge variant="outline">
+                  <Badge
+                    variant="outline"
+                    style={{
+                      color: isNegative(card.delta)
+                        ? "var(--accent-warning)"
+                        : "var(--accent-success)",
+                      borderColor: "color-mix(in oklch, currentColor 35%, transparent)",
+                    }}
+                  >
                     <Trend />
                     {card.delta}
                   </Badge>

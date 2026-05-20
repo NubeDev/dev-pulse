@@ -185,7 +185,7 @@ function buildChartSeries(rows: ReadonlyArray<ActivityRow>): Array<{ date: strin
 }
 
 const CHART_CONFIG: ChartConfig = {
-  events: { label: "Events", color: "var(--primary)" },
+  events: { label: "Events", color: "var(--accent-info)" },
 }
 
 const LENS_TABS: DataTableTab[] = LENSES.map((l) => ({
