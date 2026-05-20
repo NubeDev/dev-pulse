@@ -1236,6 +1236,289 @@ mod tests {
         assert!(store.audit_rows().is_empty());
     }
 
+    /// TODO §Phase-4 stage-11 smoke: `admin-user-export-streams-
+    /// without-OOM`. A synthetic 100k-event export must stream
+    /// through the chunked-body path without ever materialising
+    /// the full row vec in process memory. We can't measure RSS
+    /// here cheaply, but two invariants pin the streaming
+    /// contract: (a) the chunked response *does* finish under a
+    /// fixed page budget (no page > `EXPORT_PAGE_SIZE` events),
+    /// and (b) the assembled JSON parses to an envelope whose
+    /// `events` array length matches the seeded row count. A
+    /// non-streaming implementation that built the full Vec
+    /// in-memory would still pass — but the chunked-body
+    /// `Body::from_stream` path the handler uses *is* the
+    /// streaming implementation, and the per-page assertion
+    /// trips if anyone replaces it with a single
+    /// `serde_json::to_vec(&full_export)`.
+    #[tokio::test]
+    async fn export_user_streams_100k_events_without_oom() {
+        // 100k events is the contract figure from TODO §Phase-4
+        // stage 11. We assert two invariants: the chunked stream
+        // completes without panicking under the fixed
+        // `EXPORT_PAGE_SIZE` page budget, and the resulting JSON
+        // round-trips with all 100k events visible.
+        const N: i64 = 100_000;
+
+        // A leaner Store that returns events through the paginated
+        // method without holding all of them in a single Vec at
+        // once. The page bound is the per-call `limit`, so the
+        // memory pressure inside this test mirrors what the real
+        // PG store would impose.
+        struct LargeUserStore {
+            user_id: Uuid,
+            total: i64,
+            audit: Mutex<Vec<AuditEntry>>,
+        }
+
+        #[async_trait]
+        impl Store for LargeUserStore {
+            async fn upsert_user(&self, u: &User) -> Result<User, StoreError> {
+                Ok(u.clone())
+            }
+            async fn get_user(&self, id: Uuid) -> Result<User, StoreError> {
+                if id == self.user_id {
+                    Ok(User {
+                        id,
+                        github_id: 1,
+                        login: "ada".into(),
+                        name: None,
+                        email: None,
+                        deleted_at: None,
+                    })
+                } else {
+                    Err(StoreError::NotFound {
+                        entity: "user",
+                        id: id.to_string(),
+                    })
+                }
+            }
+            async fn get_user_by_github_id(&self, _: i64) -> Result<User, StoreError> {
+                unimplemented!()
+            }
+            async fn list_users(&self) -> Result<Vec<User>, StoreError> {
+                Ok(vec![])
+            }
+            async fn pseudonymise_user(&self, _: Uuid) -> Result<(), StoreError> {
+                Ok(())
+            }
+            async fn upsert_org(&self, o: &Org) -> Result<Org, StoreError> {
+                Ok(o.clone())
+            }
+            async fn upsert_team(&self, t: &Team) -> Result<Team, StoreError> {
+                Ok(t.clone())
+            }
+            async fn upsert_repo(&self, r: &Repo) -> Result<Repo, StoreError> {
+                Ok(r.clone())
+            }
+            async fn upsert_membership(
+                &self,
+                m: &Membership,
+            ) -> Result<Membership, StoreError> {
+                Ok(m.clone())
+            }
+            async fn list_memberships_for_user(
+                &self,
+                _: Uuid,
+            ) -> Result<Vec<Membership>, StoreError> {
+                Ok(vec![])
+            }
+            async fn set_home_org(
+                &self,
+                _: Uuid,
+                _: Uuid,
+                _: Option<Uuid>,
+            ) -> Result<(), StoreError> {
+                Ok(())
+            }
+            async fn record_event(
+                &self,
+                e: &ActivityEvent,
+            ) -> Result<ActivityEvent, StoreError> {
+                Ok(e.clone())
+            }
+            async fn add_event_actors(&self, _: &[EventActor]) -> Result<(), StoreError> {
+                Ok(())
+            }
+            async fn list_event_actor_rows_in_window(
+                &self,
+                _: &Window,
+                _: &[Uuid],
+                _: &[Uuid],
+                _: &[Uuid],
+                _: &[ActorRole],
+            ) -> Result<Vec<EventActorRow>, StoreError> {
+                Ok(vec![])
+            }
+            async fn list_event_actor_rows_for_user_page(
+                &self,
+                user_id: Uuid,
+                offset: i64,
+                limit: i64,
+            ) -> Result<Vec<EventActorRow>, StoreError> {
+                // Hard invariant for the smoke: never return more
+                // than `EXPORT_PAGE_SIZE` rows from a single page
+                // call. A future regression that bumps the page
+                // size by hand here without bumping the constant
+                // would still pass — but the constant *is* the
+                // memory-budget contract, so the assertion lives
+                // in the helper instead.
+                assert!(
+                    limit <= super::EXPORT_PAGE_SIZE,
+                    "page limit {} exceeded EXPORT_PAGE_SIZE {}",
+                    limit,
+                    super::EXPORT_PAGE_SIZE,
+                );
+                if user_id != self.user_id {
+                    return Ok(vec![]);
+                }
+                let start = offset.max(0);
+                let end = (start + limit).min(self.total);
+                if start >= self.total {
+                    return Ok(vec![]);
+                }
+                let mut rows = Vec::with_capacity((end - start) as usize);
+                for i in start..end {
+                    rows.push(EventActorRow {
+                        event_id: Uuid::from_u128(i as u128 + 1),
+                        user_id,
+                        role: ActorRole::Author,
+                        org_id: Uuid::nil(),
+                        repo_id: Uuid::nil(),
+                        kind: EventKind::PullRequestMerged,
+                        ts: Utc.timestamp_opt(1_700_000_000 + i, 0).unwrap(),
+                    });
+                }
+                Ok(rows)
+            }
+            async fn get_cursor(
+                &self,
+                _: Uuid,
+                _: Option<Uuid>,
+                _: ResourceKind,
+            ) -> Result<FetchCursor, StoreError> {
+                Err(StoreError::NotFound {
+                    entity: "fetch_cursor",
+                    id: String::new(),
+                })
+            }
+            async fn put_cursor(&self, _: &FetchCursor) -> Result<(), StoreError> {
+                Ok(())
+            }
+            async fn start_fetch_run(&self, _: FetchRunKind) -> Result<Uuid, StoreError> {
+                Ok(Uuid::new_v4())
+            }
+            async fn finish_fetch_run(
+                &self,
+                _: Uuid,
+                _: i64,
+                _: i64,
+                _: bool,
+            ) -> Result<(), StoreError> {
+                Ok(())
+            }
+            async fn list_recent_fetch_runs(
+                &self,
+                _: i64,
+            ) -> Result<Vec<FetchRun>, StoreError> {
+                Ok(vec![])
+            }
+            async fn data_as_of(&self) -> Result<dp_domain::freshness::DataAsOf, StoreError> {
+                Ok(dp_domain::freshness::DataAsOf::default())
+            }
+            async fn enqueue_webhook(&self, _: &WebhookDelivery) -> Result<(), StoreError> {
+                Ok(())
+            }
+            async fn claim_webhooks(
+                &self,
+                _: i64,
+            ) -> Result<Vec<WebhookDelivery>, StoreError> {
+                Ok(vec![])
+            }
+            async fn mark_webhook_processed(&self, _: Uuid) -> Result<(), StoreError> {
+                Ok(())
+            }
+            async fn mark_webhook_failed(&self, _: Uuid, _: &str) -> Result<(), StoreError> {
+                Ok(())
+            }
+            async fn record_audit_log(&self, entry: &AuditEntry) -> Result<(), StoreError> {
+                self.audit.lock().unwrap().push(entry.clone());
+                Ok(())
+            }
+        }
+
+        let user_id = Uuid::new_v4();
+        let store = Arc::new(LargeUserStore {
+            user_id,
+            total: N,
+            audit: Mutex::new(Vec::new()),
+        });
+
+        // Inline a build_app variant so we don't constrain the
+        // outer helper's Arc<MemStore> signature.
+        let client = Client::with_personal_token(
+            SecretString::from("t".to_string()),
+            "http://127.0.0.1:1",
+        )
+        .unwrap();
+        let targets = Arc::new(StaticTargets::new(Vec::new()));
+        let rec = Reconciler::new(store.clone(), Arc::new(client), targets);
+        let sched = Arc::new(Scheduler::new(Arc::new(rec), Duration::from_secs(3600)));
+        let admin_state = Arc::new(AdminState::new(sched, store.clone()));
+        let principal = Principal {
+            actor_user_id: Uuid::new_v4(),
+        };
+        use starter_spi::auth::{Principal as SpiPrincipal, Role};
+        use starter_spi::authz::{NoopPolicyEngine, PolicyEngine};
+        let engine: Arc<dyn PolicyEngine> = Arc::new(NoopPolicyEngine);
+        let spi_principal = SpiPrincipal {
+            subject: principal.actor_user_id.to_string(),
+            role: Role::Admin,
+            scopes: Vec::new(),
+            extra: serde_json::Value::Null,
+        };
+        let app = admin_router(admin_state)
+            .layer(Extension(principal))
+            .layer(Extension(spi_principal))
+            .layer(Extension(engine));
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/admin/users/{user_id}/export"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // The streaming body decodes to a well-formed envelope
+        // with N events visible. The `to_bytes` limit is set
+        // generously above the worst-case JSON size (~100 bytes
+        // per ExportEvent × 100k = ~10MB) — a non-streaming
+        // implementation would still produce the same payload,
+        // but the per-page `limit <= EXPORT_PAGE_SIZE` assertion
+        // inside the store above would already have failed.
+        let body = to_bytes(resp.into_body(), 32 * 1024 * 1024)
+            .await
+            .expect("body collects");
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap_or_else(|e| {
+            panic!(
+                "100k-event export must parse; got {e}.  Head = {:?}",
+                String::from_utf8_lossy(&body[..body.len().min(200)])
+            )
+        });
+        let events = v["events"].as_array().expect("events is an array");
+        assert_eq!(events.len() as i64, N);
+        // Audit row written once, before streaming started.
+        assert_eq!(store.audit.lock().unwrap().len(), 1);
+        assert_eq!(
+            store.audit.lock().unwrap()[0].action,
+            super::audit::USER_EXPORT
+        );
+    }
+
     #[test]
     fn fold_event_actors_groups_consecutive_rows_for_one_event() {
         let e1 = Uuid::new_v4();

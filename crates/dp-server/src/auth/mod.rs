@@ -65,6 +65,6 @@ pub use github_orgs::{
     StaticGithubOrgsSource,
 };
 pub use policy::{
-    load_static_engine, register_dev_pulse_resources, AwaitingAccessEngine, PolicyLoadError,
-    AWAITING_ACCESS_REASON,
+    load_static_engine, load_static_engine_from_config, register_dev_pulse_resources,
+    AwaitingAccessEngine, PolicyLoadError, AWAITING_ACCESS_REASON,
 };
