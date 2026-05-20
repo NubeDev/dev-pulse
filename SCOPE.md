@@ -49,24 +49,30 @@ Non-goals are enforced by **design choices**, not just stated intent:
 - **No individual performance ranking.** UI will not render leaderboards or single-number "developer scores." All comparisons require explicit group selection (team vs team, home-org vs home-org); the UI will not offer "rank all users by X" as an affordance.
 - **No code quality analysis.** Bug rate, churn, defect density are out of scope.
 - **No real-time alerting / on-call monitoring.**
-- **No replacement for general project management tools** (Jira, Linear, etc.). Light interaction with GitHub Issues specifically is a likely future direction — see §4.1.
+- **No replacement for general project management tools** (Jira, Linear, etc.). Light interaction with GitHub Issues specifically is in scope — see §4.1 and [SCOPE-PROJECTS.md](SCOPE-PROJECTS.md).
 - **No tracking outside GitHub** (Slack, calendars, meetings).
-- **No write operations to GitHub in v1.** v1 is read-only: the fetcher pulls data, nothing pushes back. This keeps the auth model, audit story, and blast radius simple. Write operations (issue CRUD) are a deliberate future-phase addition — see §4.1.
+- **No write operations from the scheduled fetcher.** The fetcher (§10) stays read-only. The single write path is the user-initiated GitHub Issues CRUD surface defined in [SCOPE-PROJECTS.md](SCOPE-PROJECTS.md) — a deliberate, scoped exception with its own auth, audit, and blast-radius story.
 
 These constraints exist because activity data, once available, gravitates toward perf-review use. The design choices above are the primary defence.
 
-### 4.1 Likely future direction — GitHub Issues CRUD
+### 4.1 In scope — GitHub Issues CRUD (detailed in [SCOPE-PROJECTS.md](SCOPE-PROJECTS.md))
 
-Not in v1, but the architecture should not preclude it: we may later add **create / read / update / close** for GitHub Issues directly inside `dev-pulse`, so a manager looking at an activity report can act on what they see (file a follow-up, reassign, close stale work) without leaving the tool.
+GitHub Issues **create / read / update / close / reopen / comment** is in scope: a manager looking at an activity report can act on what they see (file a follow-up, reassign, close stale work) without leaving the tool. This was previously flagged as a future direction; it is now formally in scope. The full shape — including pinned repos, home-grown project tags, and the write path — lives in [SCOPE-PROJECTS.md](SCOPE-PROJECTS.md).
 
-What this means for v1 scope:
+The interaction with the rest of the architecture stays consistent:
 
-- The **local store** modelling for issues (§5, §6) should accommodate fields needed for editing (title, body, labels, assignees, state, milestone), not just the counters needed for reporting. We don't have to *use* them, but we shouldn't have to re-shape the schema later.
-- The **auth model** decision (currently in §12 open questions) should account for the *possibility* of needing write scopes later, even if v1 ships read-only. Picking an auth approach that can't grow into write access would be a mistake.
-- The **fetcher** (§10) should not be the only path between `dev-pulse` and GitHub forever — when write operations land, they will be **synchronous, user-initiated calls to GitHub** (not scheduled), and the local store will be updated either optimistically or on the next fetcher tick.
-- **Audit logging** (already implied by §9 transparency) extends to writes: every issue mutation must record who did it, when, against which issue.
+- The **local store** model for issues (§5, §6) carries the fields needed for editing (title, body, labels, assignees, state, milestone), not only the counters needed for reporting.
+- The **fetcher** (§10) stays read-only and scheduled. Issue writes are a **separate, synchronous, user-initiated** path to GitHub; the local store is updated optimistically and reconciled on the next fetcher tick or via the issue's webhook.
+- The **auth model** (§15.1 GitHub App, §15.10 operator login) must carry sufficient write scope (`issues: write`) on the per-org App installation. Orgs whose install was granted read-only get a UI-visible "writes not available" affordance — never a 500.
+- **Audit logging** (§15.13) gains dedicated verbs for issue mutations: `issue.create`, `issue.update`, `issue.close`, `issue.reopen`, `issue.comment`. Every mutation records actor, target issue, before/after diff of mutated fields, and the resulting GitHub delivery id.
 
-What is explicitly **not** decided here: which issue operations land first, whether comments and reactions are included, and whether this extends beyond issues (PRs, discussions). Those are future-phase scope questions.
+Explicitly **not** in §16's v1 cut: PR mutations, discussions, reactions, attachments, and label/milestone administration (we *use* existing labels, we don't manage them). Those remain future-phase.
+
+### 4.2 In scope — pinned favourites & project tags (detailed in [SCOPE-PROJECTS.md](SCOPE-PROJECTS.md))
+
+Users can pin a small set of **favourite repos and tags** that surface as a fast-access list in the UI (sidebar / dashboard) and as the default filter on issue-management views. Pins are **per-user** state, stored in the `dev-pulse` database (not on GitHub), and gated by the §15.11 access policy.
+
+Users can also create **home-grown project tags** that group repos / issues / users / teams across orgs — the cross-org grouping primitive GitHub Projects v2 structurally cannot provide. See [SCOPE-PROJECTS.md](SCOPE-PROJECTS.md) for the full shape.
 
 ---
 

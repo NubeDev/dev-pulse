@@ -2,6 +2,8 @@
 Cargo.lock.bak
 *.swp
 .DS_Store
+*.db
+*.pid
 
 # Local secrets — `secret://NAME` handles in config.toml resolve to
 # env vars; `.env` is the conventional way to seed them. See
@@ -26,3 +28,4 @@ frontend/playwright-report
 frontend/.playwright
 auth.db-shm
 auth.db-wal
+tty sane

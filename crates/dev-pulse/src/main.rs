@@ -336,6 +336,107 @@ async fn main() -> Result<()> {
                 ),
         )
         .subcommand(
+            Command::new("import-my-orgs")
+                .about(
+                    "GET /user/orgs and upsert every org the PAT user \
+                     belongs to. Requires `read:org` scope.",
+                )
+                .arg(
+                    Arg::new("config")
+                        .long("config")
+                        .required(true)
+                        .help("Path to the dev-pulse TOML config."),
+                ),
+        )
+        .subcommand(
+            Command::new("import-my-repos")
+                .about(
+                    "GET /user/repos (paginated) and upsert each repo. \
+                     Use --orgs to scope to a single org or two.",
+                )
+                .arg(
+                    Arg::new("config")
+                        .long("config")
+                        .required(true)
+                        .help("Path to the dev-pulse TOML config."),
+                )
+                .arg(
+                    Arg::new("include-forks")
+                        .long("include-forks")
+                        .action(clap::ArgAction::SetTrue)
+                        .help("Also import repos that are forks."),
+                )
+                .arg(
+                    Arg::new("max")
+                        .long("max")
+                        .default_value("500")
+                        .help("Hard cap on repos imported."),
+                )
+                .arg(
+                    Arg::new("orgs")
+                        .long("orgs")
+                        .help(
+                            "Comma-separated allow-list of owner logins \
+                             (case-insensitive). Only repos owned by one \
+                             of these logins are imported.",
+                        ),
+                )
+                .arg(
+                    Arg::new("active-within-days")
+                        .long("active-within-days")
+                        .default_value("60")
+                        .help(
+                            "Skip repos whose `pushed_at` is older than \
+                             this many days. `0` disables the filter.",
+                        ),
+                ),
+        )
+        .subcommand(
+            Command::new("prune-stale-repos")
+                .about(
+                    "Remove already-imported repos that haven't seen any \
+                     activity event within the last N days. Cuts the \
+                     reconciler's per-tick fan-out without re-importing.",
+                )
+                .arg(
+                    Arg::new("config")
+                        .long("config")
+                        .required(true)
+                        .help("Path to the dev-pulse TOML config."),
+                )
+                .arg(
+                    Arg::new("days")
+                        .long("days")
+                        .default_value("60")
+                        .help("Activity cutoff in days."),
+                )
+                .arg(
+                    Arg::new("yes")
+                        .long("yes")
+                        .action(clap::ArgAction::SetTrue)
+                        .help("Apply the deletion (default is dry-run)."),
+                ),
+        )
+        .subcommand(
+            Command::new("purge-data")
+                .about(
+                    "Wipe every fetched event, run, cursor, repo, team \
+                     and org from dp-data. Auth users (auth.db) untouched.",
+                )
+                .arg(
+                    Arg::new("config")
+                        .long("config")
+                        .required(true)
+                        .help("Path to the dev-pulse TOML config."),
+                )
+                .arg(
+                    Arg::new("yes")
+                        .long("yes")
+                        .action(clap::ArgAction::SetTrue)
+                        .help("Skip the confirmation prompt."),
+                ),
+        )
+        .subcommand(
             Command::new("list-targets")
                 .about("List the orgs + repos registered for reconciler ticks.")
                 .arg(
@@ -366,6 +467,10 @@ async fn main() -> Result<()> {
         Some(("add-org", sub)) => run_add_org(sub).await,
         Some(("add-repo", sub)) => run_add_repo(sub).await,
         Some(("create-admin", sub)) => run_create_admin(sub).await,
+        Some(("import-my-orgs", sub)) => run_import_my_orgs(sub).await,
+        Some(("import-my-repos", sub)) => run_import_my_repos(sub).await,
+        Some(("prune-stale-repos", sub)) => run_prune_stale_repos(sub).await,
+        Some(("purge-data", sub)) => run_purge_data(sub).await,
         Some(("fetch-now", sub)) => run_fetch_now(sub).await,
         Some(("list-targets", sub)) => run_list_targets(sub).await,
         Some(("check-github", sub)) => run_check_github(sub).await,
@@ -958,6 +1063,274 @@ async fn run_add_repo(matches: &ArgMatches) -> Result<()> {
         .await
         .with_context(|| format!("upsert_repo {spec}"))?;
     println!("upserted repo id = {} (org id = {})", saved_repo.id, saved_org.id);
+    Ok(())
+}
+
+async fn run_import_my_orgs(matches: &ArgMatches) -> Result<()> {
+    let cfg_path = matches.get_one::<String>("config").unwrap();
+    let (cfg, pool) = load_cfg_and_pool(cfg_path).await?;
+    let client = build_pat_client(&cfg)?;
+    println!("GET /user/orgs ...");
+    let body = match client
+        .get_conditional::<Vec<GhAccount>>("/user/orgs?per_page=100", None)
+        .await
+        .context("GET /user/orgs")?
+    {
+        dp_fetcher::client::Fetched::Ok { body, .. } => body,
+        dp_fetcher::client::Fetched::NotModified { .. } => return Err(anyhow!("unexpected 304")),
+    };
+    let store = dp_store_pg::PgStore::new(pool);
+    use dp_domain::Store as _;
+    for org in &body {
+        let row = dp_domain::Org {
+            id: Uuid::new_v4(),
+            github_id: org.id,
+            login: org.login.clone(),
+            name: org.name.clone(),
+        };
+        let saved = store
+            .upsert_org(&row)
+            .await
+            .with_context(|| format!("upsert_org {}", org.login))?;
+        println!("  + {} (id {})", org.login, saved.id);
+    }
+    if body.is_empty() {
+        println!("(empty — PAT may be missing `read:org` scope)");
+    } else {
+        println!("\nimported {} org(s)", body.len());
+    }
+    Ok(())
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct GhRepoFull {
+    id: i64,
+    name: String,
+    owner: GhAccount,
+    #[serde(default)]
+    fork: bool,
+    /// Last push to any branch. Empty repos surface as `None`.
+    /// We filter on this rather than `updated_at` because metadata
+    /// edits (description, topics) bump `updated_at` and would
+    /// keep a long-dead repo looking "fresh".
+    #[serde(default)]
+    pushed_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+async fn run_import_my_repos(matches: &ArgMatches) -> Result<()> {
+    let cfg_path = matches.get_one::<String>("config").unwrap();
+    let include_forks = matches.get_flag("include-forks");
+    let max: usize = matches
+        .get_one::<String>("max")
+        .unwrap()
+        .parse()
+        .context("--max must be an integer")?;
+    let orgs_allow: Option<Vec<String>> = matches.get_one::<String>("orgs").map(|s| {
+        s.split(',')
+            .map(|t| t.trim().to_ascii_lowercase())
+            .filter(|t| !t.is_empty())
+            .collect()
+    });
+    if let Some(list) = &orgs_allow {
+        println!("scoped to orgs: {list:?}");
+    }
+    let active_days: i64 = matches
+        .get_one::<String>("active-within-days")
+        .unwrap()
+        .parse()
+        .context("--active-within-days must be an integer")?;
+    let activity_cutoff = if active_days > 0 {
+        let cutoff = chrono::Utc::now() - chrono::Duration::days(active_days);
+        println!("activity filter: pushed_at >= {} (last {active_days}d)", cutoff.format("%Y-%m-%d"));
+        Some(cutoff)
+    } else {
+        println!("activity filter: disabled (--active-within-days=0)");
+        None
+    };
+    let (cfg, pool) = load_cfg_and_pool(cfg_path).await?;
+    let client = build_pat_client(&cfg)?;
+    let store = dp_store_pg::PgStore::new(pool);
+    use dp_domain::Store as _;
+
+    let mut page = 1u32;
+    let mut imported = 0usize;
+    let mut skipped_forks = 0usize;
+    let mut skipped_org_filter = 0usize;
+    let mut skipped_stale = 0usize;
+    let mut org_cache: HashMap<String, Uuid> = HashMap::new();
+    loop {
+        if imported >= max {
+            println!("reached --max {max}, stopping");
+            break;
+        }
+        let path = format!(
+            "/user/repos?per_page=100&page={page}&affiliation=owner,collaborator,organization_member"
+        );
+        let repos = match client
+            .get_conditional::<Vec<GhRepoFull>>(&path, None)
+            .await
+            .with_context(|| format!("GET {path}"))?
+        {
+            dp_fetcher::client::Fetched::Ok { body, .. } => body,
+            dp_fetcher::client::Fetched::NotModified { .. } => break,
+        };
+        if repos.is_empty() {
+            break;
+        }
+        for repo in repos {
+            if !include_forks && repo.fork {
+                skipped_forks += 1;
+                continue;
+            }
+            if let Some(list) = &orgs_allow {
+                if !list.contains(&repo.owner.login.to_ascii_lowercase()) {
+                    skipped_org_filter += 1;
+                    continue;
+                }
+            }
+            if let Some(cutoff) = activity_cutoff {
+                // Empty repos (`pushed_at = None`) are always skipped
+                // under the activity filter — they have no commits to
+                // ingest anyway, and ticking them just wastes API quota
+                // on a guaranteed 409 from `GET /repos/.../commits`.
+                match repo.pushed_at {
+                    Some(ts) if ts >= cutoff => {}
+                    _ => {
+                        skipped_stale += 1;
+                        continue;
+                    }
+                }
+            }
+            if imported >= max {
+                break;
+            }
+            let owner_login = repo.owner.login.clone();
+            let org_id = if let Some(id) = org_cache.get(&owner_login) {
+                *id
+            } else {
+                let row = dp_domain::Org {
+                    id: Uuid::new_v4(),
+                    github_id: repo.owner.id,
+                    login: owner_login.clone(),
+                    name: repo.owner.name.clone(),
+                };
+                let saved = store
+                    .upsert_org(&row)
+                    .await
+                    .with_context(|| format!("upsert_org {owner_login}"))?;
+                org_cache.insert(owner_login.clone(), saved.id);
+                saved.id
+            };
+            let repo_row = dp_domain::Repo {
+                id: Uuid::new_v4(),
+                org_id,
+                github_id: repo.id,
+                name: repo.name.clone(),
+            };
+            store
+                .upsert_repo(&repo_row)
+                .await
+                .with_context(|| format!("upsert_repo {owner_login}/{}", repo.name))?;
+            println!("  + {owner_login}/{}", repo.name);
+            imported += 1;
+        }
+        page += 1;
+    }
+    println!(
+        "\nimported {imported} repo(s); skipped {skipped_forks} fork(s), \
+         {skipped_org_filter} out-of-scope, {skipped_stale} stale (no recent push)"
+    );
+    Ok(())
+}
+
+async fn run_prune_stale_repos(matches: &ArgMatches) -> Result<()> {
+    let cfg_path = matches.get_one::<String>("config").unwrap();
+    let days: i64 = matches
+        .get_one::<String>("days")
+        .unwrap()
+        .parse()
+        .context("--days must be an integer")?;
+    let apply = matches.get_flag("yes");
+    let (_cfg, pool) = load_cfg_and_pool(cfg_path).await?;
+
+    // A repo is "stale" iff it has no event in `dp_activity_events`
+    // newer than `now() - N days`. Repos with zero events (just
+    // imported, never ticked) are also flagged — they're either
+    // genuinely dead or pending their first fetch. Both groups land
+    // here so the operator decides.
+    let cutoff = chrono::Utc::now() - chrono::Duration::days(days);
+    let rows: Vec<(Uuid, String, String, Option<chrono::DateTime<chrono::Utc>>)> =
+        sqlx::query_as(
+            "SELECT r.id, o.login, r.name, MAX(e.ts) AS latest
+               FROM dp_repos r
+               JOIN dp_orgs  o ON o.id = r.org_id
+               LEFT JOIN dp_activity_events e ON e.repo_id = r.id
+              GROUP BY r.id, o.login, r.name
+             HAVING COALESCE(MAX(e.ts), 'epoch'::timestamptz) < $1
+              ORDER BY o.login, r.name",
+        )
+        .bind(cutoff)
+        .fetch_all(pool.sqlx())
+        .await
+        .context("select stale repos")?;
+
+    if rows.is_empty() {
+        println!("no repos older than {days}d. nothing to prune.");
+        return Ok(());
+    }
+    println!(
+        "{} repo(s) older than {days}d (cutoff {}):",
+        rows.len(),
+        cutoff.format("%Y-%m-%d")
+    );
+    for (_id, owner, name, latest) in &rows {
+        let latest = latest
+            .map(|t| t.format("%Y-%m-%d").to_string())
+            .unwrap_or_else(|| "never".into());
+        println!("  - {owner}/{name}  (latest: {latest})");
+    }
+    if !apply {
+        println!("\n(dry run — re-run with --yes to delete)");
+        return Ok(());
+    }
+    let ids: Vec<Uuid> = rows.iter().map(|(id, _, _, _)| *id).collect();
+    let affected: u64 = sqlx::query("DELETE FROM dp_repos WHERE id = ANY($1)")
+        .bind(&ids)
+        .execute(pool.sqlx())
+        .await
+        .context("delete stale repos")?
+        .rows_affected();
+    println!("\ndeleted {affected} repo(s)");
+    Ok(())
+}
+
+async fn run_purge_data(matches: &ArgMatches) -> Result<()> {
+    let cfg_path = matches.get_one::<String>("config").unwrap();
+    let yes = matches.get_flag("yes");
+    if !yes {
+        eprintln!("refusing to wipe dp-data without --yes");
+        return Err(anyhow!("re-run with --yes to confirm"));
+    }
+    let (_cfg, pool) = load_cfg_and_pool(cfg_path).await?;
+    // Order matters: drop child rows before parents.
+    for stmt in [
+        "TRUNCATE TABLE dp_event_actors CASCADE",
+        "TRUNCATE TABLE dp_activity_events CASCADE",
+        "TRUNCATE TABLE dp_fetch_cursors CASCADE",
+        "TRUNCATE TABLE dp_fetch_runs CASCADE",
+        "TRUNCATE TABLE dp_webhook_inbox CASCADE",
+        "TRUNCATE TABLE dp_memberships CASCADE",
+        "TRUNCATE TABLE dp_teams CASCADE",
+        "TRUNCATE TABLE dp_repos CASCADE",
+        "TRUNCATE TABLE dp_orgs CASCADE",
+        "TRUNCATE TABLE dp_users CASCADE",
+    ] {
+        match sqlx::query(stmt).execute(pool.sqlx()).await {
+            Ok(_) => println!("  truncated: {}", stmt.replace("TRUNCATE TABLE ", "")),
+            Err(e) => println!("  (skipped {stmt}: {e})"),
+        }
+    }
+    println!("\ndp-data wiped.");
     Ok(())
 }
 

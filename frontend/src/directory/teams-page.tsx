@@ -96,10 +96,10 @@ export function TeamsPage(): JSX.Element {
           <CardTitle className="text-lg font-medium">Results</CardTitle>
         </CardHeader>
         <CardContent className="grid gap-4">
-          {dir.error ? (
+          {dir.orgsError ? (
             <Alert variant="destructive">
               <AlertTitle>Failed to load orgs</AlertTitle>
-              <AlertDescription>{dir.error}</AlertDescription>
+              <AlertDescription>{dir.orgsError}</AlertDescription>
             </Alert>
           ) : null}
           {teamsState.error ? (
