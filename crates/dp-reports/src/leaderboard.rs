@@ -79,6 +79,29 @@ pub enum MetricId {
     // Duration(DurationMetric) — added once the store fetch lands.
 }
 
+impl MetricId {
+    /// True for count-family metrics — the §6.2 reconciliation
+    /// identity applies only to these.
+    ///
+    /// The duration family (when it lands) returns false here so
+    /// [`check_reconciliation_identity`] short-circuits for it: a
+    /// duration metric's row value is an aggregate (p50, p95, …),
+    /// not a count, and `sum(rows) + footer` is meaningless against
+    /// `headline.events_total`.
+    pub const fn is_count(self) -> bool {
+        matches!(self, MetricId::Count(_))
+    }
+
+    /// True for duration-family metrics. Inverse of [`Self::is_count`].
+    ///
+    /// Kept as a separate accessor (rather than `!is_count()`) so
+    /// future variants — e.g. ratio metrics — can be added without
+    /// silently flipping the §6.2 exemption.
+    pub const fn is_duration(self) -> bool {
+        !self.is_count()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Request envelope (ORG-REPORTS §3)
 // ---------------------------------------------------------------------------
@@ -231,10 +254,16 @@ pub struct LeaderboardContext {
 
 /// Footer counters (ORG-REPORTS §4).
 ///
-/// Stage 3 zeroes every field; stage 5 wires the §6.2 reconciliation
-/// identity and the §6.4 bot split, stage 6 wires `insufficient_data`
-/// for duration metrics. The wire shape is locked here so later
-/// stages don't reshape the response.
+/// Stage 5 wires the §6.2 reconciliation identity (see
+/// [`check_reconciliation_identity`]) and the §6.4 bot split; stage 6
+/// wires `insufficient_data` for duration metrics. The wire shape is
+/// locked here so later stages don't reshape the response.
+///
+/// All five fields serialise unconditionally — REST/MCP/frontend must
+/// not branch on field presence (a SCOPE.md §11.4 trust requirement).
+/// `bots_suppressed_events` is the §6.4 reconciliation counter: it
+/// exists separately from `bots_suppressed` precisely so the §6.2
+/// identity has every term it needs without re-querying the bot set.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LeaderboardFooter {
     /// Total unattributed events in the resolved window (matches the
@@ -272,10 +301,14 @@ pub struct LeaderboardResponse {
 
 /// Failure modes the scaffold rejects today.
 ///
-/// Other stages add `CursorWindowMismatch` (§6.5), `SubjectIdsTooLarge`
-/// (§6.10), and the per-metric reconciliation-violation assertion
-/// (§6.2 debug build). They share this error enum so the REST and MCP
-/// surfaces map every leaderboard failure through one match.
+/// Other stages add `CursorWindowMismatch` (§6.5) and
+/// `SubjectIdsTooLarge` (§6.10). Stage 5 added
+/// [`Self::ReconciliationViolation`] so the §6.2 identity is a
+/// first-class failure the REST/MCP layers can match on (release
+/// builds may choose to log + drop it; debug builds panic via
+/// [`debug_assert_reconciliation_identity`]). They share this error
+/// enum so the REST and MCP surfaces map every leaderboard failure
+/// through one match.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum LeaderboardError {
@@ -295,6 +328,36 @@ pub enum LeaderboardError {
         subject: SubjectKind,
         /// The scope mode that was requested.
         scope_mode: ScopeMode,
+    },
+    /// The §6.2 reconciliation identity does not hold for a count
+    /// metric:
+    ///
+    /// `headline.events_total
+    ///    == sum(rows[].primary.value)
+    ///     + footer.unattributed_events_metric
+    ///     + footer.bots_suppressed_events`
+    ///
+    /// Reported only for count metrics — duration metrics are
+    /// exempt per §6.2 (their row values are aggregates, not
+    /// counts).
+    #[error("reconciliation identity broken: events_total={events_total} != \
+             sum(rows.primary)={rows_sum} + unattributed_metric={unattributed_metric} + \
+             bots_suppressed_events={bots_suppressed_events} (delta={delta})")]
+    ReconciliationViolation {
+        /// `headline.events_total` echoed back for debugging.
+        events_total: u64,
+        /// Σ `rows[].primary.value` (saturating-clamped at 0 for
+        /// the rare negative aggregate that should never reach
+        /// the count-metric path).
+        rows_sum: u64,
+        /// `footer.unattributed_events_metric` echoed back.
+        unattributed_metric: u64,
+        /// `footer.bots_suppressed_events` echoed back.
+        bots_suppressed_events: u64,
+        /// `events_total - (rows_sum + unattributed_metric +
+        /// bots_suppressed_events)` as a signed delta so callers
+        /// can tell over- from under-counting.
+        delta: i128,
     },
     /// Window spec failed to resolve.
     #[error(transparent)]
@@ -745,6 +808,107 @@ const HOME_ORG_LABEL_PER_ORG_SPLIT_SQL: &str = "SELECT COALESCE(m.home_org::text
                                                  ORDER BY primary_value DESC, active_days DESC, subject_id ASC";
 
 // ---------------------------------------------------------------------------
+// §6.2 — reconciliation identity (count metrics) + duration exemption
+// ---------------------------------------------------------------------------
+
+/// Verify the §6.2 reconciliation identity for count metrics.
+///
+/// The identity, locked in ORG-REPORTS §6.2:
+///
+/// ```text
+/// headline.events_total
+///   == sum(rows[].primary.value)
+///    + footer.unattributed_events_metric
+///    + footer.bots_suppressed_events
+/// ```
+///
+/// Duration metrics are **exempt** — their row values are
+/// aggregates (p50, p95, …), not counts, so the sum is meaningless.
+/// For [`MetricId::is_duration`] the function returns `Ok(())`
+/// without inspecting any term.
+///
+/// Why this matters: every number in a leaderboard response must
+/// trace back to a §15.7 row (SCOPE.md §9 transparency, §11.4
+/// trust). The reconciliation identity is the cheapest possible
+/// surface-level proof that the bot filter, the unattributed-events
+/// footer, and the visible rows together account for every event
+/// the headline reports. A drift here means at least one of those
+/// terms is wrong — the worst case being that bot or unattributed
+/// activity has silently leaked into a user's rank.
+///
+/// Negative row values are clamped to 0 when summing — for the
+/// count path they are never produced, but the saturating add
+/// keeps the function infallible against malformed inputs and
+/// avoids a panic in release builds.
+pub fn check_reconciliation_identity(
+    metric: MetricId,
+    headline: &LeaderboardHeadline,
+    rows: &[LeaderboardRow],
+    footer: &LeaderboardFooter,
+) -> Result<(), LeaderboardError> {
+    if metric.is_duration() {
+        // §6.2 duration-metric exemption.
+        return Ok(());
+    }
+    let rows_sum: u64 = rows
+        .iter()
+        .map(|r| u64::try_from(r.primary.value).unwrap_or(0))
+        .fold(0u64, |acc, v| acc.saturating_add(v));
+    let expected = (rows_sum as i128)
+        + (footer.unattributed_events_metric as i128)
+        + (footer.bots_suppressed_events as i128);
+    let delta = (headline.events_total as i128) - expected;
+    if delta == 0 {
+        Ok(())
+    } else {
+        Err(LeaderboardError::ReconciliationViolation {
+            events_total: headline.events_total,
+            rows_sum,
+            unattributed_metric: footer.unattributed_events_metric,
+            bots_suppressed_events: footer.bots_suppressed_events,
+            delta,
+        })
+    }
+}
+
+/// Debug-build assertion of [`check_reconciliation_identity`].
+///
+/// SCOPE.md constraint: "The §6.2 reconciliation identity is
+/// enforced as a debug-build assertion for count metrics; release
+/// builds may skip it but the tests must verify it." This function
+/// is the embodiment of that rule:
+///
+/// * In `cfg(debug_assertions)` builds it panics on violation, so a
+///   test or local-dev run catches the drift loud and immediately.
+/// * In release builds it is a no-op — the cost is paid only where
+///   it's cheap. REST/MCP layers wanting a real-build check should
+///   call [`check_reconciliation_identity`] directly and log/return
+///   the [`LeaderboardError::ReconciliationViolation`].
+///
+/// The duration-metric exemption is delegated to
+/// [`check_reconciliation_identity`], so callers can hand any
+/// `MetricId` here without branching.
+pub fn debug_assert_reconciliation_identity(
+    metric: MetricId,
+    headline: &LeaderboardHeadline,
+    rows: &[LeaderboardRow],
+    footer: &LeaderboardFooter,
+) {
+    #[cfg(debug_assertions)]
+    {
+        if let Err(e) = check_reconciliation_identity(metric, headline, rows, footer) {
+            panic!("§6.2 reconciliation identity broken: {e}");
+        }
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        // Release builds skip the check per SCOPE.md constraint;
+        // touch the inputs so unused-arg lints stay silent.
+        let _ = (metric, headline, rows, footer);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -1188,6 +1352,222 @@ mod tests {
                 assert_eq!(v_ok, d_ok, "validator/dispatcher disagree on ({s:?}, {sm:?})");
             }
         }
+    }
+
+    // ----- Stage 5: §6.2 reconciliation + §6.4 split bot footer --------
+
+    fn count_row(rank: u32, id: &str, value: i64, active_days: u32) -> LeaderboardRow {
+        LeaderboardRow {
+            rank,
+            subject_id: id.into(),
+            subject_kind: SubjectKind::User,
+            subject_label: id.into(),
+            subject_org: None,
+            primary: LeaderboardPrimary {
+                metric: MetricId::Count(CountMetric::PullRequestsOpened),
+                value,
+            },
+            context: LeaderboardContext {
+                active_days,
+                ..LeaderboardContext::default()
+            },
+            sparkline: vec![],
+            active_orgs: 1,
+        }
+    }
+
+    #[test]
+    fn metric_id_classifies_count_and_duration() {
+        // §6.2 hinges on this classification; if a future metric
+        // family lands without an explicit decision its identity
+        // application must be re-thought, not defaulted.
+        let m = MetricId::Count(CountMetric::PullRequestsOpened);
+        assert!(m.is_count());
+        assert!(!m.is_duration());
+    }
+
+    #[test]
+    fn reconciliation_identity_holds_for_count_metrics() {
+        // ORG-REPORTS §6.2:
+        //   events_total == Σ rows + unattributed_metric + bots_suppressed_events
+        // Construct a fixture where the sum balances exactly.
+        let metric = MetricId::Count(CountMetric::PullRequestsOpened);
+        let rows = vec![
+            count_row(1, "u1", 12, 5),
+            count_row(2, "u2", 7, 4),
+            count_row(3, "u3", 3, 2),
+        ];
+        let headline = LeaderboardHeadline {
+            total_subjects: 3,
+            // 22 (rows) + 5 (unattributed_metric) + 11 (bot events) = 38
+            events_total: 38,
+        };
+        let footer = LeaderboardFooter {
+            unattributed_events: 9,
+            unattributed_events_metric: 5,
+            insufficient_data: 0,
+            bots_suppressed: 2,
+            bots_suppressed_events: 11,
+        };
+        assert!(check_reconciliation_identity(metric, &headline, &rows, &footer).is_ok());
+        // The debug-build assertion is the production check —
+        // exercise it from the unit test so cargo test (which runs
+        // in debug mode) actually executes the panic path's happy
+        // branch.
+        debug_assert_reconciliation_identity(metric, &headline, &rows, &footer);
+    }
+
+    #[test]
+    fn reconciliation_identity_detects_under_count() {
+        // Drop one unattributed event from the footer — the identity
+        // must surface the delta with the exact term breakdown so
+        // operators can tell whether the bot path, the unattributed
+        // path, or the row aggregation is at fault.
+        let metric = MetricId::Count(CountMetric::PullRequestsOpened);
+        let rows = vec![count_row(1, "u1", 10, 5)];
+        let headline = LeaderboardHeadline {
+            total_subjects: 1,
+            events_total: 20,
+        };
+        let footer = LeaderboardFooter {
+            unattributed_events: 0,
+            unattributed_events_metric: 4, // should be 5 to balance
+            insufficient_data: 0,
+            bots_suppressed: 1,
+            bots_suppressed_events: 5,
+        };
+        let err = check_reconciliation_identity(metric, &headline, &rows, &footer).unwrap_err();
+        match err {
+            LeaderboardError::ReconciliationViolation {
+                events_total,
+                rows_sum,
+                unattributed_metric,
+                bots_suppressed_events,
+                delta,
+            } => {
+                assert_eq!(events_total, 20);
+                assert_eq!(rows_sum, 10);
+                assert_eq!(unattributed_metric, 4);
+                assert_eq!(bots_suppressed_events, 5);
+                assert_eq!(delta, 1); // headline is 1 over the visible terms
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reconciliation_identity_detects_over_count() {
+        // Inverse direction — visible terms exceed the headline.
+        // The signed `delta` (-N) lets operators distinguish under-
+        // from over-counting at a glance.
+        let metric = MetricId::Count(CountMetric::PullRequestsOpened);
+        let rows = vec![count_row(1, "u1", 50, 10)];
+        let headline = LeaderboardHeadline {
+            total_subjects: 1,
+            events_total: 10,
+        };
+        let footer = LeaderboardFooter::default();
+        let err = check_reconciliation_identity(metric, &headline, &rows, &footer).unwrap_err();
+        if let LeaderboardError::ReconciliationViolation { delta, .. } = err {
+            assert_eq!(delta, -40);
+        } else {
+            panic!("expected ReconciliationViolation, got {err:?}");
+        }
+    }
+
+    #[test]
+    fn reconciliation_identity_treats_empty_rows_as_zero_sum() {
+        // An empty leaderboard with no rows is still a real response
+        // shape — the headline must equal `unattributed_metric +
+        // bots_suppressed_events` because every event has to live
+        // somewhere on the reconciliation ledger.
+        let metric = MetricId::Count(CountMetric::PullRequestsOpened);
+        let headline = LeaderboardHeadline {
+            total_subjects: 0,
+            events_total: 7,
+        };
+        let footer = LeaderboardFooter {
+            unattributed_events_metric: 4,
+            bots_suppressed_events: 3,
+            ..LeaderboardFooter::default()
+        };
+        assert!(check_reconciliation_identity(metric, &headline, &[], &footer).is_ok());
+    }
+
+    #[test]
+    fn duration_exemption_predicate_governs_the_identity_gate() {
+        // §6.2 duration-metric exemption: row values are aggregates
+        // (p50/p95), not counts, so Σ rows is meaningless and the
+        // identity check must short-circuit.
+        //
+        // Until `MetricId::Duration(...)` exists (gated on the
+        // store-side `list_duration_samples_in_window` fetch per
+        // STAGE-1-COMPOSABILITY §3), the exemption is testable via
+        // its predicate: `MetricId::is_duration()` is the single
+        // branch [`check_reconciliation_identity`] consults. We
+        // assert the predicate is wired correctly — that every
+        // current `MetricId` is count-classified and therefore
+        // *not* exempt — so the moment the Duration variant lands
+        // its rows skip the identity by construction. A regression
+        // here (e.g. somebody flipping the `matches!` to include a
+        // future variant by default) trips this test, not a silent
+        // change in production behaviour.
+        let m = MetricId::Count(CountMetric::PullRequestsOpened);
+        assert!(!m.is_duration(), "count metrics must NOT be exempt from §6.2");
+        // And: the function actually consults the predicate — an
+        // intentionally unbalanced count fixture must fail, proving
+        // the gate is not the no-op the duration branch is.
+        let rows = vec![count_row(1, "u1", 1, 1)];
+        let headline = LeaderboardHeadline {
+            total_subjects: 1,
+            events_total: 999,
+        };
+        let footer = LeaderboardFooter::default();
+        assert!(check_reconciliation_identity(m, &headline, &rows, &footer).is_err());
+    }
+
+    #[test]
+    fn debug_assert_panics_on_count_identity_violation() {
+        // The debug-build assertion is the SCOPE.md-mandated
+        // production check: in cargo-test (debug profile) it must
+        // panic when the identity breaks, so a regression in the
+        // bot or unattributed-events path is impossible to ship
+        // unnoticed.
+        let metric = MetricId::Count(CountMetric::PullRequestsOpened);
+        let rows = vec![count_row(1, "u1", 1, 1)];
+        let headline = LeaderboardHeadline {
+            total_subjects: 1,
+            events_total: 999,
+        };
+        let footer = LeaderboardFooter::default();
+        let res = std::panic::catch_unwind(|| {
+            debug_assert_reconciliation_identity(metric, &headline, &rows, &footer);
+        });
+        assert!(res.is_err(), "expected debug_assert to panic on broken identity");
+    }
+
+    #[test]
+    fn bot_split_footer_fields_are_both_present_on_the_wire() {
+        // ORG-REPORTS §6.4: bot suppression is a *split* footer —
+        // `bots_suppressed` is the subject count, `bots_suppressed_events`
+        // is the reconciliation counter. Both must be on the wire
+        // for the §6.2 identity to be checkable client-side; a
+        // frontend that only sees one of them cannot verify trust.
+        let footer = LeaderboardFooter {
+            unattributed_events: 0,
+            unattributed_events_metric: 0,
+            insufficient_data: 0,
+            bots_suppressed: 4,
+            bots_suppressed_events: 17,
+        };
+        let json = serde_json::to_string(&footer).unwrap();
+        assert!(json.contains("\"bots_suppressed\":4"), "{json}");
+        assert!(json.contains("\"bots_suppressed_events\":17"), "{json}");
+        // And they round-trip independently — a typo in either
+        // field name would silently zero one of the §6.2 terms.
+        let back: LeaderboardFooter = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.bots_suppressed, 4);
+        assert_eq!(back.bots_suppressed_events, 17);
     }
 
     #[test]

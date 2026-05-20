@@ -30,7 +30,8 @@ pub use envelope::{
 };
 pub use freshness::{pick_headline as pick_freshness_headline, DataAsOf, DataAsOfExt};
 pub use leaderboard::{
-    build_leaderboard_sql, build_user_single_org_sql, resolve_leaderboard_envelope,
+    build_leaderboard_sql, build_user_single_org_sql, check_reconciliation_identity,
+    debug_assert_reconciliation_identity, resolve_leaderboard_envelope,
     validate_subject_scope_combo, LeaderboardContext, LeaderboardEnvelope, LeaderboardError,
     LeaderboardFooter, LeaderboardHeadline, LeaderboardPrimary, LeaderboardResponse,
     LeaderboardRow, MetricId, ResolvedLeaderboardEnvelope, SubjectKind,
