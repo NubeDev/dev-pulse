@@ -37,6 +37,7 @@ starter-config          = { path = "../starter/crates/starter-config",          
 starter-observability   = { path = "../starter/crates/starter-observability",   version = "0.1.0" }
 starter-server          = { path = "../starter/crates/starter-server",          version = "0.1.0" }
 starter-store-postgres  = { path = "../starter/crates/starter-store-postgres",  version = "0.1.0" }
+starter-store-sqlite    = { path = "../starter/crates/starter-store-sqlite",    version = "0.1.0" }
 starter-mcp             = { path = "../starter/crates/starter-mcp",             version = "0.1.0" }
 starter-auth-users      = { path = "../starter/crates/starter-auth-users",      version = "0.1.0" }
 starter-auth-oauth      = { path = "../starter/crates/starter-auth-oauth",      version = "0.1.0" }

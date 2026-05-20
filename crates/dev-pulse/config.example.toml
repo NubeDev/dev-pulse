@@ -1,0 +1,48 @@
+# dev-pulse — example deployment config.
+#
+# Boot via:
+#   dev-pulse serve --config /etc/dev-pulse/config.toml
+#
+# Phase 4 stage 10 wires the `serve` body; Phase 6 wires the rest
+# of the CLI (migrate / fetch-now / backfill / claim).
+
+[server]
+listen = "127.0.0.1:8080"
+base_url = "http://localhost:8080"
+default_return_to = "/"
+
+[postgres]
+# dp-data lives here — events, memberships, fetch_runs, audit_log.
+url = "postgres://dev-pulse:devpass@localhost/dev_pulse"
+
+[auth_sqlite]
+# Sidecar SQLite file for starter-auth-users / starter-auth-oauth
+# row families (users, sessions, tokens, oauth_identities). Schemas
+# applied automatically at boot.
+url = "sqlite:./auth.db?mode=rwc"
+
+[webhook]
+# `secret://NAME`  → env var NAME (upper-cased, '/' → '_')
+# `file:/path`     → file contents (trimmed)
+# anything else    → literal value (operational risk on the operator)
+secret_ref = "secret://github/webhook_secret"
+
+[auth.github]
+client_id = "Iv1.deadbeefcafef00d"
+client_secret_ref = "secret://oauth/github_client_secret"
+# Allow-listed GitHub org logins; a user whose `GET /user/orgs`
+# intersects this list passes the org gate. Case-insensitive.
+allow_orgs = ["NubeIO", "ACME"]
+# Optional — defaults to 3600 (1h). The TTL the GithubOrgsStamper
+# cache wrapper uses; the request hot path never hits GitHub.
+org_refresh_interval_secs = 3600
+
+[scheduler]
+# Seconds between reconciler ticks. Default 300 (5 min). The
+# Scheduler ignores ticks while a previous one is still running, so
+# a missed deadline doesn't pile up.
+tick_interval_secs = 300
+# Set `true` once Phase 6 wires real GitHub App credentials into
+# the bin layer. Phase 4 ships with this `false` so the dormant
+# tick loop does not hammer the API with a token-less Client.
+enable = false
