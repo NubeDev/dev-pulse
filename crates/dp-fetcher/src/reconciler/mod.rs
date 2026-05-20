@@ -49,10 +49,16 @@
 //! talks to octocrab; reconciler tests don't need to mock it
 //! deeper.
 
+pub mod guard;
 pub(crate) mod synth;
 mod targets;
 #[cfg(test)]
 mod tests;
+
+pub use guard::{
+    apply_or_defer_delivery, apply_or_defer_delivery_with_repo, replay_buffered_for_issue,
+    GuardOutcome,
+};
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -140,6 +146,13 @@ pub struct Reconciler {
     /// (not Scope) so a future config knob can disable e.g. commits
     /// without recompiling.
     kinds: Arc<[ResourceKind]>,
+    /// SCOPE-PROJECTS §13.7 / §8.5: how long a `dp_issues`
+    /// `pending_remote = TRUE` row is allowed to survive before
+    /// the reconciler stops deferring to it and the sweeper rolls
+    /// it back. Plumbed in from `dp-config`
+    /// (`issues.pending_remote_timeout_secs`) so a future operator
+    /// override doesn't require a code change.
+    pending_remote_timeout: Duration,
 }
 
 impl Reconciler {
@@ -166,6 +179,9 @@ impl Reconciler {
                 ]
                 .as_slice(),
             ),
+            // §13.7 default — matches `issues.pending_remote_timeout_secs`
+            // default in `dp-config` (SCOPE-PROJECTS §8.5).
+            pending_remote_timeout: Duration::from_secs(60),
         }
     }
 
@@ -173,6 +189,14 @@ impl Reconciler {
     /// Mostly for tests that want to exercise one kind in isolation.
     pub fn with_kinds(mut self, kinds: &[ResourceKind]) -> Self {
         self.kinds = Arc::from(kinds);
+        self
+    }
+
+    /// Override the §13.7 pending-remote timeout. Tests use this
+    /// to make the guard sensitive on a sub-second scale; production
+    /// passes the configured `issues.pending_remote_timeout_secs`.
+    pub fn with_pending_remote_timeout(mut self, timeout: Duration) -> Self {
+        self.pending_remote_timeout = timeout;
         self
     }
 
@@ -302,10 +326,40 @@ impl Reconciler {
             _ => Vec::new(),
         };
 
-        // ---- 5. Dispatch via the shared handler path. ----------
+        // ---- 5. Dispatch via the shared handler path, gated by
+        // the §13.7 reconciler guard. Issue-scoped synth deliveries
+        // (`issues` event) go through `apply_or_defer_delivery_with_repo`
+        // so any row currently in fresh `pending_remote` state has
+        // its payload stashed in the §13.7 buffer instead of being
+        // overwritten. Non-issue synth payloads (PR / commit) skip
+        // the guard entirely — they can't race the §8 write path.
         let mut applied: i64 = 0;
         for d in &deliveries {
-            match apply_delivery(self.store.as_ref(), d).await {
+            let result = if d.event == "issues" || d.event == "issue_comment" {
+                guard::apply_or_defer_delivery_with_repo(
+                    self.store.as_ref(),
+                    d,
+                    target.repo_id,
+                    chrono::Duration::from_std(self.pending_remote_timeout)
+                        .unwrap_or_else(|_| chrono::Duration::seconds(60)),
+                )
+                .await
+                .map(|o| match o {
+                    guard::GuardOutcome::Applied(h) => Some(h),
+                    guard::GuardOutcome::Deferred { issue_id } => {
+                        tracing::debug!(
+                            target: "dp_fetcher::reconciler",
+                            issue_id = %issue_id,
+                            delivery_id = %d.delivery_id,
+                            "§13.7 deferred synth delivery to buffer"
+                        );
+                        None
+                    }
+                })
+            } else {
+                apply_delivery(self.store.as_ref(), d).await.map(Some)
+            };
+            match result {
                 Ok(_) => applied += 1,
                 Err(HandlerError::Ignored { .. }) => {
                     // Benign — the synthesised payload was a kind

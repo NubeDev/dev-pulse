@@ -133,7 +133,9 @@ pub async fn acquire_issue_mutation_slot(
 
 /// §8.2 step 7: GitHub call returned success. Clear the pending
 /// flag (no second `version` bump), transition the audit row to
-/// `committed`, write the per-verb `dp_audit_log` row.
+/// `committed`, write the per-verb `dp_audit_log` row, then
+/// replay any webhook payloads the §13.7 guard buffered while
+/// the row was pending (`dp_pending_remote_webhook_buffer`).
 pub async fn commit_issue_mutation(
     store: &dyn Store,
     slot: &AcquiredSlot,
@@ -155,6 +157,15 @@ pub async fn commit_issue_mutation(
         slot.mutation.actor_user_id,
         audit::issue_audit_verb(slot.mutation.op),
         slot.mutation.issue_id.to_string(),
+    )
+    .await?;
+    // §13.7 replay — drain any deliveries buffered while
+    // `pending_remote = TRUE`. Errors during replay are logged
+    // inside the helper and do not fail the commit (the buffer
+    // is gone and the next reconciler tick will re-observe).
+    let _ = dp_fetcher::reconciler::guard::replay_buffered_for_issue(
+        store,
+        slot.mutation.issue_id,
     )
     .await?;
     Ok(())
@@ -190,6 +201,15 @@ pub async fn rollback_issue_mutation(
         slot.mutation.actor_user_id,
         audit::issue_audit_verb(slot.mutation.op),
         slot.mutation.issue_id.to_string(),
+    )
+    .await?;
+    // §13.7 replay — even on the rollback path the buffered
+    // payloads are still authoritative (GitHub's view of the
+    // world; the optimistic write didn't land). Drain and
+    // dispatch.
+    let _ = dp_fetcher::reconciler::guard::replay_buffered_for_issue(
+        store,
+        slot.mutation.issue_id,
     )
     .await?;
     Ok(new_version)
@@ -279,6 +299,16 @@ pub async fn sweep_pending_remote_timeouts(
             row.issue_id.to_string(),
         )
         .await?;
+        // 4. §13.7 replay: now that the flag is cleared, drain any
+        //    webhook payloads the guard buffered while the row was
+        //    pending. After a sweeper-driven rollback the buffered
+        //    deliveries become the only record of intervening
+        //    GitHub-side edits.
+        let _ = dp_fetcher::reconciler::guard::replay_buffered_for_issue(
+            store,
+            row.issue_id,
+        )
+        .await?;
     }
     Ok(report)
 }
@@ -311,13 +341,26 @@ mod tests {
     }
     #[derive(Default)]
     struct FakeInner {
-        // issue_id -> (version, pending, pending_at, actor)
+        // issue_id -> (version, pending, pending_at, actor, repo)
         issues: std::collections::HashMap<
             Uuid,
             (i64, bool, Option<DateTime<Utc>>, Option<Uuid>, Uuid),
         >,
+        // (repo_id, github_issue_id) -> dp_issues.id
+        issue_index: std::collections::HashMap<(Uuid, i64), Uuid>,
+        // github_repo_id -> dp_repos.id
+        repo_index: std::collections::HashMap<i64, Uuid>,
         mutations: Vec<IssueMutation>,
         audit: Vec<AuditEntry>,
+        // §13.7 buffer: issue_id -> deliveries, oldest first.
+        buffered: std::collections::HashMap<Uuid, Vec<WebhookDelivery>>,
+        // Re-deliveries arriving while pending: keyed by delivery_id
+        // to enforce the buffer's UNIQUE constraint.
+        buffered_delivery_ids: std::collections::HashSet<String>,
+        // Deliveries that flowed through `apply_delivery` (i.e. did
+        // not deflect through the §13.7 buffer). Tests inspect this
+        // to confirm replay landed.
+        applied_log: Vec<WebhookDelivery>,
     }
 
     impl FakeStore {
@@ -327,6 +370,24 @@ mod tests {
                 .unwrap()
                 .issues
                 .insert(id, (version, false, None, None, repo_id));
+        }
+        /// Seed the `(repo_id, github_issue_id) -> dp_issues.id`
+        /// index used by the §13.7 guard.
+        fn seed_issue_index(&self, repo_id: Uuid, github_issue_id: i64, id: Uuid) {
+            self.inner
+                .lock()
+                .unwrap()
+                .issue_index
+                .insert((repo_id, github_issue_id), id);
+        }
+        /// Seed the `github_repo_id -> dp_repos.id` index used by
+        /// the §13.7 guard.
+        fn seed_repo_index(&self, github_repo_id: i64, repo_id: Uuid) {
+            self.inner
+                .lock()
+                .unwrap()
+                .repo_index
+                .insert(github_repo_id, repo_id);
         }
     }
 
@@ -453,6 +514,76 @@ mod tests {
             Ok(())
         }
 
+        // ---- §13.7 guard + buffer primitives ---------------------
+        async fn find_repo_id_by_github_id(
+            &self,
+            github_repo_id: i64,
+        ) -> Result<Option<Uuid>, StoreError> {
+            Ok(self
+                .inner
+                .lock()
+                .unwrap()
+                .repo_index
+                .get(&github_repo_id)
+                .copied())
+        }
+        async fn find_issue_id_by_repo_and_github_id(
+            &self,
+            repo_id: Uuid,
+            github_issue_id: i64,
+        ) -> Result<Option<Uuid>, StoreError> {
+            Ok(self
+                .inner
+                .lock()
+                .unwrap()
+                .issue_index
+                .get(&(repo_id, github_issue_id))
+                .copied())
+        }
+        async fn is_issue_pending_remote_fresh(
+            &self,
+            issue_id: Uuid,
+            timeout: Duration,
+        ) -> Result<bool, StoreError> {
+            let g = self.inner.lock().unwrap();
+            let Some(r) = g.issues.get(&issue_id) else {
+                return Ok(false);
+            };
+            if !r.1 {
+                return Ok(false);
+            }
+            let Some(at) = r.2 else { return Ok(false) };
+            let cutoff = Utc::now() - timeout;
+            Ok(at >= cutoff)
+        }
+        async fn buffer_pending_remote_webhook(
+            &self,
+            issue_id: Uuid,
+            delivery: &WebhookDelivery,
+        ) -> Result<(), StoreError> {
+            let mut g = self.inner.lock().unwrap();
+            if !g.buffered_delivery_ids.insert(delivery.delivery_id.clone()) {
+                return Err(StoreError::Conflict(format!(
+                    "duplicate delivery_id {}",
+                    delivery.delivery_id
+                )));
+            }
+            g.buffered.entry(issue_id).or_default().push(delivery.clone());
+            Ok(())
+        }
+        async fn take_buffered_webhooks_for_issue(
+            &self,
+            issue_id: Uuid,
+        ) -> Result<Vec<WebhookDelivery>, StoreError> {
+            let mut g = self.inner.lock().unwrap();
+            let mut out = g.buffered.remove(&issue_id).unwrap_or_default();
+            for d in &out {
+                g.buffered_delivery_ids.remove(&d.delivery_id);
+            }
+            out.sort_by_key(|d| d.received_at);
+            Ok(out)
+        }
+
         // --- everything else is a minimal stub --------------------
         async fn upsert_user(&self, u: &User) -> Result<User, StoreError> {
             Ok(u.clone())
@@ -499,6 +630,19 @@ mod tests {
             &self,
             e: &ActivityEvent,
         ) -> Result<ActivityEvent, StoreError> {
+            // Surface replay landings so the §13.7 tests can assert
+            // the buffered webhook actually went through
+            // `apply_delivery`. Real `record_event` upserts on
+            // `(kind, external_id)`; the fake just appends.
+            self.inner.lock().unwrap().applied_log.push(WebhookDelivery {
+                id: Uuid::new_v4(),
+                delivery_id: e.external_id.clone(),
+                event: format!("{:?}", e.kind),
+                payload: serde_json::Value::Null,
+                received_at: e.ts,
+                processed_at: None,
+                error: None,
+            });
             Ok(e.clone())
         }
         async fn add_event_actors(&self, _: &[EventActor]) -> Result<(), StoreError> {
@@ -736,5 +880,307 @@ mod tests {
         let g = s.inner.lock().unwrap();
         assert_eq!(g.audit.len(), 1);
         assert_eq!(g.audit[0].action, audit::ISSUE_PENDING_REMOTE_TIMEOUT);
+    }
+
+    // ---------------------------------------------------------------
+    // SCOPE-PROJECTS §8.3 — three race cases covered by §13.7 + §8.2.
+    //
+    // Each test names the race in §8.3 verbatim and asserts the
+    // observable shape the scope locks in.
+    // ---------------------------------------------------------------
+
+    /// Construct a synthetic `issues` webhook delivery shaped enough
+    /// to flow through the guard + `apply_delivery`.
+    fn synthetic_issue_delivery(
+        delivery_id: &str,
+        github_repo_id: i64,
+        github_issue_id: i64,
+        action: &str,
+    ) -> WebhookDelivery {
+        WebhookDelivery {
+            id: Uuid::new_v4(),
+            delivery_id: delivery_id.into(),
+            event: "issues".into(),
+            payload: serde_json::json!({
+                "action": action,
+                "sender": { "id": 99, "login": "bot" },
+                "repository": {
+                    "id": github_repo_id,
+                    "name": "r",
+                    "owner": { "id": 1, "login": "o" }
+                },
+                "issue": {
+                    "id": github_issue_id,
+                    "node_id": format!("I_{delivery_id}"),
+                    "created_at": "2024-01-01T00:00:00Z",
+                    "closed_at": "2024-01-02T00:00:00Z",
+                    "user": { "id": 7, "login": "alice" },
+                    "assignees": []
+                }
+            }),
+            received_at: Utc::now(),
+            processed_at: None,
+            error: None,
+        }
+    }
+
+    /// §8.3 case 1 — **Stale local write (CAS miss in §8.2 step 5).**
+    ///
+    /// The form was loaded against `version = 5` but a webhook
+    /// already bumped the local row to 7 by submit time. The CAS
+    /// misses; the handler must surface `AcquireOutcome::Stale`
+    /// carrying the *current* local version so the UI can rehydrate
+    /// (per scope: "reject with 409 stale_local_version, return the
+    /// current row, ask the UI to reload and re-prompt the user").
+    #[tokio::test]
+    async fn race_stale_local_write_returns_current_version() {
+        let s = store();
+        let issue = Uuid::new_v4();
+        // Local version moved to 7 (e.g. a webhook landed between
+        // form load and submit).
+        s.seed_issue(issue, Uuid::new_v4(), 7);
+        let out = acquire_issue_mutation_slot(
+            &s,
+            Uuid::new_v4(),
+            issue,
+            Uuid::new_v4(),
+            5, // stale — caller still thinks the row is at 5
+            IssueMutationOp::Update,
+            serde_json::json!({"after": {"title": "x"}}),
+        )
+        .await
+        .unwrap();
+        match out {
+            AcquireOutcome::Stale { current_version } => {
+                assert_eq!(current_version, 7);
+            }
+            _ => panic!("expected stale CAS miss"),
+        }
+        // No audit row written on a stale-CAS miss (no GitHub I/O
+        // happened, so there's no audit trail by design).
+        assert!(s.inner.lock().unwrap().mutations.is_empty());
+    }
+
+    /// §8.3 case 2 — **Concurrent dev-pulse writers on the same
+    /// issue.**
+    ///
+    /// Two handlers race on the same `expected_version`. The CAS
+    /// in §8.2 step 5 admits exactly one; the second sees
+    /// `pending_remote = TRUE` (or the post-bump version) and gets
+    /// a clean `Stale`. No locks held across the GitHub round-trip
+    /// (§13.4).
+    #[tokio::test]
+    async fn race_concurrent_writers_second_loses_cas() {
+        let s = store();
+        let issue = Uuid::new_v4();
+        let repo = Uuid::new_v4();
+        s.seed_issue(issue, repo, 3);
+        // Writer A: acquires.
+        let a = acquire_issue_mutation_slot(
+            &s,
+            Uuid::new_v4(),
+            issue,
+            repo,
+            3,
+            IssueMutationOp::Close,
+            serde_json::json!({"after": {"state": "closed"}}),
+        )
+        .await
+        .unwrap();
+        let slot_a = match a {
+            AcquireOutcome::Acquired(s) => s,
+            _ => panic!("A should have acquired"),
+        };
+        assert_eq!(slot_a.new_version, 4);
+        // Writer B: races with the same expected_version.
+        let b = acquire_issue_mutation_slot(
+            &s,
+            Uuid::new_v4(),
+            issue,
+            repo,
+            3,
+            IssueMutationOp::Close,
+            serde_json::json!({"after": {"state": "closed"}}),
+        )
+        .await
+        .unwrap();
+        match b {
+            AcquireOutcome::Stale { current_version } => {
+                // Current is 4 (post-A's CAS); B is told to reload.
+                assert_eq!(current_version, 4);
+            }
+            _ => panic!("B should have been refused by the CAS"),
+        }
+        // Exactly one mutation audit row exists (A's). B never
+        // started, so it left no trail — matches §8.3.
+        assert_eq!(s.inner.lock().unwrap().mutations.len(), 1);
+    }
+
+    /// §8.3 case 3 — **Webhook arrives mid-flight** (the §13.7
+    /// reconciler guard case).
+    ///
+    /// While the §8.2 write path is between step 5 (CAS) and
+    /// step 7 (commit), a webhook for the same issue lands. The
+    /// guard must:
+    ///
+    /// 1. Not touch the `dp_issues` row (no overwrite of the
+    ///    optimistic state).
+    /// 2. Buffer the payload in
+    ///    `dp_pending_remote_webhook_buffer`.
+    /// 3. Replay the buffered payload after `commit_issue_mutation`
+    ///    clears the flag.
+    #[tokio::test]
+    async fn race_webhook_mid_flight_is_buffered_and_replayed_on_commit() {
+        use dp_fetcher::reconciler::guard::{apply_or_defer_delivery, GuardOutcome};
+        let s = store();
+        let issue = Uuid::new_v4();
+        let repo = Uuid::new_v4();
+        // Wire up the §13.7 lookups: GitHub repo id 4242, GitHub
+        // issue id 9001.
+        s.seed_issue(issue, repo, 11);
+        s.seed_repo_index(4242, repo);
+        s.seed_issue_index(repo, 9001, issue);
+
+        // Acquire — row is now in fresh pending_remote.
+        let slot = match acquire_issue_mutation_slot(
+            &s,
+            Uuid::new_v4(),
+            issue,
+            repo,
+            11,
+            IssueMutationOp::Close,
+            serde_json::json!({"after": {"state": "closed"}}),
+        )
+        .await
+        .unwrap()
+        {
+            AcquireOutcome::Acquired(s) => s,
+            _ => panic!("acquire should succeed"),
+        };
+        assert_eq!(slot.new_version, 12);
+
+        // A webhook lands while the row is pending_remote.
+        let webhook = synthetic_issue_delivery("d-mid-flight", 4242, 9001, "closed");
+        let outcome = apply_or_defer_delivery(&s, &webhook, Duration::seconds(60))
+            .await
+            .unwrap();
+        match outcome {
+            GuardOutcome::Deferred { issue_id } => assert_eq!(issue_id, issue),
+            GuardOutcome::Applied(_) => {
+                panic!("§13.7: a fresh pending_remote row must defer the webhook")
+            }
+        }
+        // The buffer holds the deferred delivery; no record_event
+        // fired (no apply_delivery happened).
+        assert_eq!(
+            s.inner.lock().unwrap().buffered.get(&issue).map(Vec::len),
+            Some(1)
+        );
+        assert!(s.inner.lock().unwrap().applied_log.is_empty());
+
+        // Now commit — the §13.7 buffer should drain through
+        // `apply_delivery` (which calls `record_event` in our fake).
+        commit_issue_mutation(&s, &slot, Some("delivery-xyz"))
+            .await
+            .unwrap();
+        let g = s.inner.lock().unwrap();
+        assert!(
+            g.buffered.get(&issue).map_or(true, Vec::is_empty),
+            "buffer should be drained after commit",
+        );
+        // The replayed delivery flowed through `apply_delivery` ->
+        // record_event, so our log captured it.
+        assert!(
+            !g.applied_log.is_empty(),
+            "buffered webhook should have been replayed through apply_delivery"
+        );
+    }
+
+    /// §8.3 case 3 (rollback variant) — buffered webhooks still
+    /// replay when the optimistic write **fails** (§8.2 step 8).
+    /// This is the case where the buffered webhook is the only
+    /// remaining record of intervening GitHub-side state.
+    #[tokio::test]
+    async fn race_webhook_mid_flight_replays_on_rollback() {
+        use dp_fetcher::reconciler::guard::{apply_or_defer_delivery, GuardOutcome};
+        let s = store();
+        let issue = Uuid::new_v4();
+        let repo = Uuid::new_v4();
+        s.seed_issue(issue, repo, 1);
+        s.seed_repo_index(4242, repo);
+        s.seed_issue_index(repo, 9001, issue);
+
+        let slot = match acquire_issue_mutation_slot(
+            &s,
+            Uuid::new_v4(),
+            issue,
+            repo,
+            1,
+            IssueMutationOp::Update,
+            serde_json::json!({"after": {"title": "x"}}),
+        )
+        .await
+        .unwrap()
+        {
+            AcquireOutcome::Acquired(s) => s,
+            _ => panic!(),
+        };
+
+        let webhook = synthetic_issue_delivery("d-rollback", 4242, 9001, "closed");
+        match apply_or_defer_delivery(&s, &webhook, Duration::seconds(60))
+            .await
+            .unwrap()
+        {
+            GuardOutcome::Deferred { .. } => {}
+            _ => panic!("expected deferral while pending_remote"),
+        }
+        // The GitHub call fails; rollback path runs.
+        rollback_issue_mutation(&s, &slot, "github 422 validation").await.unwrap();
+
+        let g = s.inner.lock().unwrap();
+        assert!(
+            g.buffered.get(&issue).map_or(true, Vec::is_empty),
+            "buffer should be drained on rollback"
+        );
+        assert!(
+            !g.applied_log.is_empty(),
+            "buffered webhook should have replayed even after rollback"
+        );
+    }
+
+    /// §13.7 — once `pending_remote_at` ages past the timeout, the
+    /// guard stops deferring and applies normally. This is the
+    /// "stuck pending row" case where the §8.5 sweeper has not yet
+    /// rolled the row back but enough time has passed that the
+    /// reconciler is allowed to overwrite again.
+    #[tokio::test]
+    async fn guard_no_longer_defers_after_timeout_expires() {
+        use dp_fetcher::reconciler::guard::{apply_or_defer_delivery, GuardOutcome};
+        let s = store();
+        let issue = Uuid::new_v4();
+        let repo = Uuid::new_v4();
+        s.seed_issue(issue, repo, 1);
+        s.seed_repo_index(4242, repo);
+        s.seed_issue_index(repo, 9001, issue);
+        // Acquire pending_remote, then backdate so it's older than
+        // the timeout.
+        s.try_acquire_issue_pending_remote(issue, 1, Uuid::new_v4())
+            .await
+            .unwrap();
+        {
+            let mut g = s.inner.lock().unwrap();
+            g.issues.get_mut(&issue).unwrap().2 =
+                Some(Utc::now() - Duration::seconds(600));
+        }
+        let webhook = synthetic_issue_delivery("d-stale", 4242, 9001, "closed");
+        match apply_or_defer_delivery(&s, &webhook, Duration::seconds(60))
+            .await
+            .unwrap()
+        {
+            GuardOutcome::Applied(_) => {}
+            GuardOutcome::Deferred { .. } => {
+                panic!("stale pending_remote_at must not defer the webhook")
+            }
+        }
     }
 }

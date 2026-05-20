@@ -703,6 +703,100 @@ pub trait Store: Send + Sync {
     ) -> Result<Vec<IssueMutation>, StoreError> {
         Ok(Vec::new())
     }
+
+    // ---- §13.7 reconciler guard + webhook replay buffer ---------------
+    //
+    // These primitives back the SCOPE-PROJECTS §13.7 invariant: the
+    // fetcher / webhook reconciler must *not* overwrite a `dp_issues`
+    // row whose `pending_remote = TRUE` and whose `pending_remote_at`
+    // is younger than `issues.pending_remote_timeout_secs`. Webhook
+    // payloads that would otherwise be applied to such a row are
+    // buffered into `dp_pending_remote_webhook_buffer` and replayed
+    // through the normal handler path once the flag clears (§8.2
+    // step 7 / step 8 / §8.5 sweeper).
+    //
+    // Default impls keep test fakes and the in-memory MCP store
+    // compiling; the `dp-store-pg` backend overrides each one.
+
+    /// Look up `dp_repos.id` from GitHub's numeric repo id.
+    /// Returns `Ok(None)` if no local repo row exists — the
+    /// guard's "first sighting" branch. The §13.7 webhook guard
+    /// uses this to resolve `payload.repository.id` to a local
+    /// repo without forcing an upsert (which would mutate state
+    /// before the guard decision had been made).
+    async fn find_repo_id_by_github_id(
+        &self,
+        _github_repo_id: i64,
+    ) -> Result<Option<Uuid>, StoreError> {
+        Ok(None)
+    }
+
+    /// Look up `dp_issues.id` from `(repo_id, github_issue_id)`.
+    /// Returns `Ok(None)` when no such row exists yet — meaning
+    /// nothing on the dev-pulse side can be pending and the caller
+    /// should just apply the delivery normally.
+    ///
+    /// `github_issue_id` is GitHub's per-issue numeric id (the
+    /// `issue.id` field in webhook payloads), not the
+    /// repo-relative `issue.number`. The §8 write path keys on
+    /// `id`, not `number`, because numbers are reassigned when an
+    /// issue is transferred between repos.
+    async fn find_issue_id_by_repo_and_github_id(
+        &self,
+        _repo_id: Uuid,
+        _github_issue_id: i64,
+    ) -> Result<Option<Uuid>, StoreError> {
+        Ok(None)
+    }
+
+    /// §13.7 guard predicate. Returns `true` when the row exists,
+    /// `pending_remote = TRUE`, and `pending_remote_at >= now() -
+    /// timeout`. A `false` result means the reconciler may apply
+    /// its payload to the row.
+    ///
+    /// Centralising the timeout comparison in the store keeps the
+    /// clock authoritative (SQL `now()` rather than the host wall
+    /// clock) on the postgres backend, matching the §8.2 / §8.5
+    /// `pending_remote_at` write side.
+    async fn is_issue_pending_remote_fresh(
+        &self,
+        _issue_id: Uuid,
+        _timeout: chrono::Duration,
+    ) -> Result<bool, StoreError> {
+        Ok(false)
+    }
+
+    /// Stash a webhook delivery on the §13.7 buffer so it can be
+    /// replayed after the pending_remote flag clears. Inserted
+    /// rows are de-duped on `delivery_id` (matching the inbox's
+    /// at-least-once-from-GitHub invariant): a duplicate
+    /// `delivery_id` returns `StoreError::Conflict`, which the
+    /// caller should treat as a benign "already buffered, nothing
+    /// more to do".
+    async fn buffer_pending_remote_webhook(
+        &self,
+        _issue_id: Uuid,
+        _delivery: &WebhookDelivery,
+    ) -> Result<(), StoreError> {
+        Err(StoreError::Invalid(
+            "pending_remote webhook buffer not supported by this store".into(),
+        ))
+    }
+
+    /// Drain every buffered webhook for `issue_id`, oldest first
+    /// (`ORDER BY buffered_at`). Returned rows are deleted from
+    /// the buffer in the same SQL statement so the replay is at-
+    /// least-once but not at-most-once: a crash between this call
+    /// and `apply_delivery` loses the buffered copy. That is
+    /// considered acceptable — GitHub's at-least-once webhook
+    /// delivery contract plus the next reconciler tick will
+    /// re-observe the same authoritative state shortly.
+    async fn take_buffered_webhooks_for_issue(
+        &self,
+        _issue_id: Uuid,
+    ) -> Result<Vec<WebhookDelivery>, StoreError> {
+        Ok(Vec::new())
+    }
 }
 
 /// Compact projection of `dp_issues` rows the §8.5 sweeper needs:

@@ -1304,6 +1304,123 @@ impl Store for PgStore {
         .map_err(map_sqlx)?;
         rows.iter().map(row_to_issue_mutation).collect()
     }
+
+    // ---- §13.7 reconciler guard + webhook replay buffer --------------
+
+    async fn find_repo_id_by_github_id(
+        &self,
+        github_repo_id: i64,
+    ) -> Result<Option<Uuid>, StoreError> {
+        // `dp_repos.github_id` is UNIQUE — index probe.
+        let row: Option<(Uuid,)> =
+            sqlx::query_as("SELECT id FROM dp_repos WHERE github_id = $1")
+                .bind(github_repo_id)
+                .fetch_optional(self.pool.sqlx())
+                .await
+                .map_err(map_sqlx)?;
+        Ok(row.map(|(id,)| id))
+    }
+
+    async fn find_issue_id_by_repo_and_github_id(
+        &self,
+        repo_id: Uuid,
+        github_issue_id: i64,
+    ) -> Result<Option<Uuid>, StoreError> {
+        // The `(repo_id, github_id)` UNIQUE on `dp_issues` (per
+        // `0001_init.sql`) makes this an index-only probe.
+        let row: Option<(Uuid,)> = sqlx::query_as(
+            "SELECT id FROM dp_issues WHERE repo_id = $1 AND github_id = $2",
+        )
+        .bind(repo_id)
+        .bind(github_issue_id)
+        .fetch_optional(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        Ok(row.map(|(id,)| id))
+    }
+
+    async fn is_issue_pending_remote_fresh(
+        &self,
+        issue_id: Uuid,
+        timeout: chrono::Duration,
+    ) -> Result<bool, StoreError> {
+        // Push the cutoff comparison into SQL so `now()` stays the
+        // same clock the §8.2 CAS used to stamp `pending_remote_at`.
+        // The seconds bind is i64 — saturating because chrono's
+        // Duration can in principle hold values that won't fit, but
+        // the production timeout knob is in tens of seconds.
+        let secs = timeout.num_seconds().max(0);
+        let row: Option<(bool,)> = sqlx::query_as(
+            "SELECT (pending_remote
+                  AND pending_remote_at IS NOT NULL
+                  AND pending_remote_at >= now() - make_interval(secs => $2))
+               FROM dp_issues
+              WHERE id = $1",
+        )
+        .bind(issue_id)
+        .bind(secs)
+        .fetch_optional(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        Ok(row.map(|(b,)| b).unwrap_or(false))
+    }
+
+    async fn buffer_pending_remote_webhook(
+        &self,
+        issue_id: Uuid,
+        delivery: &WebhookDelivery,
+    ) -> Result<(), StoreError> {
+        // No `ON CONFLICT` — duplicate `delivery_id` is a benign
+        // re-deflection of the same logical webhook, and surfacing
+        // the conflict matches the inbox's contract (the caller
+        // translates it to "already buffered, drop").
+        sqlx::query(
+            "INSERT INTO dp_pending_remote_webhook_buffer \
+                 (id, issue_id, delivery_id, event, payload, received_at) \
+             VALUES ($1, $2, $3, $4, $5, $6)",
+        )
+        .bind(delivery.id)
+        .bind(issue_id)
+        .bind(&delivery.delivery_id)
+        .bind(&delivery.event)
+        .bind(&delivery.payload)
+        .bind(delivery.received_at)
+        .execute(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        Ok(())
+    }
+
+    async fn take_buffered_webhooks_for_issue(
+        &self,
+        issue_id: Uuid,
+    ) -> Result<Vec<WebhookDelivery>, StoreError> {
+        // `DELETE … RETURNING` is the at-least-once-replay primitive
+        // §13.7 calls for: the buffered rows leave the table in the
+        // same statement that produces the replay batch, so a crash
+        // between this call and `apply_delivery` loses the buffer
+        // copy. GitHub's at-least-once redelivery + the next
+        // reconciler tick make this acceptable (the authoritative
+        // state will be re-observed shortly).
+        let rows = sqlx::query(
+            "DELETE FROM dp_pending_remote_webhook_buffer \
+              WHERE issue_id = $1 \
+             RETURNING id, delivery_id, event, payload, received_at, \
+                       NULL::timestamptz AS processed_at, \
+                       NULL::text       AS error",
+        )
+        .bind(issue_id)
+        .fetch_all(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        // Oldest first — preserves the relative ordering of inbound
+        // GitHub events on the issue. We sort in-memory because the
+        // RETURNING clause does not guarantee row order.
+        let mut out: Vec<WebhookDelivery> =
+            rows.iter().map(row_to_webhook_delivery).collect::<Result<_, _>>()?;
+        out.sort_by_key(|d| d.received_at);
+        Ok(out)
+    }
 }
 
 fn issue_mutation_op_to_text(op: IssueMutationOp) -> &'static str {

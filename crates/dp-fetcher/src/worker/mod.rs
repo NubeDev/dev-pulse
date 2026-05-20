@@ -101,6 +101,13 @@ pub struct Worker {
     /// Time to wait between drains when the inbox is empty.
     /// Cancellation interrupts this immediately.
     idle_poll: Duration,
+    /// SCOPE-PROJECTS §13.7: window in which a `dp_issues` row
+    /// with `pending_remote = TRUE` is shielded from webhook
+    /// overwrites. Matches the §8.5 sweeper timeout. Wired through
+    /// the `with_pending_remote_timeout` builder so the binary
+    /// can plumb `issues.pending_remote_timeout_secs` from
+    /// `dp-config`.
+    pending_remote_timeout: Duration,
 }
 
 impl Worker {
@@ -114,6 +121,9 @@ impl Worker {
             store,
             batch_size: 100,
             idle_poll: Duration::from_millis(250),
+            // §13.7 default; matches the §8.5 sweeper default and
+            // `issues.pending_remote_timeout_secs` in `dp-config`.
+            pending_remote_timeout: Duration::from_secs(60),
         }
     }
 
@@ -131,6 +141,15 @@ impl Worker {
     /// store when the inbox is quiet.
     pub fn with_idle_poll(mut self, d: Duration) -> Self {
         self.idle_poll = d;
+        self
+    }
+
+    /// Override the §13.7 pending-remote timeout used by the
+    /// reconciler guard. Tests use this to make the guard
+    /// sensitive on a sub-second scale; production passes the
+    /// configured `issues.pending_remote_timeout_secs`.
+    pub fn with_pending_remote_timeout(mut self, timeout: Duration) -> Self {
+        self.pending_remote_timeout = timeout;
         self
     }
 
@@ -161,13 +180,37 @@ impl Worker {
             );
             let _enter = span.enter();
 
-            match apply_delivery(self.store.as_ref(), delivery).await {
-                Ok(outcome) => {
+            // §13.7 guard wrapper: issue-scoped events deflect into
+            // the §13.7 buffer when the target `dp_issues` row is in
+            // fresh `pending_remote` state; everything else goes
+            // straight through `apply_delivery`. Deferred deliveries
+            // still mark the inbox row processed — the buffered copy
+            // is the replay target now.
+            let dispatch = crate::reconciler::guard::apply_or_defer_delivery(
+                self.store.as_ref(),
+                delivery,
+                chrono::Duration::from_std(self.pending_remote_timeout)
+                    .unwrap_or_else(|_| chrono::Duration::seconds(60)),
+            )
+            .await;
+            match dispatch {
+                Ok(crate::reconciler::guard::GuardOutcome::Applied(outcome)) => {
                     tracing::debug!(
                         events = outcome.events,
                         actors = outcome.actors,
                         "applied"
                     );
+                    self.store.mark_webhook_processed(delivery.id).await?;
+                    stats.processed += 1;
+                }
+                Ok(crate::reconciler::guard::GuardOutcome::Deferred { issue_id }) => {
+                    tracing::debug!(
+                        issue_id = %issue_id,
+                        "§13.7 deferred to pending_remote buffer"
+                    );
+                    // The delivery is now owned by the §13.7 buffer;
+                    // the inbox row can be marked processed so the
+                    // claim doesn't keep coming back.
                     self.store.mark_webhook_processed(delivery.id).await?;
                     stats.processed += 1;
                 }
