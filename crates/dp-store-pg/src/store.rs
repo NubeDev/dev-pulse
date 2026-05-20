@@ -25,6 +25,7 @@ use std::error::Error as StdError;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use dp_domain::audit::AuditEntry;
 use dp_domain::event::{ActivityEvent, ActorRole, EventActor};
 use dp_domain::fetch::{FetchCursor, FetchRun, FetchRunKind, ResourceKind};
 use dp_domain::freshness::DataAsOf;
@@ -438,6 +439,98 @@ impl Store for PgStore {
         if result.rows_affected() == 0 {
             return Err(not_found("membership", format!("({user_id}, {org_id})")));
         }
+        Ok(())
+    }
+
+    async fn set_home_org_for_user(
+        &self,
+        user_id: Uuid,
+        org_id: Uuid,
+    ) -> Result<(), StoreError> {
+        // One transaction: clear every other home_org for this user
+        // and set the (user, org_id) row in one shot so a concurrent
+        // reader cannot observe two home_org=Some rows. The single
+        // statement uses a CASE expression keyed on org_id; the
+        // ROW_COUNT after execution tells us whether the target row
+        // existed at all (we look it up explicitly so the error path
+        // mirrors set_home_org).
+        let mut tx = self.pool.sqlx().begin().await.map_err(map_sqlx)?;
+        let exists: Option<(Uuid,)> = sqlx::query_as(
+            "SELECT user_id FROM dp_memberships \
+             WHERE user_id = $1 AND org_id = $2",
+        )
+        .bind(user_id)
+        .bind(org_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(map_sqlx)?;
+        if exists.is_none() {
+            return Err(not_found("membership", format!("({user_id}, {org_id})")));
+        }
+        sqlx::query(
+            "UPDATE dp_memberships \
+             SET home_org = CASE WHEN org_id = $2 THEN $2 ELSE NULL END \
+             WHERE user_id = $1",
+        )
+        .bind(user_id)
+        .bind(org_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_sqlx)?;
+        tx.commit().await.map_err(map_sqlx)?;
+        Ok(())
+    }
+
+    async fn list_orgs(&self) -> Result<Vec<Org>, StoreError> {
+        let rows = sqlx::query(
+            "SELECT id, github_id, login, name FROM dp_orgs ORDER BY login",
+        )
+        .fetch_all(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        rows.iter().map(row_to_org).collect()
+    }
+
+    async fn list_teams_for_org(&self, org_id: Uuid) -> Result<Vec<Team>, StoreError> {
+        let rows = sqlx::query(
+            "SELECT id, org_id, github_id, slug, name \
+             FROM dp_teams WHERE org_id = $1 ORDER BY slug",
+        )
+        .bind(org_id)
+        .fetch_all(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        rows.iter().map(row_to_team).collect()
+    }
+
+    async fn list_users_for_org(&self, org_id: Uuid) -> Result<Vec<User>, StoreError> {
+        let rows = sqlx::query(
+            "SELECT u.id, u.github_id, u.login, u.email, u.name, u.deleted_at \
+             FROM dp_users u \
+             JOIN dp_memberships m ON m.user_id = u.id \
+             WHERE m.org_id = $1 AND u.deleted_at IS NULL \
+             ORDER BY u.login",
+        )
+        .bind(org_id)
+        .fetch_all(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        rows.iter().map(row_to_user).collect()
+    }
+
+    async fn record_audit_log(&self, entry: &AuditEntry) -> Result<(), StoreError> {
+        sqlx::query(
+            "INSERT INTO dp_audit_log (id, actor_user_id, action, target, at) \
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(entry.id)
+        .bind(entry.actor_user_id)
+        .bind(&entry.action)
+        .bind(&entry.target)
+        .bind(entry.at)
+        .execute(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
         Ok(())
     }
 

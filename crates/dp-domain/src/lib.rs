@@ -22,6 +22,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod audit;
 pub mod event;
 pub mod fetch;
 pub mod freshness;
@@ -34,6 +35,7 @@ pub mod user;
 pub mod webhook;
 pub mod window;
 
+pub use audit::AuditEntry;
 pub use event::{ActivityEvent, ActorRole, EventActor, EventKind};
 pub use fetch::{FetchCursor, FetchRun, FetchRunKind, ResourceKind};
 pub use freshness::DataAsOf;
