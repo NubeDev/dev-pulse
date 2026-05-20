@@ -53,8 +53,12 @@ async fn fixture(kinds: &[ResourceKind]) -> (MockServer, Arc<FakeStore>, Reconci
     .expect("client");
     let store = Arc::new(FakeStore::new());
     let targets = Arc::new(StaticTargets::new(vec![one_target()]));
+    // Tests only exercise repo-scoped kinds — skip the org-scoped
+    // (teams / members) pass added in §13.7 so it doesn't count
+    // as 2 unmocked-endpoint errors per tick.
     let rec = Reconciler::new(store.clone() as Arc<dyn Store>, Arc::new(client), targets)
-        .with_kinds(kinds);
+        .with_kinds(kinds)
+        .with_org_kinds(&[]);
     (server, store, rec)
 }
 
@@ -200,7 +204,8 @@ async fn scope_repo_narrows_to_one_target() {
         Arc::new(client),
         Arc::new(StaticTargets::new(vec![t1.clone(), t2])),
     )
-    .with_kinds(&[ResourceKind::PullRequests]);
+    .with_kinds(&[ResourceKind::PullRequests])
+    .with_org_kinds(&[]);
 
     rec.do_tick(Scope::Repo {
         org_id: t1.org_id,
