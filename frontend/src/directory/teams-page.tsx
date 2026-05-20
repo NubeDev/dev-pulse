@@ -74,7 +74,7 @@ export function TeamsPage(): JSX.Element {
               value={orgId ?? undefined}
               onValueChange={(v) => setOrgId(v)}
             >
-              <SelectTrigger id="teams-org-select" data-testid="teams-org-select">
+              <SelectTrigger className="w-full" id="teams-org-select" data-testid="teams-org-select">
                 <SelectValue
                   placeholder={dir.loading ? "Loading orgs…" : "Select an org"}
                 />

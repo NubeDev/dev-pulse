@@ -29,7 +29,7 @@ export function PageHeading({
         className,
       )}
     >
-      <div className="grid gap-1.5">
+      <div className="grid min-w-0 gap-1.5">
         <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
         {description ? (
           <p className="text-muted-foreground text-sm">{description}</p>

@@ -185,14 +185,14 @@ export function TeamReportPage(): JSX.Element {
       subjectLabel={subjectLabel}
       filters={
         <div className={FILTER_GRID_CLASS}>
-          <div className="grid gap-1.5">
+          <div className="grid min-w-0 gap-1.5">
             <Label htmlFor={orgDropdownId}>Org</Label>
             <Select
               value={activeOrgId ?? ""}
               onValueChange={selectOrg}
               disabled={orgsQuery.isPending || orgs.length === 0}
             >
-              <SelectTrigger id={orgDropdownId} data-testid="team-org-select">
+              <SelectTrigger className="w-full" id={orgDropdownId} data-testid="team-org-select">
                 <SelectValue placeholder={orgsQuery.isPending ? "Loading orgs…" : "Select an org"} />
               </SelectTrigger>
               <SelectContent>
@@ -204,14 +204,14 @@ export function TeamReportPage(): JSX.Element {
               </SelectContent>
             </Select>
           </div>
-          <div className="grid gap-1.5">
+          <div className="grid min-w-0 gap-1.5">
             <Label htmlFor={teamDropdownId}>Team</Label>
             <Select
               value={activeTeamId ?? ""}
               onValueChange={selectTeam}
               disabled={teamsQuery.isPending || teams.length === 0}
             >
-              <SelectTrigger id={teamDropdownId} data-testid="team-select">
+              <SelectTrigger className="w-full" id={teamDropdownId} data-testid="team-select">
                 <SelectValue placeholder={teamsQuery.isPending ? "Loading teams…" : "Select a team"} />
               </SelectTrigger>
               <SelectContent>

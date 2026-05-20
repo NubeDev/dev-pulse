@@ -119,7 +119,7 @@ export function UsersPage(): JSX.Element {
         </CardHeader>
         <CardContent>
           <div className={FILTER_GRID_CLASS}>
-            <div className="grid gap-1.5">
+            <div className="grid min-w-0 gap-1.5">
               <Label htmlFor="users-search">Search</Label>
               <InputGroup>
                 <InputGroupAddon>
@@ -134,13 +134,13 @@ export function UsersPage(): JSX.Element {
                 />
               </InputGroup>
             </div>
-            <div className="grid gap-1.5">
+            <div className="grid min-w-0 gap-1.5">
               <Label htmlFor="users-org-filter">Filter by org</Label>
               <Select
                 value={orgFilter}
                 onValueChange={(v) => setOrgFilter(v)}
               >
-                <SelectTrigger id="users-org-filter" data-testid="users-org-filter">
+                <SelectTrigger className="w-full" id="users-org-filter" data-testid="users-org-filter">
                   <SelectValue placeholder="All orgs" />
                 </SelectTrigger>
                 <SelectContent>

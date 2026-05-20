@@ -158,14 +158,14 @@ export function OrgReportPage(): JSX.Element {
       subjectLabel={subjectLabel}
       filters={
         <div className={FILTER_GRID_CLASS}>
-          <div className="grid gap-1.5">
+          <div className="grid min-w-0 gap-1.5">
             <Label htmlFor={dropdownId}>Org</Label>
             <Select
               value={activeOrgId ?? ""}
               onValueChange={selectOrg}
               disabled={orgsQuery.isPending || orgs.length === 0}
             >
-              <SelectTrigger id={dropdownId} data-testid="org-select">
+              <SelectTrigger className="w-full" id={dropdownId} data-testid="org-select">
                 <SelectValue placeholder={orgsQuery.isPending ? "Loading orgs…" : "Select an org"} />
               </SelectTrigger>
               <SelectContent>

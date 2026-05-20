@@ -159,14 +159,14 @@ export function UserReportPage(): JSX.Element {
       subjectLabel={subjectLabel}
       filters={
         <div className={FILTER_GRID_CLASS}>
-          <div className="grid gap-1.5">
+          <div className="grid min-w-0 gap-1.5">
             <Label htmlFor={dropdownId}>User</Label>
             <Select
               value={activeUserId ?? ""}
               onValueChange={selectUser}
               disabled={usersQuery.isPending || users.length === 0}
             >
-              <SelectTrigger id={dropdownId} data-testid="user-select">
+              <SelectTrigger className="w-full" id={dropdownId} data-testid="user-select">
                 <SelectValue placeholder={usersQuery.isPending ? "Loading users…" : "Select a user"} />
               </SelectTrigger>
               <SelectContent>

@@ -71,7 +71,7 @@ export function LoginPage(): JSX.Element {
           </CardHeader>
           <CardContent>
             <div className="grid gap-4">
-              <div className="grid gap-1.5">
+              <div className="grid min-w-0 gap-1.5">
                 <Label htmlFor="login-email">Email</Label>
                 <Input
                   id="login-email"
@@ -83,7 +83,7 @@ export function LoginPage(): JSX.Element {
                   disabled={submitting}
                 />
               </div>
-              <div className="grid gap-1.5">
+              <div className="grid min-w-0 gap-1.5">
                 <Label htmlFor="login-password">Password</Label>
                 <Input
                   id="login-password"

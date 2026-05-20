@@ -131,7 +131,7 @@ export function RefreshPage(): JSX.Element {
           <div className="grid max-w-md gap-1.5">
             <Label htmlFor="refresh-org">Org scope</Label>
             <Select value={orgId} onValueChange={setOrgId}>
-              <SelectTrigger id="refresh-org" data-testid="refresh-org">
+              <SelectTrigger className="w-full" id="refresh-org" data-testid="refresh-org">
                 <SelectValue placeholder={orgsQuery.isPending ? "Loading orgs…" : "All orgs"} />
               </SelectTrigger>
               <SelectContent>

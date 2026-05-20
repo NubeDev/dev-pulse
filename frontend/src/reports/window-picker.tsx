@@ -125,13 +125,13 @@ export function WindowPicker({ value, onChange }: WindowPickerProps): JSX.Elemen
 
   return (
     <>
-      <div className="grid gap-1.5">
+      <div className="grid min-w-0 gap-1.5">
         <Label htmlFor={presetId}>Window</Label>
         <Select
           value={value.preset}
           onValueChange={(v) => patch({ preset: v as WindowPreset })}
         >
-          <SelectTrigger id={presetId}>
+          <SelectTrigger className="w-full" id={presetId}>
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -142,10 +142,10 @@ export function WindowPicker({ value, onChange }: WindowPickerProps): JSX.Elemen
         </Select>
       </div>
 
-      <div className="grid gap-1.5">
+      <div className="grid min-w-0 gap-1.5">
         <Label htmlFor={tzId}>Time zone</Label>
         <Select value={value.tz} onValueChange={(v) => patch({ tz: v })}>
-          <SelectTrigger id={tzId}>
+          <SelectTrigger className="w-full" id={tzId}>
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -156,13 +156,13 @@ export function WindowPicker({ value, onChange }: WindowPickerProps): JSX.Elemen
         </Select>
       </div>
 
-      <div className="grid gap-1.5">
+      <div className="grid min-w-0 gap-1.5">
         <Label htmlFor={anchorId}>Anchor</Label>
         <Select
           value={value.anchor}
           onValueChange={(v) => patch({ anchor: v as WindowAnchor })}
         >
-          <SelectTrigger id={anchorId}>
+          <SelectTrigger className="w-full" id={anchorId}>
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -175,7 +175,7 @@ export function WindowPicker({ value, onChange }: WindowPickerProps): JSX.Elemen
 
       {value.preset === "custom" && (
         <>
-          <div className="grid gap-1.5">
+          <div className="grid min-w-0 gap-1.5">
             <Label htmlFor={startId}>Start</Label>
             <Input
               id={startId}
@@ -184,7 +184,7 @@ export function WindowPicker({ value, onChange }: WindowPickerProps): JSX.Elemen
               onChange={(e) => patch({ custom_start: fromLocalInput(e.target.value) })}
             />
           </div>
-          <div className="grid gap-1.5">
+          <div className="grid min-w-0 gap-1.5">
             <Label htmlFor={endId}>End</Label>
             <Input
               id={endId}

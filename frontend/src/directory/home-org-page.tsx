@@ -141,7 +141,7 @@ export function HomeOrgPage(): JSX.Element {
         <CardContent>
           <div className="grid gap-4">
             <div className="grid gap-4 grid-cols-1 sm:grid-cols-2">
-              <div className="grid gap-1.5">
+              <div className="grid min-w-0 gap-1.5">
                 <Label htmlFor="home-org-user">User</Label>
                 <Select
                   value={userId ?? undefined}
@@ -153,7 +153,7 @@ export function HomeOrgPage(): JSX.Element {
                     setFeedback(null);
                   }}
                 >
-                  <SelectTrigger id="home-org-user" data-testid="home-org-user">
+                  <SelectTrigger className="w-full" id="home-org-user" data-testid="home-org-user">
                     <SelectValue
                       placeholder={dir.loading ? "Loading users…" : "Select a user"}
                     />
@@ -178,7 +178,7 @@ export function HomeOrgPage(): JSX.Element {
                 )}
               </div>
 
-              <div className="grid gap-1.5">
+              <div className="grid min-w-0 gap-1.5">
                 <Label htmlFor="home-org-org">Home org</Label>
                 <Select
                   value={orgId ?? undefined}
@@ -188,7 +188,7 @@ export function HomeOrgPage(): JSX.Element {
                   }}
                   disabled={selectedUser === null}
                 >
-                  <SelectTrigger id="home-org-org" data-testid="home-org-org">
+                  <SelectTrigger className="w-full" id="home-org-org" data-testid="home-org-org">
                     <SelectValue
                       placeholder={
                         selectedUser === null

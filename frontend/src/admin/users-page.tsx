@@ -197,7 +197,7 @@ export function AdminUsersPage(): JSX.Element {
               setFeedback(null);
             }}
           >
-            <SelectTrigger id="admin-user" data-testid="admin-user-select">
+            <SelectTrigger className="w-full" id="admin-user" data-testid="admin-user-select">
               <SelectValue
                 placeholder={usersQuery.isPending ? "Loading users…" : "Select a user"}
               />
