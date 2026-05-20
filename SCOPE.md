@@ -555,3 +555,83 @@ TODO §0.1–§0.6 are settled and locked as inputs to Phase 2:
     degrades → consider `percentile_disc` or pre-aggregation.
 - **Resolves:** Phase 3 task list "p50/p90/p95 for durations
   (`percentile_cont`). No means."
+
+### 15.10 Operator login: GitHub OAuth via `starter-auth-oauth` (Phase 4)
+
+- **Decision (Phase 4):** Operators authenticate via GitHub OAuth
+  using `starter-auth-oauth` with the GitHub provider.
+  First-callback auto-provisions the `users` row and mints the
+  standard `sas_sid` + `starter_csrf` session. Local
+  email+password signup stays `SIGNUP_MODE=disabled`; the
+  CLI-seeded admin from `starter-auth-users::admin::create-admin`
+  is the break-glass path.
+- **`github_orgs` stamping:** a post-callback wrapper in
+  `dp-server::auth` calls `GET /user/orgs` via the Phase 2
+  octocrab client wrapper, writes the org login list into
+  `Principal.extra.oauth.github_orgs`. Cached on the session row;
+  refreshed lazily per `auth.github.org_refresh_interval` (default
+  1h in `dp-config`). Never on the request hot path.
+- **Why:** `starter-auth-oauth` is the composition-rule-compliant
+  shape (no bespoke OAuth, no starter edit). GitHub OAuth surfaces
+  the org membership needed for the authz gate (§15.11) without
+  org-admin install permissions.
+- **Revisit if:** air-gapped deployment blocks GitHub OAuth → layer
+  a second provider (OIDC). Or `starter-auth-oauth` gains a
+  `post_provision_hook` → remove the wrapper.
+- **Resolves:** SCOPE §12 "authentication model" for *operator*
+  login; TODO §6 open question (auth choice).
+
+### 15.11 Access gate: `starter-authz` allow-list on `oauth.github_orgs` (Phase 4)
+
+- **Decision (Phase 4):** access to every protected route is gated
+  by `starter-authz` (`StaticRbacEngine`) loaded from
+  `crates/dp-server/policy/dev-pulse.toml`. One allow rule:
+  `condition = "oauth.github_orgs intersects
+  auth.github.allow_orgs"` over `resource = "*"`, `actions =
+  ["*"]`. `default_policy = true` (built-in role defaults).
+- **allow-list:** `auth.github.allow_orgs: Vec<String>` in
+  `dp-config`. Adding an org is a config edit.
+- **Out-of-org:** user row + session exist (provisioned on
+  callback) but `require_permission(...)` returns `403
+  awaiting_access`. `auth.denied_org` audit row written.
+- **Why:** centralised policy, not per-handler if-checks. The
+  allow-list in config keeps the policy file stable across
+  deployments.
+- **Revisit if:** per-user overrides needed → add deny rules per
+  principal; UI-editable policies → swap for `DbPolicyEngine`.
+
+### 15.12 `with_principal` + `require_permission` boundary (Phase 4)
+
+- **Decision (Phase 4):** every route is protected by both
+  `with_principal` (authn) and `require_permission` (authz) except:
+  (a) `POST /webhooks/github` (HMAC), (b) OAuth login/callback
+  routes from `starter-auth-oauth`, (c) session routes from
+  `starter-auth-users`.
+- **Protected-path array:** one list in `dp-server::build`:
+  `&["/reports/*", "/users", "/orgs", "/teams", "/home-org",
+  "/admin/*"]`. Smoke test catches drift.
+- **Revisit if:** a public health endpoint is needed → add
+  exclusion with a SCOPE update.
+
+### 15.13 Audit action vocabulary, v1 pinned (Phase 4)
+
+- **Decision (Phase 4):** `audit_log.action` is a `const` enum in
+  `dp-rest::audit`:
+  `report.read`, `home_org.set`, `admin.refresh`,
+  `user.anonymise`, `user.export`, `runs.list`,
+  `auth.signed_in`, `auth.denied_org`.
+- **Writer:** one helper `dp_rest::audit::record()`. No second
+  writer. New verbs extend the enum (code change, not config).
+- **Revisit if:** Phase 5 MCP needs a distinct action → extend
+  the enum.
+
+### 15.14 One `DevPulseApi` OpenAPI document (Phase 4)
+
+- **Decision (Phase 4):** one `#[derive(OpenApi)] DevPulseApi` in
+  `dp-rest::openapi` aggregates every handler plus `#[utoipa::path]`
+  shims for the starter-crate OAuth/session routes. Snapshot test
+  pins `tests/openapi.snapshot.json`.
+- **Why:** per consumer-rules §6.7, one doc, one client. Per-module
+  splits fragment Phase 7 TS generation and Phase 5 MCP schemas.
+- **Revisit if:** starter crates add native utoipa annotations →
+  remove the shims.

@@ -152,11 +152,25 @@ Pick once, up-front, and don't mix:
     multi-user concurrent reads), plus webhook inbox throughput
     (§0.1), is past sqlite comfort. Postgres also the path of
     least resistance for hosted deployment (SCOPE §12).
-- **Auth** — `starter-auth-users` (multi-user, cookie sessions + API
-  tokens).
+- **Auth** — `starter-auth-users` (sessions + tokens + admin
+  CLI) plus `starter-auth-oauth` (GitHub provider) plus
+  `starter-authz` (policy engine, allow-list gate).
   - Why: SCOPE §7 has three distinct audiences — token-only
     (single owner) doesn't fit. Audit-log "who-viewed-what" (SCOPE
-    §9) needs a real user identity per request.
+    §9) needs a real user identity per request. Operator login
+    is GitHub OAuth (`starter-auth-oauth` auto-provisions the
+    user row on first callback and mints the same `sas_*`
+    session local login mints, so the rest of the stack is
+    unchanged). Email+password signup stays
+    `SIGNUP_MODE=disabled`; the CLI-seeded admin from
+    `starter-auth-users::admin::create-admin` is the
+    break-glass path. Access is gated by `starter-authz` with
+    a single allow rule keyed on `oauth.github_orgs intersects
+    auth.github.allow_orgs` (e.g. `["NubeIO", "ACME"]`),
+    configured in `dp-config` not the policy file so adding an
+    org is a config bump not a code change. Out-of-org users
+    get a row + `auth.denied_org` audit entry but every
+    protected request returns `403 awaiting_access`.
 - **Secrets** — `starter-secrets-file` (age-encrypted file).
   - Why: GitHub App private key + webhook secret + DB URL belong
     in a secrets backend; file is portable across self-hosted and
@@ -350,15 +364,41 @@ Inflated from 2–3 days because de-dup is now `event_actors`-aware
 - [ ] `dp-server::build()`:
       `ServerBuilder::new(AppState).merge_router(dp_rest::router())
        .merge_router(starter_auth_users::routes::session_router(...))
+       .merge_router(starter_auth_oauth::routes::github_router(...))
        .with_openapi(...).with_metrics(...)`.
+- [ ] GitHub OAuth operator login via `starter-auth-oauth`
+      (first-callback auto-provisions the user row + mints the
+      standard `sas_*` session). Local email+password signup
+      stays `SIGNUP_MODE=disabled`; CLI admin is the break-glass
+      path.
+- [ ] `github_orgs` attribute stamper writes
+      `Principal.extra.oauth.github_orgs` on session mint via
+      one octocrab `GET /user/orgs` call (cached on the session,
+      refreshed per `auth.github.org_refresh_interval`).
+- [ ] `starter-authz` `StaticRbacEngine` loaded from
+      `crates/dp-server/policy/dev-pulse.toml` with one allow
+      rule keyed on `oauth.github_orgs intersects
+      auth.github.allow_orgs`. The allow-list (`["NubeIO",
+      "ACME"]` etc.) lives in `dp-config`. Every protected route
+      decorated with `require_permission(<resource>,
+      <action>)`. Out-of-org users get a row + `auth.denied_org`
+      audit entry but every protected request returns `403
+      awaiting_access`.
 - [ ] Wrap protected routes with
-      `starter_server::auth::with_principal` and the
+      `starter_server::auth::with_principal` (auth) +
+      `require_permission` (authz) and the
       `Arc<dyn Authenticator>` from `starter-auth-users`.
       `/webhooks/github` is **not** principal-wrapped — it
-      authenticates via HMAC.
+      authenticates via HMAC. The OAuth login / callback +
+      `starter-auth-users` session routes are also outside
+      `with_principal` (they authenticate themselves).
 - [ ] Every report response includes the `data_as_of` object
       (SCOPE §11.7, §0.3 of this doc).
-- [ ] Every protected handler writes to `audit_log` (SCOPE §9).
+- [ ] Every protected handler writes to `audit_log` (SCOPE §9)
+      via one `dp_rest::audit::record()` helper; v1 action
+      vocabulary `{report.read, home_org.set, admin.refresh,
+      user.anonymise, user.export, runs.list, auth.signed_in,
+      auth.denied_org}`.
 
 ### Phase 5 — MCP (1–2 days)
 
@@ -451,9 +491,12 @@ Per consumer rules §5 and SCOPE §10:
 
 Pulled forward from SCOPE §12 (and the new §0 decisions):
 
-- [ ] **Auth choice** — confirm `starter-auth-users` covers the
-      *operator* GitHub OAuth login (not the tracked devs). If
-      not, we layer OAuth on top; still no starter edit.
+- [ ] **Auth choice** — confirm `starter-auth-users` +
+      `starter-auth-oauth` (GitHub) + `starter-authz` covers the
+      operator login + allow-list gate (Phase 4 SCOPE locks the
+      bias). If a needed hook is missing from the starter
+      crates, layer around it in `dp-server`; still no starter
+      edit.
 - [ ] **GitHub App vs PAT** — affects webhook availability (§0.1),
       rate-limit budget, and per-org install model. App is the
       working assumption.
