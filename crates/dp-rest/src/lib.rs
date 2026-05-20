@@ -36,6 +36,7 @@ pub mod admin;
 pub mod audit;
 pub mod directory;
 pub mod error;
+pub mod openapi;
 pub mod reports;
 pub mod state;
 
@@ -50,6 +51,7 @@ pub use directory::{
     OrgRequired, SetHomeOrgRequest, TeamDto, UserDto,
 };
 pub use error::ApiError;
+pub use openapi::DevPulseApi;
 pub use reports::{
     freshness_report, home_org_split_report, org_report, reports_router, team_report,
     user_report, CountRow, DataAsOfDto, HomeOrgSplitRow, ReportQuery, ReportResponse,

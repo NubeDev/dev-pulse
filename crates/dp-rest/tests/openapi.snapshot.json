@@ -1,0 +1,1018 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "dev-pulse",
+    "description": "GitHub activity reports + operator surface (Phase 4).",
+    "license": {
+      "name": "MIT OR Apache-2.0",
+      "identifier": "MIT OR Apache-2.0"
+    },
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/admin/refresh": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "`POST /admin/refresh` — operator-triggered reconciler tick.",
+        "description": "Audit: writes [`audit::ADMIN_REFRESH`] with target\n`\"scope:all\"`, `\"org:<id>\"`, or `\"org:<id>;repo:<id>\"`. The row\nlands even on coalesce — the operator's *intent* is what we\naudit, not whether a tick physically ran.",
+        "operationId": "refresh",
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "query",
+            "description": "Narrow the tick to one org",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "repo_id",
+            "in": "query",
+            "description": "Narrow the tick to one repo (requires org_id)",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Tick scheduled or coalesced",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefreshResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed"
+          }
+        }
+      }
+    },
+    "/admin/runs": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "`GET /admin/runs` — paginated `dp_fetch_runs` projection.",
+        "description": "Audit: writes [`audit::RUNS_LIST`] with target\n`\"runs:limit=<n>;offset=<n>\"`.",
+        "operationId": "list_runs",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size (default 50, max 500)",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Rows to skip",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Run log page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/FetchRunDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/users/{id}/anonymise": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "`POST /admin/users/:id/anonymise` — irreversible GDPR cascade.",
+        "description": "Calls [`Store::pseudonymise_user`], which rewrites\n`login`/`email`/`name` to a `deleted-user-<short>` form and sets\n`deleted_at`. The row id is preserved so historical reports\nkeep referential integrity (§0.5).\n\nAudit: writes [`audit::USER_ANONYMISE`], target\n`\"user:<id>\"`, **after** the cascade succeeds — a failed\ncascade does not leave a misleading audit trail.",
+        "operationId": "anonymise_user",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "User to anonymise",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "User anonymised",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ack"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such user"
+          }
+        }
+      }
+    },
+    "/admin/users/{id}/export": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "`GET /admin/users/:id/export` — chunked JSON dump of every row\ndev-pulse holds about the user.",
+        "description": "Wire shape: a single JSON object matching [`UserExport`]. We\nemit it incrementally so the process never holds more than one\npage of event rows in memory at a time:\n\n1. `{\"user\":<user>,\"memberships\":<memberships>,\"events\":[`\n2. one JSON object per event, comma-separated, page by page\n3. `]}`\n\nAudit: writes [`audit::USER_EXPORT`], target `\"user:<id>\"`,\n**before** streaming starts. Auditing pre-stream is deliberate\n— the request was authorised, so the access attempt should be\nrecorded even if the network drops mid-stream.",
+        "operationId": "export_user",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "User to export",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "GDPR export, JSON-streamed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserExport"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such user"
+          }
+        }
+      }
+    },
+    "/home-org": {
+      "post": {
+        "tags": [
+          "directory"
+        ],
+        "summary": "`POST /home-org` — atomically flip the user's home org.",
+        "description": "Postcondition (enforced by [`Store::set_home_org_for_user`]):\nexactly one membership row per `user_id` has `home_org =\nSome(org_id)` after this call returns.\n\nAudit: writes one [`audit::HOME_ORG_SET`] row, `target =\n\"user:<user_id>\"`. The row is written **after** the store flip\nsucceeds so a failed mutation doesn't leave a misleading audit\ntrail.\n\n[`Store::set_home_org_for_user`]: dp_domain::store::Store::set_home_org_for_user",
+        "operationId": "set_home_org",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetHomeOrgRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Home-org flipped",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ack"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such membership"
+          }
+        }
+      }
+    },
+    "/orgs": {
+      "get": {
+        "tags": [
+          "directory"
+        ],
+        "summary": "`GET /orgs` — every org dev-pulse has observed. (Stage 9 will\nnarrow to \"orgs the principal can see\"; stage 4 returns all.)",
+        "operationId": "list_orgs",
+        "responses": {
+          "200": {
+            "description": "Org directory",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/OrgDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/reports/freshness": {
+      "get": {
+        "tags": [
+          "reports"
+        ],
+        "summary": "`GET /reports/freshness` — the data-freshness probe. Returns the\nsame envelope as the report routes but with `rows: null` so the\nUI's \"data as of …\" widget can poll a single endpoint without\npaying for an event scan.",
+        "description": "The resolved window is still echoed back (defaulting to\n`last_7_days` UTC) so the response shape is uniform.",
+        "operationId": "freshness_report",
+        "responses": {
+          "200": {
+            "description": "Data-freshness envelope only",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed"
+          }
+        }
+      }
+    },
+    "/reports/home-org-split": {
+      "get": {
+        "tags": [
+          "reports"
+        ],
+        "summary": "`GET /reports/home-org-split` — the SCOPE §7 cross-org executive\nview. Always uses the [`ScopeMode::PerOrgSplit`] lens regardless\nof what the request says (the route only makes sense in that\nmode); each output row is one `(user, org)` bucket with the\ncount of distinct events the user is credited on in that org.",
+        "operationId": "home_org_split_report",
+        "responses": {
+          "200": {
+            "description": "Per (user, org) bucket counts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed"
+          }
+        }
+      }
+    },
+    "/reports/org/{org_id}": {
+      "get": {
+        "tags": [
+          "reports"
+        ],
+        "summary": "`GET /reports/org/:org_id` — counts for one org. The path\n`:org_id` is forced into `request.orgs` (single-element) so the\n`single_org` lens has the org to filter on regardless of what\nthe query string carried.",
+        "operationId": "org_report",
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "path",
+            "description": "Org the report is about",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Counts for the org in the requested lens",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed"
+          }
+        }
+      }
+    },
+    "/reports/team/{team_id}": {
+      "get": {
+        "tags": [
+          "reports"
+        ],
+        "summary": "`GET /reports/team/:team_id` — counts narrowed to one team\n(passed through to the store via `request.teams`). Per-team\n`group_by=team` is rejected in this stage; the route still\nsupports the other group-bys.",
+        "operationId": "team_report",
+        "parameters": [
+          {
+            "name": "team_id",
+            "in": "path",
+            "description": "Team the report is about",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Counts for the team in the requested lens",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed"
+          }
+        }
+      }
+    },
+    "/reports/user/{user_id}": {
+      "get": {
+        "tags": [
+          "reports"
+        ],
+        "summary": "`GET /reports/user/:user_id` — counts for one user across the\nrequested orgs / window / roles. The path `:user_id` is pushed\nonto `request.users` so the query string can omit it (the path\nis authoritative).",
+        "operationId": "user_report",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "description": "User the report is about",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Counts for the user in the requested lens",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed"
+          }
+        }
+      }
+    },
+    "/teams": {
+      "get": {
+        "tags": [
+          "directory"
+        ],
+        "summary": "`GET /teams?org_id=…` — teams inside one org.",
+        "operationId": "list_teams",
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "query",
+            "description": "Org to list teams for",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Team directory for the org",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TeamDto"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing org_id"
+          }
+        }
+      }
+    },
+    "/users": {
+      "get": {
+        "tags": [
+          "directory"
+        ],
+        "summary": "`GET /users` — list users, optionally filtered to one org.",
+        "description": "Audit: writes one `report.read`-style row… actually `directory`\nreads aren't in the v1 audit vocabulary (D4.4 only pins the eight\nlisted verbs). Listing users is a low-sensitivity read so we\nintentionally do not audit it. The stage-4 mutation that does\naudit is `POST /home-org`.",
+        "operationId": "list_users",
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "query",
+            "description": "Optional org filter",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "User directory",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/UserDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/webhooks/github": {
+      "post": {
+        "tags": [
+          "webhooks"
+        ],
+        "summary": "Documentation-only stub for `POST /webhooks/github`.",
+        "description": "The live receiver is `dp_fetcher::webhook::router::receive`;\nauthentication is the GitHub HMAC (`X-Hub-Signature-256`),\n**not** a principal cookie. Stage 6 mirrors the route's\nbehaviour into the OpenAPI document so MCP / frontend clients\nknow it exists, without coupling `dp-fetcher` to utoipa.\n\nThis function is never invoked — `dp-server` mounts the real\nrouter from `dp-fetcher` directly.",
+        "operationId": "webhook_github_stub",
+        "parameters": [
+          {
+            "name": "X-GitHub-Delivery",
+            "in": "header",
+            "description": "GitHub-issued delivery id; the inbox dedup key.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-GitHub-Event",
+            "in": "header",
+            "description": "Event kind (e.g. `pull_request`, `push`).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-Hub-Signature-256",
+            "in": "header",
+            "description": "Hex-encoded `sha256=<digest>` HMAC over the raw body.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Raw GitHub webhook JSON payload.",
+          "content": {
+            "application/json": {}
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Delivery enqueued (or replayed — GitHub retries on any non-2xx)"
+          },
+          "400": {
+            "description": "Missing required header or unparseable JSON body"
+          },
+          "401": {
+            "description": "Missing / malformed / mismatched signature"
+          },
+          "500": {
+            "description": "Persistence failure other than a replay conflict"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Ack": {
+        "type": "object",
+        "description": "Trivial response shape — handlers that don't return data still\nreturn a body so the UI doesn't switch on `204`.",
+        "required": [
+          "ok"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "description": "Always `true` on success."
+          }
+        }
+      },
+      "CountRow": {
+        "type": "object",
+        "description": "One aggregated count row. The `key` is stringified so the same\nshape works for UUID group-bys (`User`, `Team`, `Repo`, `Org`) and\ntime-bucket group-bys (`Day`, `Week`, `Month` — RFC3339 instants).",
+        "required": [
+          "key",
+          "count"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Event count attributed to this bucket."
+          },
+          "key": {
+            "type": "string",
+            "description": "The bucket key, formatted as a string."
+          }
+        }
+      },
+      "DataAsOfDto": {
+        "type": "object",
+        "description": "`data_as_of` wire shape. Mirrors `dp_domain::freshness::DataAsOf`\nbut with the serde derives + utoipa schema the dp-domain type\nintentionally lacks (dp-domain stays free of HTTP-shape concerns\nper §0.6).",
+        "required": [
+          "per_org"
+        ],
+        "properties": {
+          "headline": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Convenience headline picked by lens (SCOPE §11.7). `None`\nfor `per_org_split` (the UI renders per row) and for\n`single_org` / `all_orgs_combined` when the requested orgs\nhave no freshness entry yet."
+          },
+          "per_org": {
+            "type": "object",
+            "description": "Per-org reconciler freshness. Absent orgs have never been\ntouched by the reconciler (treat as \"pending\", not \"stale\").",
+            "additionalProperties": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "propertyNames": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "reconciler_latest": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Most recent finished reconciler tick."
+          },
+          "webhook_latest": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Most recent finished webhook-worker tick."
+          }
+        }
+      },
+      "ExportEvent": {
+        "type": "object",
+        "description": "Per-event projection inside the export. Carries the event row\nplus every role this user played on it — a squash-merge author\nwho later closed the same PR shows up once with\n`roles: [\"author\", \"closer\"]`.",
+        "required": [
+          "event_id",
+          "org_id",
+          "repo_id",
+          "kind",
+          "ts",
+          "roles"
+        ],
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Event id (the join key inside the export)."
+          },
+          "kind": {
+            "type": "string",
+            "description": "Event kind (snake_case wire form)."
+          },
+          "org_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Org the event happened in."
+          },
+          "repo_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Repo the event happened in."
+          },
+          "roles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Every role the exported user played on this event."
+          },
+          "ts": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Source timestamp (UTC)."
+          }
+        }
+      },
+      "FetchRunDto": {
+        "type": "object",
+        "description": "Wire row for `GET /admin/runs`. Mirrors [`FetchRun`] with serde\nderives + `ToSchema` so the openapi document picks it up.",
+        "required": [
+          "id",
+          "kind",
+          "started",
+          "items",
+          "errors",
+          "partial"
+        ],
+        "properties": {
+          "errors": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Items that errored during the run."
+          },
+          "finished": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Wall-clock end (UTC). `None` while the run is in flight."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Run id."
+          },
+          "items": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Items applied during the run."
+          },
+          "kind": {
+            "type": "string",
+            "description": "Run kind — `webhook_worker` / `reconciler` / `backfill`."
+          },
+          "partial": {
+            "type": "boolean",
+            "description": "`true` if the run finished but some items failed."
+          },
+          "started": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Wall-clock start (UTC)."
+          }
+        }
+      },
+      "HomeOrgSplitRow": {
+        "type": "object",
+        "description": "One row of the `/reports/home-org-split` shape — per (user, org)\nbucket, count of distinct events the user is credited on within\nthat org.",
+        "required": [
+          "user_id",
+          "org_id",
+          "count"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Event count in this bucket."
+          },
+          "org_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Org the bucket is for."
+          },
+          "user_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "User the bucket is for."
+          }
+        }
+      },
+      "MembershipDto": {
+        "type": "object",
+        "description": "`dp_memberships` projection inside the export.",
+        "required": [
+          "user_id",
+          "org_id",
+          "role",
+          "joined_at"
+        ],
+        "properties": {
+          "home_org": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Home-org label, if set."
+          },
+          "joined_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When dev-pulse first observed this membership."
+          },
+          "org_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Org side of the join."
+          },
+          "role": {
+            "type": "string",
+            "description": "Role inside the org."
+          },
+          "user_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "User side of the join."
+          }
+        }
+      },
+      "OrgDto": {
+        "type": "object",
+        "description": "`orgs.json` row.",
+        "required": [
+          "id",
+          "github_id",
+          "login"
+        ],
+        "properties": {
+          "github_id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "GitHub numeric org id."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Internal org id."
+          },
+          "login": {
+            "type": "string",
+            "description": "GitHub login (slug)."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Display name, if set."
+          }
+        }
+      },
+      "RefreshResponse": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "A tick ran to completion.",
+            "required": [
+              "ran",
+              "items",
+              "errors",
+              "partial"
+            ],
+            "properties": {
+              "errors": {
+                "type": "integer",
+                "format": "int64",
+                "description": "`(target, kind)` failures during the tick."
+              },
+              "items": {
+                "type": "integer",
+                "format": "int64",
+                "description": "Total deliveries applied during the tick."
+              },
+              "partial": {
+                "type": "boolean",
+                "description": "Whether the tick partially succeeded."
+              },
+              "ran": {
+                "type": "boolean",
+                "description": "Always `true` on this variant."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The trigger coalesced into an in-flight tick.",
+            "required": [
+              "ran"
+            ],
+            "properties": {
+              "ran": {
+                "type": "boolean",
+                "description": "Always `false` on this variant."
+              }
+            }
+          }
+        ],
+        "description": "Response body for `POST /admin/refresh`. Variants are flattened\nso a coalesce comes out as `{ \"ran\": false }` and a real tick\nas `{ \"ran\": true, \"items\": …, \"errors\": …, \"partial\": … }`."
+      },
+      "ReportResponse": {
+        "type": "object",
+        "description": "The envelope every report handler returns. `rows` is left as\n[`serde_json::Value`] so the same struct serves the five report\nshapes without forcing a per-handler enum — the OpenAPI doc\ndescribes each handler's `rows` schema via per-route `body =\n<Concrete>` overrides (added when the aggregator lands).",
+        "required": [
+          "resolved_window",
+          "rows",
+          "data_as_of"
+        ],
+        "properties": {
+          "data_as_of": {
+            "$ref": "#/components/schemas/DataAsOfDto",
+            "description": "Per-response freshness envelope (§11.7)."
+          },
+          "resolved_window": {
+            "type": "object",
+            "description": "The UTC window the report ran against. Echoed verbatim from\n[`resolve_window`] so the UI can label the report without\nre-resolving (§0.4)."
+          },
+          "rows": {
+            "description": "Aggregated rows. `null` for `/reports/freshness`."
+          }
+        }
+      },
+      "SetHomeOrgRequest": {
+        "type": "object",
+        "description": "Body for `POST /home-org`.",
+        "required": [
+          "user_id",
+          "org_id"
+        ],
+        "properties": {
+          "org_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Org that becomes the new home for that user."
+          },
+          "user_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "User to flip home org for."
+          }
+        }
+      },
+      "TeamDto": {
+        "type": "object",
+        "description": "`teams.json` row.",
+        "required": [
+          "id",
+          "org_id",
+          "github_id",
+          "slug",
+          "name"
+        ],
+        "properties": {
+          "github_id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "GitHub numeric team id."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Internal team id."
+          },
+          "name": {
+            "type": "string",
+            "description": "Display name."
+          },
+          "org_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Parent org id."
+          },
+          "slug": {
+            "type": "string",
+            "description": "URL slug."
+          }
+        }
+      },
+      "UserDto": {
+        "type": "object",
+        "description": "`users.json` row.",
+        "required": [
+          "id",
+          "github_id",
+          "login"
+        ],
+        "properties": {
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Email, if known."
+          },
+          "github_id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "GitHub numeric user id (stable across renames)."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Internal user id."
+          },
+          "login": {
+            "type": "string",
+            "description": "GitHub login."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Display name, if known."
+          }
+        }
+      },
+      "UserExport": {
+        "type": "object",
+        "description": "Top-level shape emitted by `GET /admin/users/:id/export`.\nDocumented for the openapi schema even though the response is\nserved as a chunked stream — the wire JSON parses to this type.",
+        "required": [
+          "user",
+          "memberships",
+          "events"
+        ],
+        "properties": {
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ExportEvent"
+            },
+            "description": "Every event this user is credited on, ordered by `ts ASC`."
+          },
+          "memberships": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MembershipDto"
+            },
+            "description": "Every `(user, org)` membership row."
+          },
+          "user": {
+            "$ref": "#/components/schemas/UserDto",
+            "description": "The user row (already pseudonymised if previously deleted)."
+          }
+        }
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "reports",
+      "description": "Per-user / team / org activity reports + freshness probe."
+    },
+    {
+      "name": "directory",
+      "description": "Operator-facing user / org / team listings + home-org flip."
+    },
+    {
+      "name": "admin",
+      "description": "Operator-only surface: refresh, run-log, GDPR cascade + export."
+    },
+    {
+      "name": "webhooks",
+      "description": "GitHub webhook receiver. HMAC-authenticated, not principal-wrapped."
+    }
+  ]
+}

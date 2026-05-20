@@ -107,7 +107,7 @@ impl RefreshQuery {
 /// Response body for `POST /admin/refresh`. Variants are flattened
 /// so a coalesce comes out as `{ "ran": false }` and a real tick
 /// as `{ "ran": true, "items": …, "errors": …, "partial": … }`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 #[serde(untagged)]
 pub enum RefreshResponse {
     /// A tick ran to completion.
@@ -134,7 +134,26 @@ impl IntoResponse for RefreshResponse {
     }
 }
 
-async fn refresh(
+/// `POST /admin/refresh` — operator-triggered reconciler tick.
+///
+/// Audit: writes [`audit::ADMIN_REFRESH`] with target
+/// `"scope:all"`, `"org:<id>"`, or `"org:<id>;repo:<id>"`. The row
+/// lands even on coalesce — the operator's *intent* is what we
+/// audit, not whether a tick physically ran.
+#[utoipa::path(
+    post,
+    path = "/admin/refresh",
+    params(
+        ("org_id"  = Option<Uuid>, Query, description = "Narrow the tick to one org"),
+        ("repo_id" = Option<Uuid>, Query, description = "Narrow the tick to one repo (requires org_id)"),
+    ),
+    responses(
+        (status = 200, description = "Tick scheduled or coalesced", body = RefreshResponse),
+        (status = 400, description = "Validation failed"),
+    ),
+    tag = "admin",
+)]
+pub async fn refresh(
     State(state): State<Arc<AdminState>>,
     Extension(principal): Extension<Principal>,
     Query(q): Query<RefreshQuery>,
