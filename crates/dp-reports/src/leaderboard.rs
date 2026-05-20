@@ -149,6 +149,9 @@ pub struct LeaderboardEnvelope {
     /// Bot suppression (§6.4). Defaults `false`.
     #[serde(default = "default_include_bots")]
     pub include_bots: bool,
+    /// Pagination request (§6.5). Default is "page 1, default size".
+    #[serde(default)]
+    pub page: PageRequest,
 }
 
 // ---------------------------------------------------------------------------
@@ -293,6 +296,254 @@ pub struct LeaderboardResponse {
     pub rows: Vec<LeaderboardRow>,
     /// Reconciliation + bot + sufficiency footer.
     pub footer: LeaderboardFooter,
+    /// Pagination state (ORG-REPORTS §6.5). Wired in stage 6.
+    pub page: LeaderboardPage,
+}
+
+// ---------------------------------------------------------------------------
+// §6.5 — pinned-cursor pagination
+// ---------------------------------------------------------------------------
+
+/// Default page size when the client omits `page.size`. ORG-REPORTS §6.5.
+pub const LEADERBOARD_PAGE_SIZE_DEFAULT: u32 = 25;
+
+/// Maximum page size the server honours. Requests above this are
+/// rejected with [`LeaderboardError::PageSizeOutOfRange`]. ORG-REPORTS §6.5.
+pub const LEADERBOARD_PAGE_SIZE_MAX: u32 = 200;
+
+/// Wire-form request for one page of a leaderboard.
+///
+/// `cursor` is opaque to clients — they echo back whatever
+/// `LeaderboardResponse.page.next_cursor` carried. `size` is bounded
+/// by [`LEADERBOARD_PAGE_SIZE_MAX`]; `0` and absent both mean "use
+/// [`LEADERBOARD_PAGE_SIZE_DEFAULT`]" so a missing query param can't
+/// silently degrade to an empty page.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct PageRequest {
+    /// Page size; clamped at construction time by
+    /// [`validate_page_request`]. Wire form treats `0` as "use the
+    /// default".
+    #[serde(default)]
+    pub size: u32,
+    /// Opaque cursor from a prior response's `next_cursor`. `None`
+    /// requests page 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+}
+
+/// Decoded cursor body — never serialised directly on the wire (the
+/// public form is the opaque [`PageRequest::cursor`] string produced
+/// by [`PageCursor::encode`]).
+///
+/// The triple `(resolved_window_end, rank_by_value, subject_id)` is
+/// exactly the §6.5 cursor definition. Pinning `resolved_window_end`
+/// here is what makes page 1 → page 2 a single consistent snapshot
+/// even when new events land between requests.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PageCursor {
+    /// The `[start, end)` end the cursor was minted against. Pinned
+    /// into the cursor so a subsequent page is fetched against the
+    /// same window even if the envelope would now resolve to a new
+    /// one.
+    pub resolved_window_end: DateTime<Utc>,
+    /// `rank_by` value of the last row on the previous page — the
+    /// primary axis of the §6.1 tie-break.
+    pub rank_by_value: i64,
+    /// `subject_id` of the last row on the previous page — the final
+    /// tie-break key. Opaque string (UUID for user/team/org, label
+    /// string for `home_org_label`, possibly `__unlabeled__`).
+    pub subject_id: String,
+}
+
+impl PageCursor {
+    /// Encode the cursor as the opaque string a client echoes back.
+    ///
+    /// Today the wire form is plain JSON — opaque to clients, easy to
+    /// diagnose in logs. The encoding is deliberately reversible
+    /// without a side channel so a stale cursor in a bug report can
+    /// be re-played against a fixture. Changing the encoding is a
+    /// breaking change for any cached cursor still on the wire; treat
+    /// the function pair as the format boundary.
+    pub fn encode(&self) -> String {
+        serde_json::to_string(self).expect("PageCursor serialises infallibly")
+    }
+
+    /// Decode a wire-form cursor back into its triple, returning a
+    /// typed error so the REST/MCP layer can return a precise 400
+    /// (the bare error string carries the parse cause).
+    pub fn decode(s: &str) -> Result<Self, LeaderboardError> {
+        serde_json::from_str(s).map_err(|e| LeaderboardError::CursorDecode(e.to_string()))
+    }
+}
+
+/// Pagination state on a response. ORG-REPORTS §6.5.
+///
+/// `has_more` is intentionally independent of `next_cursor.is_some()`
+/// so a server can communicate "no more pages" without the client
+/// having to introspect the cursor string. They should agree, but the
+/// flag is the authoritative signal — clients must check it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LeaderboardPage {
+    /// Opaque cursor to pass back as `PageRequest.cursor` for the
+    /// next page. `None` when there are no more pages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+    /// `true` while more pages remain. `false` on the final page,
+    /// regardless of whether `next_cursor` is `Some`.
+    pub has_more: bool,
+}
+
+/// Resolve a [`PageRequest`]'s effective page size, clamping the
+/// default-substitution rule (`0` → default) and rejecting values
+/// over [`LEADERBOARD_PAGE_SIZE_MAX`].
+///
+/// The clamp lives here rather than the `Deserialize` impl so REST
+/// (which converts `?size=` query strings) and MCP (which passes
+/// structured args) hit the exact same bound.
+pub fn effective_page_size(req: &PageRequest) -> Result<u32, LeaderboardError> {
+    let size = if req.size == 0 {
+        LEADERBOARD_PAGE_SIZE_DEFAULT
+    } else {
+        req.size
+    };
+    if size > LEADERBOARD_PAGE_SIZE_MAX {
+        return Err(LeaderboardError::PageSizeOutOfRange {
+            size,
+            max: LEADERBOARD_PAGE_SIZE_MAX,
+        });
+    }
+    Ok(size)
+}
+
+/// Validate a [`PageRequest`] against a freshly resolved envelope
+/// (ORG-REPORTS §6.5).
+///
+/// Two checks:
+///
+/// 1. **Size bound** — see [`effective_page_size`].
+/// 2. **Cursor-window match** — if a cursor is present, its
+///    `resolved_window_end` must equal the freshly-resolved
+///    envelope's `resolved_window.end`. Drift is a §11.4 trust
+///    violation: a client that changed `window.label` mid-paginate
+///    would otherwise silently mix two snapshots. The check rejects
+///    *any* drift, not just "forward" drift — going backwards is
+///    equally a misuse.
+///
+/// Returns the effective page size on success so callers don't
+/// re-compute it.
+pub fn validate_page_request(
+    req: &PageRequest,
+    resolved: &ResolvedLeaderboardEnvelope,
+) -> Result<u32, LeaderboardError> {
+    let size = effective_page_size(req)?;
+    if let Some(raw) = req.cursor.as_deref() {
+        let cursor = PageCursor::decode(raw)?;
+        if cursor.resolved_window_end != resolved.resolved_window.end {
+            return Err(LeaderboardError::CursorWindowMismatch {
+                cursor_window_end: cursor.resolved_window_end,
+                resolved_window_end: resolved.resolved_window.end,
+            });
+        }
+    }
+    Ok(size)
+}
+
+/// Build the next-page cursor from the last row on the current page.
+///
+/// Returns `None` when `rows` is empty (no cursor to mint).
+/// Callers compare `rows.len()` against the requested page size to
+/// decide `has_more`; this helper only mints the cursor itself.
+pub fn build_next_cursor(
+    resolved: &ResolvedLeaderboardEnvelope,
+    rows: &[LeaderboardRow],
+) -> Option<String> {
+    rows.last().map(|r| {
+        PageCursor {
+            resolved_window_end: resolved.resolved_window.end,
+            rank_by_value: r.primary.value,
+            subject_id: r.subject_id.clone(),
+        }
+        .encode()
+    })
+}
+
+/// Bind order for [`build_paginated_leaderboard_sql`] when called
+/// **without** a cursor. The base order from
+/// [`LEADERBOARD_BIND_ORDER`] is extended with one trailing slot for
+/// the `LIMIT`.
+pub const LEADERBOARD_BIND_ORDER_PAGED: &[&str] = &[
+    "$1 window.start (timestamptz)",
+    "$2 window.end (timestamptz, exclusive)",
+    "$3 org_ids (uuid[]; cardinality >= 1)",
+    "$4 event_kind (text — from CountMetric::event_kind())",
+    "$5 actor_roles (text[] — from envelope.actor_roles or CountMetric::default_actor_roles())",
+    "$6 repos (uuid[]; cardinality 0 == no filter)",
+    "$7 page_size (int; effective_page_size)",
+];
+
+/// Bind order for [`build_paginated_leaderboard_sql`] when called
+/// **with** a cursor. Two trailing slots are appended to the base
+/// order: the cursor's `(rank_by_value, subject_id)` tuple, then the
+/// `LIMIT`.
+pub const LEADERBOARD_BIND_ORDER_PAGED_WITH_CURSOR: &[&str] = &[
+    "$1 window.start (timestamptz)",
+    "$2 window.end (timestamptz, exclusive)",
+    "$3 org_ids (uuid[]; cardinality >= 1)",
+    "$4 event_kind (text — from CountMetric::event_kind())",
+    "$5 actor_roles (text[] — from envelope.actor_roles or CountMetric::default_actor_roles())",
+    "$6 repos (uuid[]; cardinality 0 == no filter)",
+    "$7 cursor.rank_by_value (bigint)",
+    "$8 cursor.subject_id (text)",
+    "$9 page_size (int; effective_page_size)",
+];
+
+/// Wrap the base [`build_leaderboard_sql`] in a paginated subquery.
+///
+/// Pagination is a *predicate over the aggregate result*, not a
+/// `WHERE` on the raw events — so the cursor `(primary_value,
+/// subject_id) < ($cursor_value, $cursor_id)` lives on the *outer*
+/// query around the GROUP BY. Wrapping is the cheapest way to keep
+/// the §6.1 tie-break order from each per-variant SQL string
+/// authoritative without re-implementing it here.
+///
+/// When `has_cursor == false`, the SQL appends `LIMIT $7` only —
+/// page 1 returns the head of the §6.1 order.
+///
+/// When `has_cursor == true`, the SQL becomes:
+///
+/// ```text
+/// SELECT * FROM ( <base SQL with its ORDER BY> ) AS sub
+///  WHERE (sub.primary_value, sub.subject_id) < ($7::bigint, $8::text)
+///  LIMIT $9
+/// ```
+///
+/// The tuple comparison is strict (`<`, not `<=`) so the row that
+/// was the cursor on the previous page is not re-emitted. PostgreSQL
+/// preserves the inner `ORDER BY` through the outer `SELECT *` here
+/// in practice, but we re-emit the §6.1 clause on the outer query
+/// too so any subsequent rewrite cannot drift.
+pub fn build_paginated_leaderboard_sql(
+    subject: SubjectKind,
+    scope_mode: ScopeMode,
+    has_cursor: bool,
+) -> Result<String, LeaderboardError> {
+    let base = build_leaderboard_sql(subject, scope_mode)?;
+    Ok(if has_cursor {
+        format!(
+            "SELECT * FROM ({base}) AS sub \
+              WHERE (sub.primary_value, sub.subject_id) < ($7::bigint, $8::text) \
+              {tie_break} \
+              LIMIT $9",
+            base = base,
+            tie_break = LEADERBOARD_TIE_BREAK_ORDER_BY_CLAUSE,
+        )
+    } else {
+        format!(
+            "SELECT * FROM ({base}) AS sub {tie_break} LIMIT $7",
+            base = base,
+            tie_break = LEADERBOARD_TIE_BREAK_ORDER_BY_CLAUSE,
+        )
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -358,6 +609,34 @@ pub enum LeaderboardError {
         /// bots_suppressed_events)` as a signed delta so callers
         /// can tell over- from under-counting.
         delta: i128,
+    },
+    /// The cursor pinned to a different `resolved_window_end` than
+    /// the freshly-resolved envelope produces. ORG-REPORTS §6.5: the
+    /// server refuses to silently mix two snapshots — the client
+    /// must re-fetch page 1 against the new envelope.
+    #[error(
+        "cursor_window_mismatch: cursor pinned resolved_window_end={cursor_window_end} \
+         but envelope now resolves to {resolved_window_end}"
+    )]
+    CursorWindowMismatch {
+        /// Window end the cursor was minted against.
+        cursor_window_end: DateTime<Utc>,
+        /// Window end the envelope would resolve to right now.
+        resolved_window_end: DateTime<Utc>,
+    },
+    /// The cursor string failed to parse. The wire form is opaque
+    /// but reversible (see [`PageCursor::encode`] / [`PageCursor::decode`]);
+    /// a malformed cursor is a client bug, surfaced here so REST and
+    /// MCP can return a precise 400.
+    #[error("cursor_invalid: {0}")]
+    CursorDecode(String),
+    /// `page.size` exceeded [`LEADERBOARD_PAGE_SIZE_MAX`]. §6.5.
+    #[error("page_size_out_of_range: size={size} max={max}")]
+    PageSizeOutOfRange {
+        /// Requested size after default substitution.
+        size: u32,
+        /// Server-side cap ([`LEADERBOARD_PAGE_SIZE_MAX`]).
+        max: u32,
     },
     /// Window spec failed to resolve.
     #[error(transparent)]
@@ -941,6 +1220,7 @@ mod tests {
             subject: SubjectKind::User,
             rank_by: MetricId::Count(CountMetric::PullRequestsOpened),
             include_bots: false,
+            page: PageRequest::default(),
         }
     }
 
@@ -1568,6 +1848,339 @@ mod tests {
         let back: LeaderboardFooter = serde_json::from_str(&json).unwrap();
         assert_eq!(back.bots_suppressed, 4);
         assert_eq!(back.bots_suppressed_events, 17);
+    }
+
+    // ----- Stage 6: §6.5 pinned-cursor pagination ----------------------
+
+    fn resolved_env_with_window_end(end: DateTime<Utc>) -> ResolvedLeaderboardEnvelope {
+        ResolvedLeaderboardEnvelope {
+            resolved_at: end,
+            resolved_window: Window {
+                start: end - chrono::Duration::days(7),
+                end,
+                label: "last_week".into(),
+                tz: "UTC".into(),
+                anchor: WindowAnchor::Utc,
+            },
+            scope_mode: ScopeMode::SingleOrg,
+            subject: SubjectKind::User,
+            rank_by: MetricId::Count(CountMetric::PullRequestsOpened),
+        }
+    }
+
+    #[test]
+    fn page_size_defaults_apply_when_zero() {
+        // §6.5: `size = 0` (or absent) means "use the default". A
+        // missing query param must not collapse to an empty page.
+        let req = PageRequest::default();
+        assert_eq!(effective_page_size(&req).unwrap(), LEADERBOARD_PAGE_SIZE_DEFAULT);
+    }
+
+    #[test]
+    fn page_size_rejects_values_above_the_cap() {
+        // §6.5: 200 is the cap; 201 must trip
+        // PageSizeOutOfRange. Locking this here means a server
+        // operator can audit the cap without grepping for the
+        // constant.
+        let req = PageRequest {
+            size: LEADERBOARD_PAGE_SIZE_MAX + 1,
+            cursor: None,
+        };
+        let err = effective_page_size(&req).unwrap_err();
+        assert_eq!(
+            err,
+            LeaderboardError::PageSizeOutOfRange {
+                size: LEADERBOARD_PAGE_SIZE_MAX + 1,
+                max: LEADERBOARD_PAGE_SIZE_MAX,
+            }
+        );
+    }
+
+    #[test]
+    fn page_request_round_trips_through_json_with_optional_cursor() {
+        // Wire form: absent cursor is omitted; present cursor is a
+        // plain string. Locking the wire form here keeps REST and MCP
+        // in lock-step without each one reimplementing the shape.
+        let no_cursor = PageRequest { size: 50, cursor: None };
+        let json = serde_json::to_string(&no_cursor).unwrap();
+        assert!(!json.contains("cursor"), "absent cursor must not serialise: {json}");
+        let back: PageRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, no_cursor);
+
+        let with_cursor = PageRequest {
+            size: 25,
+            cursor: Some("opaque".into()),
+        };
+        let json = serde_json::to_string(&with_cursor).unwrap();
+        assert!(json.contains("\"cursor\":\"opaque\""), "{json}");
+    }
+
+    #[test]
+    fn page_cursor_round_trips_through_encode_decode() {
+        // §6.5 cursor triple: (resolved_window_end, rank_by_value,
+        // subject_id). The encode/decode pair is the format
+        // boundary; changing the encoding is a breaking change.
+        let c = PageCursor {
+            resolved_window_end: utc(2025, 6, 16, 0, 0, 0),
+            rank_by_value: 42,
+            subject_id: "user-abc".into(),
+        };
+        let encoded = c.encode();
+        let back = PageCursor::decode(&encoded).unwrap();
+        assert_eq!(back, c);
+    }
+
+    #[test]
+    fn page_cursor_decode_surfaces_a_parse_error() {
+        // Garbage in → CursorDecode out, not a panic. The REST/MCP
+        // layer maps this to a precise 400.
+        let err = PageCursor::decode("not json").unwrap_err();
+        match err {
+            LeaderboardError::CursorDecode(msg) => assert!(!msg.is_empty()),
+            other => panic!("expected CursorDecode, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_page_request_honours_a_stale_but_consistent_cursor() {
+        // §6.5: "a subsequent page request with a stale
+        // resolved_window_end is honoured (server re-uses the pinned
+        // window)." Operationally: if the cursor's pinned window-end
+        // matches the freshly-resolved envelope's window-end, the
+        // cursor is honoured — even though the request arrived after
+        // page 1 was minted. A real clock tick between page 1 and
+        // page 2 within the same week resolves last_week to the same
+        // [start, end), so the cursor is still valid.
+        let window_end = utc(2025, 6, 16, 0, 0, 0);
+        let resolved = resolved_env_with_window_end(window_end);
+        let cursor = PageCursor {
+            resolved_window_end: window_end,
+            rank_by_value: 10,
+            subject_id: "u1".into(),
+        };
+        let req = PageRequest {
+            size: 25,
+            cursor: Some(cursor.encode()),
+        };
+        let size = validate_page_request(&req, &resolved)
+            .expect("stale-but-consistent cursor must be honoured");
+        assert_eq!(size, 25);
+    }
+
+    #[test]
+    fn validate_page_request_rejects_re_resolved_cursor_with_400_mismatch() {
+        // §6.5: "a request whose envelope window has moved forward
+        // returns a 400 cursor_window_mismatch rather than silently
+        // mixing two snapshots." Operationally: the cursor was minted
+        // against page 1's window; the new request (e.g. arriving
+        // after a week boundary, or with a changed window.label)
+        // resolves to a *different* window-end. The server refuses to
+        // mix snapshots.
+        let prev_window_end = utc(2025, 6, 16, 0, 0, 0);
+        let new_window_end = utc(2025, 6, 23, 0, 0, 0); // a week later
+        let resolved = resolved_env_with_window_end(new_window_end);
+        let cursor = PageCursor {
+            resolved_window_end: prev_window_end,
+            rank_by_value: 10,
+            subject_id: "u1".into(),
+        };
+        let req = PageRequest {
+            size: 25,
+            cursor: Some(cursor.encode()),
+        };
+        let err = validate_page_request(&req, &resolved).unwrap_err();
+        assert_eq!(
+            err,
+            LeaderboardError::CursorWindowMismatch {
+                cursor_window_end: prev_window_end,
+                resolved_window_end: new_window_end,
+            }
+        );
+    }
+
+    #[test]
+    fn validate_page_request_rejects_cursor_window_drift_in_either_direction() {
+        // Going *backwards* (cursor newer than envelope) is equally a
+        // misuse — a client shouldn't be able to splice page 2 of a
+        // future snapshot into page 1 of an older one. The error
+        // surfaces with the actual mismatch so operators can diagnose
+        // which side drifted.
+        let cursor_end = utc(2025, 6, 23, 0, 0, 0);
+        let envelope_end = utc(2025, 6, 16, 0, 0, 0);
+        let resolved = resolved_env_with_window_end(envelope_end);
+        let cursor = PageCursor {
+            resolved_window_end: cursor_end,
+            rank_by_value: 1,
+            subject_id: "u1".into(),
+        };
+        let req = PageRequest {
+            size: 0, // exercise default substitution at the same time
+            cursor: Some(cursor.encode()),
+        };
+        let err = validate_page_request(&req, &resolved).unwrap_err();
+        assert!(matches!(err, LeaderboardError::CursorWindowMismatch { .. }));
+    }
+
+    #[test]
+    fn validate_page_request_surfaces_decode_errors() {
+        // A garbage cursor is a 400-class error too — but it's
+        // CursorDecode, not CursorWindowMismatch, so the REST/MCP
+        // layer can distinguish "client sent malformed cursor" from
+        // "client changed the window between calls".
+        let resolved = resolved_env_with_window_end(utc(2025, 6, 16, 0, 0, 0));
+        let req = PageRequest {
+            size: 25,
+            cursor: Some("not-json".into()),
+        };
+        let err = validate_page_request(&req, &resolved).unwrap_err();
+        assert!(matches!(err, LeaderboardError::CursorDecode(_)));
+    }
+
+    #[test]
+    fn build_next_cursor_returns_none_for_empty_rows() {
+        // No rows → no cursor to mint. has_more should be `false` in
+        // that case, which the caller decides independently.
+        let resolved = resolved_env_with_window_end(utc(2025, 6, 16, 0, 0, 0));
+        assert!(build_next_cursor(&resolved, &[]).is_none());
+    }
+
+    #[test]
+    fn build_next_cursor_uses_the_last_row_and_pins_the_window() {
+        // Page 2's cursor is page 1's last row — that's how the §6.1
+        // tie-break stays stable across pages. The window-end is
+        // pinned from the resolved envelope so the snapshot survives
+        // event arrivals between requests.
+        let window_end = utc(2025, 6, 16, 0, 0, 0);
+        let resolved = resolved_env_with_window_end(window_end);
+        let rows = vec![
+            count_row(1, "u1", 12, 5),
+            count_row(2, "u2", 7, 4),
+            count_row(3, "u3", 3, 2),
+        ];
+        let raw = build_next_cursor(&resolved, &rows).expect("non-empty rows must mint a cursor");
+        let c = PageCursor::decode(&raw).unwrap();
+        assert_eq!(c.resolved_window_end, window_end);
+        assert_eq!(c.rank_by_value, 3);
+        assert_eq!(c.subject_id, "u3");
+    }
+
+    #[test]
+    fn paginated_sql_without_cursor_appends_limit_only() {
+        // Page 1 has no cursor predicate — only a LIMIT. The §6.1
+        // tie-break clause is re-emitted on the outer query so any
+        // future rewrite of the inner SQL cannot drift the order.
+        let sql = build_paginated_leaderboard_sql(
+            SubjectKind::User,
+            ScopeMode::SingleOrg,
+            false,
+        )
+        .unwrap();
+        let upper = sql.to_ascii_uppercase();
+        assert!(upper.contains(" LIMIT $7"), "{sql}");
+        assert!(!sql.contains("(sub.primary_value"), "page 1 must not carry a cursor predicate: {sql}");
+        assert!(sql.contains(LEADERBOARD_TIE_BREAK_ORDER_BY_CLAUSE), "{sql}");
+    }
+
+    #[test]
+    fn paginated_sql_with_cursor_appends_tuple_predicate_and_limit() {
+        // §6.5: `(primary_value, subject_id) < ($cursor)` — a strict
+        // tuple comparison so the cursor row itself is not re-emitted
+        // on the next page. The LIMIT slot moves to $9 with the
+        // cursor's two slots ($7, $8) in between.
+        let sql = build_paginated_leaderboard_sql(
+            SubjectKind::User,
+            ScopeMode::SingleOrg,
+            true,
+        )
+        .unwrap();
+        assert!(
+            sql.contains("(sub.primary_value, sub.subject_id) < ($7::bigint, $8::text)"),
+            "missing tuple predicate: {sql}",
+        );
+        assert!(sql.contains(" LIMIT $9"), "{sql}");
+        assert!(sql.contains(LEADERBOARD_TIE_BREAK_ORDER_BY_CLAUSE), "{sql}");
+    }
+
+    #[test]
+    fn paginated_sql_rejects_invalid_subject_scope_combo() {
+        // The pagination wrapper inherits the §2 validation: invalid
+        // (subject, scope) pairs must still fail with
+        // InvalidSubjectScopeCombo, not produce a meaningless paged
+        // string.
+        let err = build_paginated_leaderboard_sql(
+            SubjectKind::Org,
+            ScopeMode::SingleOrg,
+            true,
+        )
+        .unwrap_err();
+        assert!(matches!(err, LeaderboardError::InvalidSubjectScopeCombo { .. }));
+    }
+
+    #[test]
+    fn paginated_bind_orders_match_the_documented_slots() {
+        // The bind-order constants are the contract the
+        // dp-store-pg adapter binds against; drift here is the §11.4
+        // divergence trap.
+        assert_eq!(LEADERBOARD_BIND_ORDER_PAGED.len(), 7);
+        assert_eq!(LEADERBOARD_BIND_ORDER_PAGED_WITH_CURSOR.len(), 9);
+
+        let no_cursor = build_paginated_leaderboard_sql(
+            SubjectKind::User,
+            ScopeMode::SingleOrg,
+            false,
+        )
+        .unwrap();
+        for i in 1..=7 {
+            assert!(no_cursor.contains(&format!("${i}")), "missing ${i} in: {no_cursor}");
+        }
+
+        let with_cursor = build_paginated_leaderboard_sql(
+            SubjectKind::User,
+            ScopeMode::SingleOrg,
+            true,
+        )
+        .unwrap();
+        for i in 1..=9 {
+            assert!(with_cursor.contains(&format!("${i}")), "missing ${i} in: {with_cursor}");
+        }
+    }
+
+    #[test]
+    fn response_serialises_page_block_with_explicit_has_more() {
+        // `has_more` is on the wire even when false so a client never
+        // has to introspect the cursor string to decide whether to
+        // request another page.
+        let page = LeaderboardPage::default();
+        let json = serde_json::to_string(&page).unwrap();
+        assert!(json.contains("\"has_more\":false"), "{json}");
+        assert!(!json.contains("next_cursor"), "absent cursor must omit: {json}");
+
+        let page = LeaderboardPage {
+            next_cursor: Some("c".into()),
+            has_more: true,
+        };
+        let json = serde_json::to_string(&page).unwrap();
+        assert!(json.contains("\"next_cursor\":\"c\""), "{json}");
+        assert!(json.contains("\"has_more\":true"), "{json}");
+    }
+
+    #[test]
+    fn envelope_default_page_round_trips_with_no_cursor_field() {
+        // The envelope's `page` defaults so an existing report URL
+        // can be pivoted into a leaderboard without adding paging
+        // params. Backwards compat: a missing `page` in the request
+        // JSON must deserialise as the default.
+        let json = r#"{
+            "window": { "label": "today", "tz": "UTC", "anchor": "utc" },
+            "scope_mode": "single_org",
+            "orgs": ["00000000-0000-0000-0000-000000000000"],
+            "subject": "user",
+            "rank_by": { "family": "count", "id": "pull_requests_opened" }
+        }"#;
+        let env: LeaderboardEnvelope = serde_json::from_str(json).unwrap();
+        assert_eq!(env.page, PageRequest::default());
+        assert!(env.page.cursor.is_none());
+        assert_eq!(env.page.size, 0); // → effective_page_size = default
     }
 
     #[test]
