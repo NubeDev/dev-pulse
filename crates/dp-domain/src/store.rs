@@ -23,6 +23,7 @@ use crate::audit::AuditEntry;
 use crate::event::{ActivityEvent, ActorRole, EventActor, EventKind};
 use crate::fetch::{FetchCursor, FetchRun, FetchRunKind, ResourceKind};
 use crate::freshness::DataAsOf;
+use crate::inbox::{InboxIssueRow, InboxStatus, UserIssueState};
 use crate::issue::{Issue, IssueState, RepoSummary};
 use crate::issue_mutation::{IssueMutation, IssueMutationResult};
 use crate::membership::Membership;
@@ -302,6 +303,96 @@ pub trait Store: Send + Sync {
         _number: i64,
     ) -> Result<Option<Issue>, StoreError> {
         Ok(None)
+    }
+
+    // ---- per-user inbox (triage spine, slice 1) -------------------
+    //
+    // Backs the `★ My queue` smart view + inbox UX
+    // (`linear-projects-idea.md` §3.8). All methods key on
+    // `(user_id, issue_id)`; row absence means "default state" —
+    // implicitly `Inbox`, `last_seen_version = 0`. The store layer
+    // materialises that convention on read so callers never have
+    // to special-case the missing row.
+
+    /// Issue rows for the user's inbox view, with the per-user
+    /// inbox metadata folded in (unread bit + status +
+    /// snoozed_until). The filter narrows the candidate issue set
+    /// in the same way as [`list_issues`]; the join with
+    /// `dp_user_issue_state` adds:
+    ///
+    ///   * `status <> 'done'` (Done rows are dismissed and never
+    ///     appear in the inbox view), and
+    ///   * `status <> 'snoozed' OR snoozed_until < now()` (active
+    ///     snoozes are hidden; expired snoozes surface again).
+    ///
+    /// Sort: `updated_at DESC` (same as `list_issues`).
+    ///
+    /// Default impl returns empty — only `dp-store-pg` provides a
+    /// real implementation; the in-memory fakes used by other
+    /// crates do not need inbox semantics.
+    async fn list_inbox_issues(
+        &self,
+        _user_id: Uuid,
+        _filter: &IssueListFilter,
+    ) -> Result<Vec<InboxIssueRow>, StoreError> {
+        Ok(vec![])
+    }
+
+    /// Total count of inbox-visible rows for the same filter that
+    /// would drive [`list_inbox_issues`]. Matches the contract of
+    /// [`count_issues`].
+    async fn count_inbox_issues(
+        &self,
+        _user_id: Uuid,
+        _filter: &IssueListFilter,
+    ) -> Result<i64, StoreError> {
+        Ok(0)
+    }
+
+    /// Mark a batch of issues as "read up to their current
+    /// `dp_issues.version`" for one user. Upserts one row per
+    /// `(user_id, issue_id)` in `dp_user_issue_state`, setting
+    /// `last_seen_version = (SELECT version FROM dp_issues …)`.
+    /// Existing `status` / `snoozed_until` values are preserved
+    /// (this is the "you read it" signal, not the "you dismissed
+    /// it" signal). Idempotent — re-marking a row sets the value
+    /// to the same version (or higher if the issue has been
+    /// updated in the meantime).
+    ///
+    /// Empty `issue_ids` is a no-op (the empty-list edge case
+    /// belongs to the caller's UX, not the store).
+    async fn mark_issues_seen(
+        &self,
+        _user_id: Uuid,
+        _issue_ids: &[Uuid],
+    ) -> Result<(), StoreError> {
+        Err(StoreError::Invalid(
+            "inbox state not supported by this store".into(),
+        ))
+    }
+
+    /// Set `(status, snoozed_until)` for one `(user_id, issue_id)`.
+    /// Upserts the row, preserving `last_seen_version` (the snooze
+    /// / dismiss / restore actions do not move the seen marker).
+    /// Returns the resulting row so the caller can echo it back to
+    /// the UI without a second round-trip.
+    ///
+    /// Validation the store leaves to the caller: when
+    /// `status == Inbox` or `Done`, `snoozed_until` should be
+    /// `None`; when `status == Snoozed`, `snoozed_until` should be
+    /// `Some(future_instant)`. The store does not enforce this so
+    /// the UX can transiently set inconsistent pairs (e.g. clear
+    /// a snooze by writing `Inbox` without first wiping the date).
+    async fn set_inbox_state(
+        &self,
+        _user_id: Uuid,
+        _issue_id: Uuid,
+        _status: InboxStatus,
+        _snoozed_until: Option<DateTime<Utc>>,
+    ) -> Result<UserIssueState, StoreError> {
+        Err(StoreError::Invalid(
+            "inbox state not supported by this store".into(),
+        ))
     }
 
     // ---- events + actors -----------------------------------------
@@ -893,17 +984,33 @@ pub struct RepoListFilter {
     pub offset: i64,
 }
 
-/// Filter for [`Store::list_issues`] / [`Store::count_issues`].
+/// Filter for [`Store::list_issues`] / [`Store::count_issues`] /
+/// [`Store::list_inbox_issues`].
+///
+/// Fields combine conjunctively (AND across the struct).
+/// Repeatable fields (`repo_ids`, `org_ids`, `assignees`, `labels`)
+/// are ALSO conjunctive within themselves — matching Linear's
+/// pill semantics, where adding a second label narrows the set
+/// rather than widening it.
+///
+/// Scalar fields (`repo_id`, `org_id`, `assignee`) are retained for
+/// back-compat with the early `GET /issues` callers. When both
+/// scalar and array forms are populated, the predicate is the
+/// intersection (both apply). The dp-rest layer normalises a
+/// scalar into the matching array before calling, so most
+/// callers should only populate the array form.
 #[derive(Debug, Clone, Default)]
 pub struct IssueListFilter {
-    /// Restrict to one repo.
+    /// Restrict to one repo (back-compat shorthand for
+    /// `repo_ids = vec![…]`).
     pub repo_id: Option<Uuid>,
-    /// Restrict to one org.
+    /// Restrict to one org (back-compat shorthand for
+    /// `org_ids = vec![…]`).
     pub org_id: Option<Uuid>,
     /// Filter by state. `None` ⇒ open + closed.
     pub state: Option<IssueState>,
-    /// Match an assignee login (exact, case-sensitive — GitHub
-    /// logins are unique and case-folded server-side).
+    /// Match an assignee login (back-compat shorthand for
+    /// `assignees = vec![…]`).
     pub assignee: Option<String>,
     /// Case-insensitive substring search on `dp_issues.title`.
     pub q: Option<String>,
@@ -911,6 +1018,37 @@ pub struct IssueListFilter {
     pub limit: i64,
     /// Page offset.
     pub offset: i64,
+
+    // ---- triage-spine extensions (slice 1) --------------------
+
+    /// Match issues whose `repo_id` is in this set. Empty ⇒ no
+    /// constraint. Logically OR within the set (any of these
+    /// repos) but AND with the other filter fields.
+    pub repo_ids: Vec<Uuid>,
+    /// Match issues whose `org_id` is in this set. Empty ⇒ no
+    /// constraint. The `/me/queue` handler always populates this
+    /// with the caller's org set so per-row authz is enforced in
+    /// SQL even if the policy layer ever degrades open.
+    pub org_ids: Vec<Uuid>,
+    /// Match issues having **all** of these assignees (JSONB
+    /// containment AND). Empty ⇒ no constraint.
+    pub assignees: Vec<String>,
+    /// Match issues having **all** of these labels (JSONB
+    /// containment AND). Empty ⇒ no constraint.
+    pub labels: Vec<String>,
+    /// Match issues whose `author` column equals this value. Rows
+    /// where `author IS NULL` (un-backfilled) never match — same
+    /// behaviour as any other scalar filter.
+    pub author: Option<String>,
+    /// Match issues whose `state_reason` column equals this value
+    /// (e.g. `"completed"` / `"not_planned"` / `"reopened"`).
+    pub state_reason: Option<String>,
+    /// Match issues with `updated_at >= updated_since`.
+    pub updated_since: Option<DateTime<Utc>>,
+    /// Untriaged smart-view shortcut: when true, restrict to rows
+    /// with **no** assignees and **no** labels. Combines with the
+    /// rest of the filter (so "Untriaged in org X" is one call).
+    pub untriaged_only: bool,
 }
 
 /// Hard upper bound on `limit` across the workflow read surface.

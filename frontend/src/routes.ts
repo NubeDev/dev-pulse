@@ -58,22 +58,67 @@ export function workflowIssuesRoute(opts: { repoId?: string | null; issueId?: st
   return qs ? `#/workflow/issues?${qs}` : "#/workflow/issues";
 }
 
-/** Sub-route under the workflow section — Repos master, Issues drill-down. */
-export type WorkflowTab = "repos" | "issues";
+/** Sub-route under the workflow section.
+ *  - `triage` (default): Linear-style three-pane triage surface
+ *                        (`linear-projects-idea.md` §3) — smart views
+ *                        rail + dense issue list + peek panel.
+ *  - `repos`           : legacy repos master.
+ *  - `issues`          : legacy paginated issues table. */
+export type WorkflowTab = "triage" | "repos" | "issues";
 
-/** Parse `#/workflow/...` → the active sub-tab. Defaults to `repos`. */
+/** Parse `#/workflow/...` → the active sub-tab. Defaults to `triage`
+ *  so `#/workflow` lands on the Linear-style triage page
+ *  (`linear-projects-idea.md` §3). */
 export function workflowTabOf(route: string): WorkflowTab {
   const path = route.replace(/^#/, "").replace(/^\/+/, "").split("/");
-  if (path[0] !== "workflow") return "repos";
+  if (path[0] !== "workflow") return "triage";
   switch (path[1]) {
     case "issues":
       return "issues";
     case "repos":
+      return "repos";
+    case "triage":
     case undefined:
     case "":
     default:
-      return "repos";
+      return "triage";
   }
+}
+
+/** Smart-view identifier inside the triage page
+ *  (`linear-projects-idea.md` §3.5). Lives in the URL query as
+ *  `?view=...` so a deep-linked rail selection round-trips. */
+export type TriageView = "mine" | "untriaged" | "all" | "snoozed";
+
+/** Parse `#/workflow/triage?view=...` → the active smart view. */
+export function triageView(route: string): TriageView {
+  const q = route.indexOf("?");
+  if (q < 0) return "mine";
+  const v = new URLSearchParams(route.slice(q + 1)).get("view");
+  switch (v) {
+    case "untriaged":
+    case "all":
+    case "snoozed":
+      return v;
+    case "mine":
+    default:
+      return "mine";
+  }
+}
+
+/** Build a `#/workflow/triage` URL with optional view / repo / issue
+ *  selection. All three round-trip through copy-paste. */
+export function workflowTriageRoute(opts: {
+  view?: TriageView;
+  repoId?: string | null;
+  issueId?: string | null;
+} = {}): string {
+  const params = new URLSearchParams();
+  if (opts.view && opts.view !== "mine") params.set("view", opts.view);
+  if (opts.repoId) params.set("repo_id", opts.repoId);
+  if (opts.issueId) params.set("issue", opts.issueId);
+  const qs = params.toString();
+  return qs ? `#/workflow/triage?${qs}` : "#/workflow/triage";
 }
 
 /** Sub-route under the reports section — drives the reports sub-nav. */

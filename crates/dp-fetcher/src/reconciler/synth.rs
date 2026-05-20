@@ -209,6 +209,87 @@ pub fn commits_response_to_delivery(
     ))
 }
 
+/// Shape an `{id, login}` block matching what `upsert_org_from`
+/// expects. Used by the org-scoped synth paths (teams / members) —
+/// the org-list reconcile loop doesn't ride through `repository`,
+/// so we synthesise the same shape the `organization` field on the
+/// real webhook event carries.
+fn organization_block(org_github_id: i64, org_login: &str) -> Value {
+    json!({
+        "id":    org_github_id,
+        "login": org_login,
+    })
+}
+
+/// Synthesise one `team` webhook delivery (action `created`) per
+/// team returned by `GET /orgs/{org}/teams`.
+///
+/// `created` is the lowest-impact action the handler accepts —
+/// `handle_team` upserts on `(org_id, github_id)` regardless of
+/// action, so the value here is "make the handler see a team it
+/// hasn't seen, or rename one it has". Renames flow naturally
+/// through the same upsert.
+pub fn teams_response_to_deliveries(
+    org_github_id: i64,
+    org_login: &str,
+    teams: &[Value],
+) -> Vec<WebhookDelivery> {
+    let mut out = Vec::with_capacity(teams.len());
+    for team in teams {
+        // Defensive: skip entries that are missing the fields
+        // `handle_team` requires (`id`, `slug`). The handler would
+        // otherwise return `MissingField` and the per-tick error
+        // count would inflate for no operator-actionable reason.
+        if team.get("id").and_then(Value::as_i64).is_none()
+            || team.get("slug").and_then(Value::as_str).is_none()
+        {
+            continue;
+        }
+        out.push(make_delivery(
+            "team",
+            json!({
+                "action":       "created",
+                "organization": organization_block(org_github_id, org_login),
+                "team":         team,
+            }),
+        ));
+    }
+    out
+}
+
+/// Synthesise one `membership` webhook delivery (action `added`)
+/// per member returned by `GET /orgs/{org}/members`.
+///
+/// `handle_membership` upserts a `(user, org)` membership row with
+/// `role = Member`. GitHub's org-members list doesn't include role,
+/// so every reconciler-sourced membership flat-lines on `Member`;
+/// real role changes ride the webhook path and overwrite via
+/// upsert. The membership PK is `(user_id, org_id)`, so this is
+/// safe.
+pub fn members_response_to_deliveries(
+    org_github_id: i64,
+    org_login: &str,
+    members: &[Value],
+) -> Vec<WebhookDelivery> {
+    let mut out = Vec::with_capacity(members.len());
+    for member in members {
+        if member.get("id").and_then(Value::as_i64).is_none()
+            || member.get("login").and_then(Value::as_str).is_none()
+        {
+            continue;
+        }
+        out.push(make_delivery(
+            "membership",
+            json!({
+                "action":       "added",
+                "organization": organization_block(org_github_id, org_login),
+                "member":       member,
+            }),
+        ));
+    }
+    out
+}
+
 /// Walk a list-response array picking the maximum timestamp at any
 /// of the candidate JSON pointers. Used to advance the cursor's
 /// `since` to "newest thing we just observed".

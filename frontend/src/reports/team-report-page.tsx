@@ -151,7 +151,10 @@ export function TeamReportPage(): JSX.Element {
 
   const firstSettled = queries.find((q) => q.data);
   const dataAsOf: DataAsOf | null = firstSettled?.data?.data_as_of ?? null;
-  const anyLoading = queries.some((q) => q.isPending);
+  // React Query v5 reports `isPending` for disabled queries too, so we must
+  // gate on `activeTeamId` — otherwise the DataAsOfBanner shows "loading"
+  // forever when no team is selected (e.g. orgs that have zero teams).
+  const anyLoading = !!activeTeamId && queries.some((q) => q.isPending);
 
   function selectTeam(id: string): void {
     setTeamId(id);

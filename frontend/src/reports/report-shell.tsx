@@ -78,6 +78,10 @@ export interface ReportShellProps {
   onLensChange: (next: ScopeMode) => void
   /** Subject noun for the headline (e.g. user login, team name). */
   subjectLabel: string | null
+  /** Optional extra content rendered after the per-kind DataTable
+   *  (e.g. per-org / per-repo breakdown panels). Only shown when
+   *  `ready` is true. */
+  footer?: ReactNode
 }
 
 interface ActivityRow {
@@ -256,6 +260,7 @@ export function ReportShell({
   lens,
   onLensChange,
   subjectLabel,
+  footer,
 }: ReportShellProps): JSX.Element {
   const rows = useMemo(() => buildRows(perKind), [perKind])
   const kpis = useMemo(() => buildKpis(rows), [rows])
@@ -332,6 +337,7 @@ export function ReportShell({
             }
             emptyMessage="No activity in this window."
           />
+          {footer}
         </>
       )}
     </div>

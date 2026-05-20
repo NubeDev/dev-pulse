@@ -19,6 +19,7 @@ import type {
   RepoSummaryDto,
   TagDto,
   TagDetailResponse,
+  UserIssueStateDto,
 } from "../api/client.js";
 
 export const USE_MOCK = import.meta.env.VITE_USE_MOCK_REPORTS === "1";
@@ -160,6 +161,75 @@ export const mockIssueList: IssueListItem[] = [
     updated_at: mockIssue.updated_at,
   },
 ];
+
+/** Mock-side per-user inbox state, keyed by issue id. Mirrors the
+ *  `dp_user_issue_state` row the real backend stores. Mutable so the
+ *  smoke harness can exercise the §3.8 mark-seen / snooze / done UX
+ *  without a backend. */
+export const mockInboxState = new Map<string, UserIssueStateDto>();
+
+/** Mock-side `GET /me/queue`. Hides rows with `status = "done"` and
+ *  rows snoozed past `now`; projects `unread` from the mock state. */
+export function mockListMyQueue(q: ListIssuesQuery): IssueListResponse {
+  const base = mockListIssues({ ...q });
+  const now = Date.now();
+  const rows = base.rows
+    .map((row) => {
+      const st = mockInboxState.get(row.id);
+      const unread = !st || row.version > st.last_seen_version;
+      return { row, st, unread };
+    })
+    .filter(({ st }) => {
+      if (!st) return true;
+      if (st.status === "done") return false;
+      if (
+        st.status === "snoozed" &&
+        st.snoozed_until &&
+        new Date(st.snoozed_until).getTime() > now
+      ) {
+        return false;
+      }
+      return true;
+    })
+    .map(({ row, unread }) => ({ ...row, unread }));
+  return { ...base, rows, total: rows.length };
+}
+
+/** Mock-side `POST /me/inbox/seen`. Bumps `last_seen_version` to the
+ *  current row version. */
+export function mockMarkInboxSeen(issueIds: string[]): void {
+  for (const id of issueIds) {
+    const row = mockIssueList.find((r) => r.id === id);
+    if (!row) continue;
+    const prev = mockInboxState.get(id);
+    mockInboxState.set(id, {
+      issue_id: id,
+      last_seen_version: Math.max(prev?.last_seen_version ?? 0, row.version),
+      status: prev?.status ?? "inbox",
+      snoozed_until: prev?.snoozed_until ?? null,
+      updated_at: new Date().toISOString(),
+    });
+  }
+}
+
+/** Mock-side `PATCH /me/inbox/{issue_id}`. */
+export function mockSetInboxState(
+  issueId: string,
+  status: "inbox" | "snoozed" | "done",
+  snoozed_until: string | null | undefined,
+): UserIssueStateDto {
+  const row = mockIssueList.find((r) => r.id === issueId);
+  const prev = mockInboxState.get(issueId);
+  const next: UserIssueStateDto = {
+    issue_id: issueId,
+    last_seen_version: prev?.last_seen_version ?? row?.version ?? 0,
+    status,
+    snoozed_until: snoozed_until ?? null,
+    updated_at: new Date().toISOString(),
+  };
+  mockInboxState.set(issueId, next);
+  return next;
+}
 
 /** Mock-side filter mirroring the real `GET /issues` axes. Returns
  *  the same paginated envelope shape the server emits. */

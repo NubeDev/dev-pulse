@@ -421,6 +421,11 @@ export const IssueDtoSchema = z.object({
    *  optimistic local write. CAS token for the §8 write path. */
   version: z.number().int(),
   updated_at: isoDateTime,
+  /** `true` when the caller has not yet marked this issue's current
+   *  `version` as seen (`linear-projects-idea.md` §3.8). Only set on
+   *  inbox-aware responses (`GET /me/queue`); absent or `false`
+   *  elsewhere. Treat `undefined` as `false` at the call site. */
+  unread: z.boolean().optional(),
 });
 export type IssueDto = z.infer<typeof IssueDtoSchema>;
 
@@ -475,6 +480,11 @@ export const IssueListItemSchema = z.object({
   labels: z.array(z.string()),
   assignees: z.array(z.string()),
   updated_at: isoDateTime,
+  /** Inbox-only: `dp_issues.version > last_seen_version` for the
+   *  caller (`linear-projects-idea.md` §3.8). Absent / `false`
+   *  outside the `GET /me/queue` envelope. Treat `undefined` as
+   *  `false` at the call site. */
+  unread: z.boolean().optional(),
 });
 export type IssueListItem = z.infer<typeof IssueListItemSchema>;
 
@@ -507,14 +517,41 @@ export const RepoListResponseSchema = z.object({
 });
 export type RepoListResponse = z.infer<typeof RepoListResponseSchema>;
 
-/** Query params for `GET /issues`. All optional; the server clamps
- *  `limit` into `1..=200` (default 50) and treats negative `offset`
- *  as zero. `state` defaults to `"open"` server-side. */
+/** Query params for `GET /issues` and `GET /me/queue`. All optional;
+ *  the server clamps `limit` into `1..=200` (default 50) and treats
+ *  negative `offset` as zero. `state` defaults to `"open"` server-side.
+ *
+ *  Array fields are sent as comma-separated strings (`repo_ids=a,b,c`)
+ *  per `linear-projects-idea.md` §5.4 / §5.8. Each is AND-combined
+ *  with the rest of the filter; within a single array, multi-value
+ *  semantics match Linear (assignees / labels are AND, ids are OR). */
 export interface ListIssuesQuery {
+  /** Single-repo back-compat. Prefer `repo_ids` for multi-select. */
   repo_id?: string;
+  /** Multi-repo OR; comma-joined wire-side. Empty array is omitted. */
+  repo_ids?: string[];
+  /** Single-org back-compat. */
   org_id?: string;
+  /** Multi-org OR; comma-joined wire-side. */
+  org_ids?: string[];
   state?: "open" | "closed" | "all";
+  /** Single-assignee back-compat. Prefer `assignees`. */
   assignee?: string;
+  /** Multi-assignee AND (Linear semantics — "issues assigned to all
+   *  of these people"). */
+  assignees?: string[];
+  /** Multi-label AND. */
+  labels?: string[];
+  /** Author login (exact match). */
+  author?: string;
+  /** GitHub `state_reason` (`completed` / `not_planned` / `reopened`). */
+  state_reason?: string;
+  /** RFC3339 lower bound on `updated_at`. */
+  updated_since?: string;
+  /** Filter to rows with no assignee and no label — the Linear-style
+   *  "Untriaged" smart view (`linear-projects-idea.md` §3.5). */
+  untriaged?: boolean;
+  /** Substring search on title. */
   q?: string;
   limit?: number;
   offset?: number;
@@ -526,6 +563,68 @@ export interface ListReposQuery {
   q?: string;
   limit?: number;
   offset?: number;
+}
+
+// --- Inbox (linear-projects-idea.md §3.8 / §5.8) --------------------------
+
+/** Tri-state inbox status, lower-case to match the SQL form in
+ *  `dp_user_issue_state.status`. */
+export const InboxStatusSchema = z.enum(["inbox", "snoozed", "done"]);
+export type InboxStatus = z.infer<typeof InboxStatusSchema>;
+
+/** Echo of one `dp_user_issue_state` row — returned by
+ *  `PATCH /me/inbox/{issue_id}` so the UI can confirm the write
+ *  without a follow-up GET. */
+export const UserIssueStateDtoSchema = z.object({
+  issue_id: uuid,
+  last_seen_version: z.number().int(),
+  status: InboxStatusSchema,
+  snoozed_until: isoDateTime.nullable().optional(),
+  updated_at: isoDateTime,
+});
+export type UserIssueStateDto = z.infer<typeof UserIssueStateDtoSchema>;
+
+/** Body for `POST /me/inbox/seen`. Capped at 200 ids per request
+ *  (server-enforced, `SEEN_BATCH_CAP`). */
+export interface MarkSeenRequest {
+  issue_ids: string[];
+}
+
+/** Body for `PATCH /me/inbox/{issue_id}`. Either field may be
+ *  absent; omitting both leaves the row at defaults. Pass
+ *  `snoozed_until: null` to clear the snooze deadline. */
+export interface SetInboxStateRequest {
+  status?: InboxStatus;
+  snoozed_until?: string | null;
+}
+
+/**
+ * Serialise a [`ListIssuesQuery`] into a `?key=value` query string
+ * for `GET /issues` and `GET /me/queue`. Array fields are joined
+ * with commas (the server splits on the same separator,
+ * `csv_uuids` / `csv_strings` in `issues_read.rs`). Empty / undefined
+ * fields are omitted; a leading `?` is included when at least one
+ * param survives.
+ */
+function buildIssueListQs(q: ListIssuesQuery): string {
+  const params = new URLSearchParams();
+  if (q.repo_id) params.set("repo_id", q.repo_id);
+  if (q.repo_ids?.length) params.set("repo_ids", q.repo_ids.join(","));
+  if (q.org_id) params.set("org_id", q.org_id);
+  if (q.org_ids?.length) params.set("org_ids", q.org_ids.join(","));
+  if (q.state) params.set("state", q.state);
+  if (q.assignee) params.set("assignee", q.assignee);
+  if (q.assignees?.length) params.set("assignees", q.assignees.join(","));
+  if (q.labels?.length) params.set("labels", q.labels.join(","));
+  if (q.author) params.set("author", q.author);
+  if (q.state_reason) params.set("state_reason", q.state_reason);
+  if (q.updated_since) params.set("updated_since", q.updated_since);
+  if (q.untriaged) params.set("untriaged", "true");
+  if (q.q) params.set("q", q.q);
+  if (q.limit !== undefined) params.set("limit", String(q.limit));
+  if (q.offset !== undefined) params.set("offset", String(q.offset));
+  const qs = params.toString();
+  return qs ? `?${qs}` : "";
 }
 
 // ---------------------------------------------------------------------------
@@ -636,6 +735,30 @@ export class DevPulseApi {
     });
     if (!res.ok) throw await DpRestError.fromResponse(res);
     return schema.parse(await res.json());
+  }
+
+  /** Body-less sibling of [`sendJson`] for `204 No Content` endpoints
+   *  (`POST /me/inbox/seen`). Drains and discards the response body
+   *  so the keep-alive socket can be reused. */
+  private async sendNoContent<TBody>(
+    method: "POST" | "PUT" | "PATCH" | "DELETE",
+    path: string,
+    body: TBody | undefined,
+  ): Promise<void> {
+    const csrf = readCookie(CSRF_COOKIE);
+    const headers: Record<string, string> = { ...this.client.headers };
+    if (body !== undefined) headers["content-type"] = "application/json";
+    if (csrf) headers["X-CSRF-Token"] = csrf;
+    const res = await this.client.fetch(`${this.client.baseUrl}${path}`, {
+      method,
+      credentials: "include",
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    if (!res.ok) throw await DpRestError.fromResponse(res);
+    // Drain any body so the connection can be reused. `204` may
+    // still carry an empty body that needs consuming.
+    await res.text().catch(() => "");
   }
 
   private postJson<TBody, TRes>(
@@ -890,16 +1013,46 @@ export class DevPulseApi {
    *  `{rows, total, limit, offset}` envelope so the UI can render
    *  `Showing X–Y of Z` without a second round-trip. */
   async listIssues(q: ListIssuesQuery = {}): Promise<IssueListResponse> {
-    const params = new URLSearchParams();
-    if (q.repo_id) params.set("repo_id", q.repo_id);
-    if (q.org_id) params.set("org_id", q.org_id);
-    if (q.state) params.set("state", q.state);
-    if (q.assignee) params.set("assignee", q.assignee);
-    if (q.q) params.set("q", q.q);
-    if (q.limit !== undefined) params.set("limit", String(q.limit));
-    if (q.offset !== undefined) params.set("offset", String(q.offset));
-    const qs = params.toString();
-    return this.getJson(`/issues${qs ? `?${qs}` : ""}`, IssueListResponseSchema);
+    return this.getJson(
+      `/issues${buildIssueListQs(q)}`,
+      IssueListResponseSchema,
+    );
+  }
+
+  /** `GET /me/queue` — caller's inbox. Accepts the same filter set
+   *  as [`listIssues`]; rows include `unread` for the dot indicator
+   *  (`linear-projects-idea.md` §3.8 / §5.4). Default landing view
+   *  for the triage page. */
+  async listMyQueue(q: ListIssuesQuery = {}): Promise<IssueListResponse> {
+    return this.getJson(
+      `/me/queue${buildIssueListQs(q)}`,
+      IssueListResponseSchema,
+    );
+  }
+
+  /** `POST /me/inbox/seen` — bulk-mark issues read. Idempotent;
+   *  empty list is a no-op. Capped at 200 ids per request
+   *  server-side. Returns `204`. */
+  async markInboxSeen(issueIds: string[]): Promise<void> {
+    if (issueIds.length === 0) return;
+    return this.sendNoContent("POST", "/me/inbox/seen", {
+      issue_ids: issueIds,
+    } satisfies MarkSeenRequest);
+  }
+
+  /** `PATCH /me/inbox/{issue_id}` — set inbox status / snooze.
+   *  Returns the resulting row so the UI can update the cache
+   *  without a follow-up GET. */
+  async setInboxState(
+    issueId: string,
+    req: SetInboxStateRequest,
+  ): Promise<UserIssueStateDto> {
+    return this.sendJson(
+      "PATCH",
+      `/me/inbox/${encodeURIComponent(issueId)}`,
+      req,
+      UserIssueStateDtoSchema,
+    );
   }
 
   /** `GET /repos` — paginated repo list with open-issue counts. */

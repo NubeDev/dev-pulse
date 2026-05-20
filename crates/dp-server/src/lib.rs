@@ -82,8 +82,8 @@ use dp_domain::store::Store;
 use dp_fetcher::reconciler::Scheduler;
 use dp_fetcher::webhook::{self, WebhookMetrics, WebhookSecretSource, WebhookState};
 use dp_rest::{
-    admin_router, app_permissions_router, directory_router, issues_read_router, pins_router,
-    repos_router, reports_router,
+    admin_router, app_permissions_router, directory_router, inbox_router, issues_read_router,
+    pins_router, repos_router, reports_router,
     tags_router, AdminState, AppState as RestAppState, DevPulseApi,
 };
 
@@ -245,6 +245,7 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
     let tags = tags_router(rest_state.clone());
     let repos = repos_router(rest_state.clone());
     let issues_read = issues_read_router(rest_state.clone());
+    let inbox = inbox_router(rest_state.clone());
     // SCOPE-PROJECTS §13.6 — banner + write-gate live in the same
     // dp-rest module; the router fragment registers
     // `(github_app, read)` so the §15.11 access gate is the only
@@ -260,6 +261,7 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
         .merge(tags)
         .merge(repos)
         .merge(issues_read)
+        .merge(inbox)
         .merge(github_app_routes)
         .merge(admin);
 

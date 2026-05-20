@@ -404,6 +404,33 @@ impl Client {
         }
         self.get_conditional(&path, etag).await
     }
+
+    /// List teams in an org. There is no `since=` parameter; GitHub
+    /// returns the full team list every time, so the reconciler
+    /// relies entirely on the `ETag` for cheap no-change polls.
+    pub async fn list_org_teams(
+        &self,
+        org_login: &str,
+        etag: Option<&str>,
+    ) -> Result<Fetched<serde_json::Value>, ClientError> {
+        let path = format!("/orgs/{org_login}/teams?per_page=100");
+        self.get_conditional(&path, etag).await
+    }
+
+    /// List members of an org. Same shape as `list_org_teams`: no
+    /// `since=`, ETag-based no-change short-circuit. GitHub paginates
+    /// at 100/page; we currently fetch only page 1 (consistent with
+    /// `list_pull_requests` / `list_issues`) — orgs >100 members
+    /// will get a follow-up pagination pass when we wire it on the
+    /// other endpoints.
+    pub async fn list_org_members(
+        &self,
+        org_login: &str,
+        etag: Option<&str>,
+    ) -> Result<Fetched<serde_json::Value>, ClientError> {
+        let path = format!("/orgs/{org_login}/members?per_page=100");
+        self.get_conditional(&path, etag).await
+    }
 }
 
 fn transport<E: std::fmt::Display>(e: E) -> ClientError {

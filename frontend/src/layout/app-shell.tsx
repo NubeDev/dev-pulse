@@ -10,7 +10,7 @@
  * the same place dashboard-01 puts it. No hand-rolled chrome.
  */
 
-import type { ReactNode } from "react"
+import { useMemo, type ReactNode } from "react"
 import {
   IconBuilding,
   IconBuildingSkyscraper,
@@ -20,6 +20,7 @@ import {
   IconColumns,
   IconHome,
   IconHistory,
+  IconInbox,
   IconPinned,
   IconRefresh,
   IconShieldLock,
@@ -49,6 +50,8 @@ import {
   workflowTabOf,
   type Section,
 } from "../routes.js"
+import { useMyQueue } from "../workflow/use-workflow-data.js"
+import { Badge } from "@/components/ui/badge"
 const NAV_MAIN: NavMainItem[] = [
   {
     title: "Reports",
@@ -72,6 +75,7 @@ const NAV_MAIN: NavMainItem[] = [
     accent: "var(--accent-reports)",
     subTestId: "workflow-subnav",
     items: [
+      { title: "Triage", url: "#/workflow/triage", icon: IconInbox },
       { title: "Repos", url: "#/workflow/repos", icon: IconBuilding },
       { title: "Issues", url: "#/workflow/issues", icon: IconBriefcase },
     ],
@@ -112,6 +116,7 @@ const SECTION_TITLE: Record<Section, string> = {
 }
 
 const WORKFLOW_TITLE: Record<string, string> = {
+  triage: "Triage",
   repos: "Repos",
   issues: "Issues",
 }
@@ -191,11 +196,47 @@ export function AppShell({ children }: AppShellProps): JSX.Element {
       }
     : { name: "Guest", email: "" }
 
+  // Inbox badge for the Issues sub-nav (`linear-projects-idea.md`
+  // §3.8). One-row query so we get the `total` without rendering
+  // any rows; the queue endpoint already excludes done/snoozed
+  // rows server-side, so `total` is the live "unhandled" count.
+  // Authed gate: `useMyQueue` enables unconditionally, but the
+  // request fails closed when there's no session — we still need
+  // to render the sidebar in that case, so we read `total` defensively.
+  const queueProbe = useMyQueue({ limit: 1, offset: 0 })
+  const inboxCount = queueProbe.data?.total ?? 0
+  const navMain = useMemo<NavMainItem[]>(
+    () =>
+      NAV_MAIN.map((item) => {
+        if (item.title !== "Workflow") return item
+        return {
+          ...item,
+          items: item.items?.map((sub) =>
+            sub.url === "#/workflow/triage" && inboxCount > 0
+              ? {
+                  ...sub,
+                  badge: (
+                    <Badge
+                      variant="secondary"
+                      className="h-5 min-w-5 justify-center px-1.5 text-[10px] font-semibold"
+                      data-testid="workflow-triage-inbox-badge"
+                    >
+                      {inboxCount > 99 ? "99+" : inboxCount}
+                    </Badge>
+                  ),
+                }
+              : sub,
+          ),
+        }
+      }),
+    [inboxCount],
+  )
+
   return (
     <div data-testid="app-shell" className="min-h-dvh bg-background text-foreground">
       <SidebarProvider>
         <AppSidebar
-          navMain={NAV_MAIN}
+          navMain={navMain}
           activeUrl={activeUrl}
           user={user}
           onLogout={() => {

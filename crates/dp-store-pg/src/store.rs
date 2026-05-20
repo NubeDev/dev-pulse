@@ -29,6 +29,7 @@ use dp_domain::audit::AuditEntry;
 use dp_domain::event::{ActivityEvent, ActorRole, EventActor};
 use dp_domain::fetch::{FetchCursor, FetchRun, FetchRunKind, ResourceKind};
 use dp_domain::freshness::DataAsOf;
+use dp_domain::inbox::{InboxIssueRow, InboxStatus, UserIssueState};
 use dp_domain::membership::Membership;
 use dp_domain::org::Org;
 use dp_domain::pin::{Pin, PinKind};
@@ -161,6 +162,24 @@ fn row_to_repo_summary(r: &sqlx::postgres::PgRow) -> Result<RepoSummary, StoreEr
     })
 }
 
+/// Build a JSONB containment array for the `labels` / `assignees`
+/// AND filter (`IssueListFilter::labels` / `::assignees`). Returns
+/// `None` for an empty input so the bind site can pass `NULL` and
+/// the SQL guard (`$N::jsonb IS NULL OR …`) skips the containment
+/// check. Non-empty inputs serialise to `JsonValue::Array(strings)`
+/// so the PG side can use `column @> $N::jsonb`.
+fn labels_or_assignees_json(values: &[String]) -> Option<JsonValue> {
+    if values.is_empty() {
+        return None;
+    }
+    Some(JsonValue::Array(
+        values
+            .iter()
+            .map(|s| JsonValue::String(s.clone()))
+            .collect(),
+    ))
+}
+
 fn row_to_issue(r: &sqlx::postgres::PgRow) -> Result<Issue, StoreError> {
     let state_text: String = r.try_get("state").map_err(map_sqlx)?;
     let state = IssueState::from_str(&state_text)
@@ -185,6 +204,39 @@ fn row_to_issue(r: &sqlx::postgres::PgRow) -> Result<Issue, StoreError> {
         milestone: r.try_get("milestone").map_err(map_sqlx)?,
         version: r.try_get("version").map_err(map_sqlx)?,
         updated_at: r.try_get("updated_at").map_err(map_sqlx)?,
+    })
+}
+
+fn row_to_user_issue_state(
+    r: &sqlx::postgres::PgRow,
+) -> Result<UserIssueState, StoreError> {
+    let status_text: String = r.try_get("status").map_err(map_sqlx)?;
+    let status = InboxStatus::from_str(&status_text)
+        .ok_or_else(|| StoreError::Invalid(format!("unknown inbox status: {status_text}")))?;
+    Ok(UserIssueState {
+        user_id: r.try_get("user_id").map_err(map_sqlx)?,
+        issue_id: r.try_get("issue_id").map_err(map_sqlx)?,
+        last_seen_version: r.try_get("last_seen_version").map_err(map_sqlx)?,
+        status,
+        snoozed_until: r.try_get("snoozed_until").map_err(map_sqlx)?,
+        updated_at: r.try_get("updated_at").map_err(map_sqlx)?,
+    })
+}
+
+fn row_to_inbox_issue_row(
+    r: &sqlx::postgres::PgRow,
+) -> Result<InboxIssueRow, StoreError> {
+    let issue = row_to_issue(r)?;
+    let last_seen_version: i64 = r.try_get("last_seen_version").map_err(map_sqlx)?;
+    let status_text: String = r.try_get("inbox_status").map_err(map_sqlx)?;
+    let status = InboxStatus::from_str(&status_text)
+        .ok_or_else(|| StoreError::Invalid(format!("unknown inbox status: {status_text}")))?;
+    let snoozed_until = r.try_get("snoozed_until").map_err(map_sqlx)?;
+    Ok(InboxIssueRow {
+        unread: issue.version > last_seen_version,
+        issue,
+        status,
+        snoozed_until,
     })
 }
 
@@ -668,6 +720,8 @@ impl Store for PgStore {
     async fn list_issues(&self, filter: &IssueListFilter) -> Result<Vec<Issue>, StoreError> {
         let q_norm = filter.q.as_deref().map(str::trim).filter(|s| !s.is_empty());
         let state_text = filter.state.map(|s| s.as_str().to_string());
+        let labels_json = labels_or_assignees_json(&filter.labels);
+        let assignees_json = labels_or_assignees_json(&filter.assignees);
         let rows = sqlx::query(
             "SELECT id, org_id, repo_id, github_id, number, title, body, state,
                     labels, assignees, milestone, version, updated_at
@@ -677,6 +731,14 @@ impl Store for PgStore {
                AND ($3::text IS NULL OR state   = $3)
                AND ($4::text IS NULL OR assignees @> to_jsonb(ARRAY[$4::text]))
                AND ($5::text IS NULL OR title ILIKE '%' || $5 || '%')
+               AND (cardinality($8::uuid[]) = 0 OR repo_id = ANY($8::uuid[]))
+               AND (cardinality($9::uuid[]) = 0 OR org_id  = ANY($9::uuid[]))
+               AND ($10::jsonb IS NULL OR assignees @> $10::jsonb)
+               AND ($11::jsonb IS NULL OR labels    @> $11::jsonb)
+               AND ($12::text  IS NULL OR author = $12)
+               AND ($13::text  IS NULL OR state_reason = $13)
+               AND ($14::timestamptz IS NULL OR updated_at >= $14)
+               AND (NOT $15::bool OR (assignees = '[]'::jsonb AND labels = '[]'::jsonb))
              ORDER BY updated_at DESC
              LIMIT $6 OFFSET $7",
         )
@@ -687,6 +749,14 @@ impl Store for PgStore {
         .bind(q_norm)
         .bind(filter.limit)
         .bind(filter.offset)
+        .bind(&filter.repo_ids)
+        .bind(&filter.org_ids)
+        .bind(assignees_json.as_ref())
+        .bind(labels_json.as_ref())
+        .bind(filter.author.as_deref())
+        .bind(filter.state_reason.as_deref())
+        .bind(filter.updated_since)
+        .bind(filter.untriaged_only)
         .fetch_all(self.pool.sqlx())
         .await
         .map_err(map_sqlx)?;
@@ -696,6 +766,8 @@ impl Store for PgStore {
     async fn count_issues(&self, filter: &IssueListFilter) -> Result<i64, StoreError> {
         let q_norm = filter.q.as_deref().map(str::trim).filter(|s| !s.is_empty());
         let state_text = filter.state.map(|s| s.as_str().to_string());
+        let labels_json = labels_or_assignees_json(&filter.labels);
+        let assignees_json = labels_or_assignees_json(&filter.assignees);
         let (count,): (i64,) = sqlx::query_as(
             "SELECT COUNT(*)::bigint
              FROM dp_issues
@@ -703,13 +775,29 @@ impl Store for PgStore {
                AND ($2::uuid IS NULL OR org_id  = $2)
                AND ($3::text IS NULL OR state   = $3)
                AND ($4::text IS NULL OR assignees @> to_jsonb(ARRAY[$4::text]))
-               AND ($5::text IS NULL OR title ILIKE '%' || $5 || '%')",
+               AND ($5::text IS NULL OR title ILIKE '%' || $5 || '%')
+               AND (cardinality($6::uuid[]) = 0 OR repo_id = ANY($6::uuid[]))
+               AND (cardinality($7::uuid[]) = 0 OR org_id  = ANY($7::uuid[]))
+               AND ($8::jsonb  IS NULL OR assignees @> $8::jsonb)
+               AND ($9::jsonb  IS NULL OR labels    @> $9::jsonb)
+               AND ($10::text  IS NULL OR author = $10)
+               AND ($11::text  IS NULL OR state_reason = $11)
+               AND ($12::timestamptz IS NULL OR updated_at >= $12)
+               AND (NOT $13::bool OR (assignees = '[]'::jsonb AND labels = '[]'::jsonb))",
         )
         .bind(filter.repo_id)
         .bind(filter.org_id)
         .bind(state_text)
         .bind(filter.assignee.as_deref())
         .bind(q_norm)
+        .bind(&filter.repo_ids)
+        .bind(&filter.org_ids)
+        .bind(assignees_json.as_ref())
+        .bind(labels_json.as_ref())
+        .bind(filter.author.as_deref())
+        .bind(filter.state_reason.as_deref())
+        .bind(filter.updated_since)
+        .bind(filter.untriaged_only)
         .fetch_one(self.pool.sqlx())
         .await
         .map_err(map_sqlx)?;
@@ -745,6 +833,188 @@ impl Store for PgStore {
         .await
         .map_err(map_sqlx)?;
         row.as_ref().map(row_to_issue).transpose()
+    }
+
+    // ---- per-user inbox (triage spine, slice 1) -------------------
+
+    async fn list_inbox_issues(
+        &self,
+        user_id: Uuid,
+        filter: &IssueListFilter,
+    ) -> Result<Vec<InboxIssueRow>, StoreError> {
+        let q_norm = filter.q.as_deref().map(str::trim).filter(|s| !s.is_empty());
+        let state_text = filter.state.map(|s| s.as_str().to_string());
+        let labels_json = labels_or_assignees_json(&filter.labels);
+        let assignees_json = labels_or_assignees_json(&filter.assignees);
+        // LEFT JOIN so issues with no `dp_user_issue_state` row
+        // surface as default-state (`Inbox`, last_seen_version 0).
+        // Inbox visibility predicate:
+        //   * status IS NULL OR status <> 'done'      — dismissed rows hide
+        //   * status <> 'snoozed' OR snoozed_until < now()  — active snoozes hide
+        let rows = sqlx::query(
+            "SELECT i.id, i.org_id, i.repo_id, i.github_id, i.number, i.title, i.body,
+                    i.state, i.labels, i.assignees, i.milestone, i.version, i.updated_at,
+                    COALESCE(s.last_seen_version, 0)            AS last_seen_version,
+                    COALESCE(s.status, 'inbox')                 AS inbox_status,
+                    s.snoozed_until                             AS snoozed_until
+             FROM dp_issues i
+             LEFT JOIN dp_user_issue_state s
+                    ON s.user_id = $16::uuid AND s.issue_id = i.id
+             WHERE (s.status IS NULL OR s.status <> 'done')
+               AND (s.status IS NULL OR s.status <> 'snoozed'
+                    OR s.snoozed_until IS NULL OR s.snoozed_until < now())
+               AND ($1::uuid IS NULL OR i.repo_id = $1)
+               AND ($2::uuid IS NULL OR i.org_id  = $2)
+               AND ($3::text IS NULL OR i.state   = $3)
+               AND ($4::text IS NULL OR i.assignees @> to_jsonb(ARRAY[$4::text]))
+               AND ($5::text IS NULL OR i.title ILIKE '%' || $5 || '%')
+               AND (cardinality($8::uuid[]) = 0 OR i.repo_id = ANY($8::uuid[]))
+               AND (cardinality($9::uuid[]) = 0 OR i.org_id  = ANY($9::uuid[]))
+               AND ($10::jsonb IS NULL OR i.assignees @> $10::jsonb)
+               AND ($11::jsonb IS NULL OR i.labels    @> $11::jsonb)
+               AND ($12::text  IS NULL OR i.author = $12)
+               AND ($13::text  IS NULL OR i.state_reason = $13)
+               AND ($14::timestamptz IS NULL OR i.updated_at >= $14)
+               AND (NOT $15::bool OR (i.assignees = '[]'::jsonb AND i.labels = '[]'::jsonb))
+             ORDER BY i.updated_at DESC
+             LIMIT $6 OFFSET $7",
+        )
+        .bind(filter.repo_id)
+        .bind(filter.org_id)
+        .bind(state_text)
+        .bind(filter.assignee.as_deref())
+        .bind(q_norm)
+        .bind(filter.limit)
+        .bind(filter.offset)
+        .bind(&filter.repo_ids)
+        .bind(&filter.org_ids)
+        .bind(assignees_json.as_ref())
+        .bind(labels_json.as_ref())
+        .bind(filter.author.as_deref())
+        .bind(filter.state_reason.as_deref())
+        .bind(filter.updated_since)
+        .bind(filter.untriaged_only)
+        .bind(user_id)
+        .fetch_all(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        rows.iter().map(row_to_inbox_issue_row).collect()
+    }
+
+    async fn count_inbox_issues(
+        &self,
+        user_id: Uuid,
+        filter: &IssueListFilter,
+    ) -> Result<i64, StoreError> {
+        let q_norm = filter.q.as_deref().map(str::trim).filter(|s| !s.is_empty());
+        let state_text = filter.state.map(|s| s.as_str().to_string());
+        let labels_json = labels_or_assignees_json(&filter.labels);
+        let assignees_json = labels_or_assignees_json(&filter.assignees);
+        let (count,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*)::bigint
+             FROM dp_issues i
+             LEFT JOIN dp_user_issue_state s
+                    ON s.user_id = $14::uuid AND s.issue_id = i.id
+             WHERE (s.status IS NULL OR s.status <> 'done')
+               AND (s.status IS NULL OR s.status <> 'snoozed'
+                    OR s.snoozed_until IS NULL OR s.snoozed_until < now())
+               AND ($1::uuid IS NULL OR i.repo_id = $1)
+               AND ($2::uuid IS NULL OR i.org_id  = $2)
+               AND ($3::text IS NULL OR i.state   = $3)
+               AND ($4::text IS NULL OR i.assignees @> to_jsonb(ARRAY[$4::text]))
+               AND ($5::text IS NULL OR i.title ILIKE '%' || $5 || '%')
+               AND (cardinality($6::uuid[]) = 0 OR i.repo_id = ANY($6::uuid[]))
+               AND (cardinality($7::uuid[]) = 0 OR i.org_id  = ANY($7::uuid[]))
+               AND ($8::jsonb  IS NULL OR i.assignees @> $8::jsonb)
+               AND ($9::jsonb  IS NULL OR i.labels    @> $9::jsonb)
+               AND ($10::text  IS NULL OR i.author = $10)
+               AND ($11::text  IS NULL OR i.state_reason = $11)
+               AND ($12::timestamptz IS NULL OR i.updated_at >= $12)
+               AND (NOT $13::bool OR (i.assignees = '[]'::jsonb AND i.labels = '[]'::jsonb))",
+        )
+        .bind(filter.repo_id)
+        .bind(filter.org_id)
+        .bind(state_text)
+        .bind(filter.assignee.as_deref())
+        .bind(q_norm)
+        .bind(&filter.repo_ids)
+        .bind(&filter.org_ids)
+        .bind(assignees_json.as_ref())
+        .bind(labels_json.as_ref())
+        .bind(filter.author.as_deref())
+        .bind(filter.state_reason.as_deref())
+        .bind(filter.updated_since)
+        .bind(filter.untriaged_only)
+        .bind(user_id)
+        .fetch_one(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        Ok(count)
+    }
+
+    async fn mark_issues_seen(
+        &self,
+        user_id: Uuid,
+        issue_ids: &[Uuid],
+    ) -> Result<(), StoreError> {
+        if issue_ids.is_empty() {
+            return Ok(());
+        }
+        // Upsert one row per (user_id, issue_id), pulling
+        // `last_seen_version` from `dp_issues.version` so the row
+        // always reflects what the user actually saw. ON CONFLICT
+        // promotes the value monotonically (GREATEST) so a stale
+        // "seen" write from a slow client cannot regress a higher
+        // value already on the row.
+        sqlx::query(
+            "INSERT INTO dp_user_issue_state
+                 (user_id, issue_id, last_seen_version, status, snoozed_until, updated_at)
+             SELECT $1, i.id, i.version, 'inbox', NULL, now()
+               FROM dp_issues i
+              WHERE i.id = ANY($2::uuid[])
+             ON CONFLICT (user_id, issue_id) DO UPDATE
+                 SET last_seen_version =
+                         GREATEST(dp_user_issue_state.last_seen_version,
+                                  EXCLUDED.last_seen_version),
+                     updated_at        = now()",
+        )
+        .bind(user_id)
+        .bind(issue_ids)
+        .execute(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        Ok(())
+    }
+
+    async fn set_inbox_state(
+        &self,
+        user_id: Uuid,
+        issue_id: Uuid,
+        status: InboxStatus,
+        snoozed_until: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<UserIssueState, StoreError> {
+        // Upsert; preserve `last_seen_version` on update so
+        // snooze / dismiss never moves the seen marker. The
+        // application validates (status, snoozed_until)
+        // consistency — see the trait doc.
+        let row = sqlx::query(
+            "INSERT INTO dp_user_issue_state
+                 (user_id, issue_id, last_seen_version, status, snoozed_until, updated_at)
+             VALUES ($1, $2, 0, $3, $4, now())
+             ON CONFLICT (user_id, issue_id) DO UPDATE
+                 SET status        = EXCLUDED.status,
+                     snoozed_until = EXCLUDED.snoozed_until,
+                     updated_at    = now()
+             RETURNING user_id, issue_id, last_seen_version, status, snoozed_until, updated_at",
+        )
+        .bind(user_id)
+        .bind(issue_id)
+        .bind(status.as_str())
+        .bind(snoozed_until)
+        .fetch_one(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        row_to_user_issue_state(&row)
     }
 
     async fn record_audit_log(&self, entry: &AuditEntry) -> Result<(), StoreError> {

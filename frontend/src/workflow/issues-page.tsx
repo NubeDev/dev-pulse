@@ -30,7 +30,16 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { IconAlertTriangle, IconExternalLink, IconRefresh, IconX } from "@tabler/icons-react";
+import {
+  IconAlertTriangle,
+  IconCheck,
+  IconClock,
+  IconExternalLink,
+  IconInbox,
+  IconKeyboard,
+  IconRefresh,
+  IconX,
+} from "@tabler/icons-react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -52,6 +61,13 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   Table,
   TableBody,
@@ -78,6 +94,9 @@ import {
   useCommentOnIssue,
   useIssue,
   useIssueList,
+  useMarkInboxSeen,
+  useMyQueue,
+  useSetInboxState,
   useUpdateIssue,
   writesUnavailableOrg,
 } from "./use-workflow-data.js";
@@ -92,6 +111,12 @@ interface IssuesPageQuery {
   assignee: string;
   q: string;
   offset: number;
+  /** Triage view (`linear-projects-idea.md` §3.5):
+   *  - `list`     — the original "every issue" pane.
+   *  - `inbox`    — `GET /me/queue`; default landing view.
+   *  - `untriaged`— `?untriaged=true`; rows with no assignee /
+   *                  label. */
+  view: "list" | "inbox" | "untriaged";
 }
 
 function parseQuery(route: string): IssuesPageQuery {
@@ -101,17 +126,22 @@ function parseQuery(route: string): IssuesPageQuery {
   const state: "open" | "closed" | "all" =
     stateParam === "closed" || stateParam === "all" ? stateParam : "open";
   const offsetRaw = Number.parseInt(params.get("offset") ?? "0", 10);
+  const viewParam = params.get("view");
+  const view: IssuesPageQuery["view"] =
+    viewParam === "inbox" || viewParam === "untriaged" ? viewParam : "list";
   return {
     repoId: params.get("repo_id"),
     state,
     assignee: params.get("assignee") ?? "",
     q: params.get("q") ?? "",
     offset: Number.isFinite(offsetRaw) && offsetRaw > 0 ? offsetRaw : 0,
+    view,
   };
 }
 
 function buildRoute(q: IssuesPageQuery, issueId: string | null): string {
   const params = new URLSearchParams();
+  if (q.view !== "list") params.set("view", q.view);
   if (q.repoId) params.set("repo_id", q.repoId);
   if (q.state !== "open") params.set("state", q.state);
   if (q.assignee) params.set("assignee", q.assignee);
@@ -158,12 +188,23 @@ export function IssuesPage(): JSX.Element {
       state: parsed.state,
       assignee: parsed.assignee || undefined,
       q: parsed.q || undefined,
+      // `linear-projects-idea.md` §3.5 — the "Untriaged" smart view
+      // pre-narrows the same /me/queue (or /issues) endpoint.
+      untriaged: parsed.view === "untriaged" ? true : undefined,
       limit: PAGE_SIZE,
       offset: parsed.offset,
     }),
     [parsed],
   );
-  const issues = useIssueList(query);
+  // Branch the data source on the active view. The inbox view hits
+  // `GET /me/queue`, which adds the §3.8 visibility predicates
+  // (`status <> 'done'`, snooze wake-up) and the `unread` flag.
+  const listResult = useIssueList(query);
+  const queueResult = useMyQueue(query);
+  const issues = parsed.view === "inbox" ? queueResult : listResult;
+
+  const markSeen = useMarkInboxSeen();
+  const setInboxState = useSetInboxState();
 
   const goTo = (next: Partial<IssuesPageQuery>): void => {
     navigate(buildRoute({ ...parsed, ...next, offset: 0 }, selectedIssueId));
@@ -172,6 +213,10 @@ export function IssuesPage(): JSX.Element {
     navigate(buildRoute({ ...parsed, offset }, selectedIssueId));
   };
   const openIssue = (id: string | null): void => {
+    // §3.8 — opening a row in the peek panel clears the unread dot
+    // for that row. Best-effort: the mutation swallows errors so a
+    // network blip never blocks the open.
+    if (id) markSeen.mutate([id]);
     navigate(buildRoute(parsed, id));
   };
 
@@ -179,6 +224,123 @@ export function IssuesPage(): JSX.Element {
   const rows = issues.data?.rows ?? [];
   const firstShown = total === 0 ? 0 : parsed.offset + 1;
   const lastShown = Math.min(parsed.offset + rows.length, total);
+
+  // ----- Keyboard nav (linear-projects-idea.md §3.7) ---------------------
+  //
+  // Bindings (only when no input is focused and the peek sheet is
+  // closed, except for Esc which always closes the peek):
+  //
+  //   j / k    move cursor down / up one row
+  //   Enter    open the cursor row in the peek panel
+  //   Esc      close the peek panel
+  //   e        mark cursor row done
+  //   h        snooze cursor row 1 day
+  //   ?        toggle the help overlay
+  //
+  // Cursor is a row index into the current page; it clamps when
+  // the row set changes (filter / page) and scrolls the highlighted
+  // row into view via `rowRefs`.
+  const [cursor, setCursor] = useState(0);
+  const [helpOpen, setHelpOpen] = useState(false);
+
+  useEffect(() => {
+    setCursor((c) => (rows.length === 0 ? 0 : Math.min(c, rows.length - 1)));
+  }, [rows.length]);
+
+  useEffect(() => {
+    // `TableRow` doesn't forward refs; pin the cursor row by data
+    // attribute so the scroll-into-view stays cheap.
+    const el = document.querySelector<HTMLTableRowElement>(
+      '[data-testid="issues-table"] tr[data-cursor="true"]',
+    );
+    el?.scrollIntoView({ block: "nearest" });
+  }, [cursor]);
+
+  useEffect(() => {
+    const inEditable = (el: EventTarget | null): boolean => {
+      const n = el as HTMLElement | null;
+      if (!n) return false;
+      const tag = n.tagName;
+      return (
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        tag === "SELECT" ||
+        n.isContentEditable
+      );
+    };
+    const snoozeOneDay = (id: string): void => {
+      const wake = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+      setInboxState.mutate({ issueId: id, status: "snoozed", snoozed_until: wake });
+    };
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      // `?` and Esc work even while typing, with caveats.
+      if (e.key === "?" && !inEditable(e.target)) {
+        setHelpOpen((h) => !h);
+        e.preventDefault();
+        return;
+      }
+      if (e.key === "Escape") {
+        if (helpOpen) {
+          setHelpOpen(false);
+          e.preventDefault();
+          return;
+        }
+        if (selectedIssueId) {
+          openIssue(null);
+          e.preventDefault();
+          return;
+        }
+      }
+      if (inEditable(e.target)) return;
+      // The peek panel owns the keyboard while open so the form
+      // can keep typing-shortcuts (Tab, Shift+Tab, etc.).
+      if (selectedIssueId) return;
+      if (helpOpen) return;
+      if (rows.length === 0) return;
+      switch (e.key) {
+        case "j":
+        case "ArrowDown":
+          setCursor((c) => Math.min(rows.length - 1, c + 1));
+          e.preventDefault();
+          break;
+        case "k":
+        case "ArrowUp":
+          setCursor((c) => Math.max(0, c - 1));
+          e.preventDefault();
+          break;
+        case "Enter": {
+          const r = rows[cursor];
+          if (r) openIssue(r.id);
+          e.preventDefault();
+          break;
+        }
+        case "e": {
+          const r = rows[cursor];
+          if (r) {
+            setInboxState.mutate({
+              issueId: r.id,
+              status: "done",
+              snoozed_until: null,
+            });
+          }
+          e.preventDefault();
+          break;
+        }
+        case "h": {
+          const r = rows[cursor];
+          if (r) snoozeOneDay(r.id);
+          e.preventDefault();
+          break;
+        }
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // `rows` itself is a fresh array each render; `rows.length` +
+    // `cursor` are enough to keep the handler consistent.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows.length, cursor, selectedIssueId, helpOpen]);
 
   return (
     <div className="flex flex-col gap-6 px-4 lg:px-6" data-testid="issues-page">
@@ -189,6 +351,53 @@ export function IssuesPage(): JSX.Element {
 
       <Card>
         <CardContent className="flex flex-col gap-3 pt-6">
+          {/* Smart-view rail (linear-projects-idea.md §3.5). The
+              three buttons swap the data source / filter without
+              leaving the page. Selected is signalled by `default`
+              variant + `data-active="true"` for tests. */}
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant={parsed.view === "inbox" ? "default" : "outline"}
+              size="sm"
+              data-active={parsed.view === "inbox"}
+              data-testid="issues-view-inbox"
+              onClick={() => goTo({ view: "inbox" })}
+            >
+              <IconInbox className="mr-1 size-4" />
+              My queue
+            </Button>
+            <Button
+              variant={parsed.view === "untriaged" ? "default" : "outline"}
+              size="sm"
+              data-active={parsed.view === "untriaged"}
+              data-testid="issues-view-untriaged"
+              onClick={() => goTo({ view: "untriaged" })}
+            >
+              Untriaged
+            </Button>
+            <Button
+              variant={parsed.view === "list" ? "default" : "outline"}
+              size="sm"
+              data-active={parsed.view === "list"}
+              data-testid="issues-view-list"
+              onClick={() => goTo({ view: "list" })}
+            >
+              All issues
+            </Button>
+            {/* `?` toggles the same overlay — the button is here so
+                touch users can find the shortcut cheatsheet too. */}
+            <Button
+              variant="ghost"
+              size="sm"
+              className="ml-auto"
+              data-testid="issues-help-trigger"
+              title="Keyboard shortcuts (?)"
+              onClick={() => setHelpOpen(true)}
+            >
+              <IconKeyboard className="mr-1 size-4" />
+              Shortcuts
+            </Button>
+          </div>
           <div className="flex flex-wrap items-end gap-3">
             {parsed.repoId && (
               <Badge variant="secondary" className="gap-1" data-testid="issues-repo-filter">
@@ -256,46 +465,65 @@ export function IssuesPage(): JSX.Element {
           <Table data-testid="issues-table">
             <TableHeader className="bg-muted/50">
               <TableRow>
+                <TableHead className="w-6" aria-label="Unread" />
                 <TableHead className="w-16">#</TableHead>
                 <TableHead>Title</TableHead>
                 <TableHead className="w-24">State</TableHead>
                 <TableHead className="w-48">Assignees</TableHead>
                 <TableHead className="w-40">Updated</TableHead>
+                <TableHead className="w-32 text-right">Inbox</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {issues.isLoading && (
                 <TableRow>
-                  <TableCell colSpan={5} className="text-center text-muted-foreground py-8">
+                  <TableCell colSpan={7} className="text-center text-muted-foreground py-8">
                     Loading issues…
                   </TableCell>
                 </TableRow>
               )}
               {issues.isError && !issues.isLoading && (
                 <TableRow>
-                  <TableCell colSpan={5} className="text-center text-destructive py-8">
+                  <TableCell colSpan={7} className="text-center text-destructive py-8">
                     Could not load issues: {issues.error instanceof Error ? issues.error.message : "unknown"}
                   </TableCell>
                 </TableRow>
               )}
               {!issues.isLoading && !issues.isError && rows.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={5} className="text-center text-muted-foreground py-8">
+                  <TableCell colSpan={7} className="text-center text-muted-foreground py-8">
                     No issues match these filters.
                   </TableCell>
                 </TableRow>
               )}
-              {rows.map((row) => (
+              {rows.map((row, i) => (
                 <TableRow
                   key={row.id}
-                  className="cursor-pointer"
+                  className={`cursor-pointer ${i === cursor ? "bg-accent/40" : ""}`}
                   data-testid="issues-row"
-                  onClick={() => openIssue(row.id)}
+                  data-cursor={i === cursor ? "true" : undefined}
+                  data-unread={row.unread ? "true" : "false"}
+                  onClick={() => {
+                    setCursor(i);
+                    openIssue(row.id);
+                  }}
                 >
+                  <TableCell aria-label={row.unread ? "Unread" : "Read"}>
+                    {/* §3.8 unread dot. Hidden when seen so the rail
+                        weight matches Linear / Gmail. */}
+                    {row.unread && (
+                      <span
+                        className="block size-2 rounded-full bg-primary"
+                        data-testid="issues-row-unread-dot"
+                      />
+                    )}
+                  </TableCell>
                   <TableCell className="font-mono text-muted-foreground">{row.number}</TableCell>
                   <TableCell>
                     <div className="flex flex-col">
-                      <span className="font-medium">{row.title}</span>
+                      <span className={row.unread ? "font-semibold" : "font-medium"}>
+                        {row.title}
+                      </span>
                       {row.repo_slug && (
                         <span className="text-xs text-muted-foreground">{row.repo_slug}</span>
                       )}
@@ -309,6 +537,47 @@ export function IssuesPage(): JSX.Element {
                   </TableCell>
                   <TableCell className="text-sm text-muted-foreground">
                     {new Date(row.updated_at).toLocaleString()}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    {/* Per-row inbox actions (`linear-projects-idea.md`
+                        §3.8). `e` → done; `h` → snooze 1d. `stopPropagation`
+                        keeps the row-click handler from also opening the
+                        peek panel. */}
+                    <div className="flex justify-end gap-1">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        title="Snooze 1 day"
+                        data-testid="issues-row-snooze"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          const wake = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+                          setInboxState.mutate({
+                            issueId: row.id,
+                            status: "snoozed",
+                            snoozed_until: wake,
+                          });
+                        }}
+                      >
+                        <IconClock className="size-4" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        title="Mark done"
+                        data-testid="issues-row-done"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setInboxState.mutate({
+                            issueId: row.id,
+                            status: "done",
+                            snoozed_until: null,
+                          });
+                        }}
+                      >
+                        <IconCheck className="size-4" />
+                      </Button>
+                    </div>
                   </TableCell>
                 </TableRow>
               ))}
@@ -371,6 +640,35 @@ export function IssuesPage(): JSX.Element {
           </div>
         </SheetContent>
       </Sheet>
+
+      {/* `?` cheatsheet (linear-projects-idea.md §3.7). Plain Dialog
+          so the same overlay works on touch via the toolbar button. */}
+      <Dialog open={helpOpen} onOpenChange={setHelpOpen}>
+        <DialogContent className="sm:max-w-md" data-testid="issues-help-dialog">
+          <DialogHeader>
+            <DialogTitle>Keyboard shortcuts</DialogTitle>
+            <DialogDescription>
+              Active when no input is focused and the peek panel is closed.
+            </DialogDescription>
+          </DialogHeader>
+          <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
+            <dt className="font-mono text-muted-foreground">j / ↓</dt>
+            <dd>Next issue</dd>
+            <dt className="font-mono text-muted-foreground">k / ↑</dt>
+            <dd>Previous issue</dd>
+            <dt className="font-mono text-muted-foreground">Enter</dt>
+            <dd>Open in peek panel</dd>
+            <dt className="font-mono text-muted-foreground">Esc</dt>
+            <dd>Close peek panel / help</dd>
+            <dt className="font-mono text-muted-foreground">e</dt>
+            <dd>Mark done</dd>
+            <dt className="font-mono text-muted-foreground">h</dt>
+            <dd>Snooze 1 day</dd>
+            <dt className="font-mono text-muted-foreground">?</dt>
+            <dd>Toggle this help</dd>
+          </dl>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

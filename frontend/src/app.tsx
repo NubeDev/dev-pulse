@@ -31,6 +31,7 @@ import { TeamReportPage } from "./reports/team-report-page.jsx";
 import { UserReportPage } from "./reports/user-report-page.jsx";
 import { IssuesPage } from "./workflow/issues-page.jsx";
 import { ReposPage } from "./workflow/repos-page.jsx";
+import { TriagePage } from "./workflow/triage-page.jsx";
 import {
   adminTabOf,
   directoryTabOf,
@@ -119,6 +120,8 @@ function SectionPane({
 
 function WorkflowPane({ tab }: { tab: WorkflowTab }): JSX.Element {
   switch (tab) {
+    case "triage":
+      return <TriagePage />;
     case "repos":
       return <ReposPage />;
     case "issues":

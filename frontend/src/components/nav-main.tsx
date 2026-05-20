@@ -24,6 +24,10 @@ export interface NavMainSubItem {
   title: string
   url: string
   icon?: Icon
+  /** Optional small badge rendered at the right edge of the sub-button.
+   *  Used to surface live counts (e.g. the inbox unread / queue size
+   *  on `#/workflow/issues` — `linear-projects-idea.md` §3.8). */
+  badge?: React.ReactNode
 }
 
 export interface NavMainItem {
@@ -89,6 +93,11 @@ export function NavMain({
                                 />
                               )}
                               <span>{sub.title}</span>
+                              {sub.badge != null && (
+                                <span className="ml-auto" data-testid="nav-sub-badge">
+                                  {sub.badge}
+                                </span>
+                              )}
                             </a>
                           </SidebarMenuSubButton>
                         </SidebarMenuSubItem>

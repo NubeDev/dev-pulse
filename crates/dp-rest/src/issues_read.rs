@@ -100,6 +100,21 @@ pub struct IssueDto {
     pub version: i64,
     /// Last update.
     pub updated_at: DateTime<Utc>,
+    /// Per-caller unread flag — `true` when the issue's `version`
+    /// is newer than what the caller has marked seen. Only the
+    /// `/me/queue` endpoint populates this with a meaningful value;
+    /// every other endpoint emits `false`. Defaults to `false` so
+    /// older frontend clients that ignore the field render rows
+    /// the same as before.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub unread: bool,
+}
+
+/// Helper for the `skip_serializing_if` on [`IssueDto::unread`].
+/// We omit the field when it is `false` so the on-the-wire shape
+/// stays identical to pre-triage callers (no schema break).
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 impl From<Issue> for IssueDto {
@@ -117,7 +132,16 @@ impl From<Issue> for IssueDto {
             milestone: i.milestone,
             version: i.version,
             updated_at: i.updated_at,
+            unread: false,
         }
+    }
+}
+
+impl From<dp_domain::inbox::InboxIssueRow> for IssueDto {
+    fn from(r: dp_domain::inbox::InboxIssueRow) -> Self {
+        let mut dto = IssueDto::from(r.issue);
+        dto.unread = r.unread;
+        dto
     }
 }
 
@@ -162,16 +186,16 @@ impl StateFilter {
 /// Query params for `GET /issues`.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ListIssuesQuery {
-    /// Restrict to one repo.
+    /// Restrict to one repo (back-compat shorthand).
     #[serde(default)]
     pub repo_id: Option<Uuid>,
-    /// Restrict to one org.
+    /// Restrict to one org (back-compat shorthand).
     #[serde(default)]
     pub org_id: Option<Uuid>,
     /// State filter. Defaults to `open`.
     #[serde(default)]
     pub state: StateFilter,
-    /// Assignee login (exact match).
+    /// Assignee login (back-compat shorthand for `assignees`).
     #[serde(default)]
     pub assignee: Option<String>,
     /// Case-insensitive substring on title.
@@ -183,6 +207,79 @@ pub struct ListIssuesQuery {
     /// Page offset (`0`-based).
     #[serde(default)]
     pub offset: Option<i64>,
+
+    // ---- triage-spine extensions (slice 1) --------------------
+    //
+    // All array fields are accepted as comma-separated lists in
+    // the query string (`?repo_ids=u1,u2`). Matches the convention
+    // the reports module already uses; see `client.ts` for the
+    // wire-side construction.
+
+    /// Restrict to these repo ids (comma-separated).
+    #[serde(default, deserialize_with = "csv_uuids")]
+    pub repo_ids: Vec<Uuid>,
+    /// Restrict to these org ids (comma-separated).
+    #[serde(default, deserialize_with = "csv_uuids")]
+    pub org_ids: Vec<Uuid>,
+    /// AND-containment over assignee logins (comma-separated).
+    #[serde(default, deserialize_with = "csv_strings")]
+    pub assignees: Vec<String>,
+    /// AND-containment over labels (comma-separated).
+    #[serde(default, deserialize_with = "csv_strings")]
+    pub labels: Vec<String>,
+    /// Author login (exact match on `dp_issues.author`).
+    #[serde(default)]
+    pub author: Option<String>,
+    /// `state_reason` exact match (`completed` / `not_planned` / `reopened`).
+    #[serde(default)]
+    pub state_reason: Option<String>,
+    /// `updated_at >= updated_since` (RFC3339).
+    #[serde(default)]
+    pub updated_since: Option<DateTime<Utc>>,
+    /// Shortcut for the `Untriaged` smart view — restrict to rows
+    /// with no assignees and no labels.
+    #[serde(default)]
+    pub untriaged: bool,
+}
+
+/// Deserialize a query-string field of the shape `a,b,c` into
+/// `Vec<Uuid>`. An absent or empty field yields an empty vector.
+/// Whitespace around commas is tolerated. Invalid UUIDs surface as
+/// a `serde::Error` so the request fails with `400`.
+fn csv_uuids<'de, D>(de: D) -> Result<Vec<Uuid>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error as _;
+    let s: Option<String> = Option::deserialize(de)?;
+    let s = match s {
+        Some(s) if !s.is_empty() => s,
+        _ => return Ok(Vec::new()),
+    };
+    s.split(',')
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(|p| Uuid::parse_str(p).map_err(D::Error::custom))
+        .collect()
+}
+
+/// Same shape as [`csv_uuids`] but for opaque strings (logins,
+/// label names, milestone names). Empty pieces are dropped so a
+/// trailing comma is harmless.
+fn csv_strings<'de, D>(de: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s: Option<String> = Option::deserialize(de)?;
+    let s = match s {
+        Some(s) if !s.is_empty() => s,
+        _ => return Ok(Vec::new()),
+    };
+    Ok(s.split(',')
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(str::to_string)
+        .collect())
 }
 
 // ---------------------------------------------------------------------------
@@ -214,7 +311,21 @@ pub async fn list_issues(
     Extension(_principal): Extension<Principal>,
     Query(q): Query<ListIssuesQuery>,
 ) -> Result<Json<IssueListResponse>, ApiError> {
-    let filter = IssueListFilter {
+    let filter = filter_from_query(&q);
+    let rows = state.store.list_issues(&filter).await?;
+    let total = state.store.count_issues(&filter).await?;
+    Ok(Json(IssueListResponse {
+        rows: rows.into_iter().map(IssueDto::from).collect(),
+        total,
+        limit: filter.limit,
+        offset: filter.offset,
+    }))
+}
+
+/// Translate the wire-side [`ListIssuesQuery`] to the store
+/// filter, preserving the back-compat scalar / array dual.
+fn filter_from_query(q: &ListIssuesQuery) -> IssueListFilter {
+    IssueListFilter {
         repo_id: q.repo_id,
         org_id: q.org_id,
         state: q.state.to_store(),
@@ -222,9 +333,71 @@ pub async fn list_issues(
         q: q.q.clone(),
         limit: clamp_limit(q.limit),
         offset: clamp_offset(q.offset),
-    };
-    let rows = state.store.list_issues(&filter).await?;
-    let total = state.store.count_issues(&filter).await?;
+        repo_ids: q.repo_ids.clone(),
+        org_ids: q.org_ids.clone(),
+        assignees: q.assignees.clone(),
+        labels: q.labels.clone(),
+        author: q.author.clone().filter(|s| !s.is_empty()),
+        state_reason: q.state_reason.clone().filter(|s| !s.is_empty()),
+        updated_since: q.updated_since,
+        untriaged_only: q.untriaged,
+    }
+}
+
+/// `GET /me/queue` — the caller's inbox. The default landing view
+/// for the triage page (`linear-projects-idea.md` §3.8 / §5.4).
+///
+/// Returns issues that the caller has not dismissed (`status <>
+/// 'done'`) and that are not currently snoozed (`status <>
+/// 'snoozed' OR snoozed_until < now()`). Rows that have never
+/// been touched surface as default-state ("inbox", unread until
+/// the user opens the peek panel).
+///
+/// Accepts the same filter set as `GET /issues` so the smart-view
+/// rail can pre-narrow ("My queue · phoenix only", etc.).
+///
+/// Each row carries an `unread` boolean — `true` when
+/// `dp_issues.version > last_seen_version`. The frontend renders
+/// an indicator and uses `POST /me/inbox/seen` to clear it when
+/// the user opens the row in the peek panel.
+#[utoipa::path(
+    get,
+    path = "/me/queue",
+    params(
+        ("repo_id"   = Option<Uuid>,   Query, description = "Restrict to one repo"),
+        ("repo_ids"  = Option<String>, Query, description = "Comma-separated repo ids"),
+        ("org_id"    = Option<Uuid>,   Query, description = "Restrict to one org"),
+        ("org_ids"   = Option<String>, Query, description = "Comma-separated org ids"),
+        ("state"     = Option<String>, Query, description = "open|closed|all (default open)"),
+        ("assignees" = Option<String>, Query, description = "Comma-separated assignee logins (AND)"),
+        ("labels"    = Option<String>, Query, description = "Comma-separated labels (AND)"),
+        ("author"    = Option<String>, Query, description = "Author login"),
+        ("state_reason" = Option<String>, Query, description = "completed|not_planned|reopened"),
+        ("updated_since" = Option<String>, Query, description = "RFC3339 lower bound"),
+        ("untriaged" = Option<bool>,   Query, description = "Restrict to rows with no assignee and no label"),
+        ("q"         = Option<String>, Query, description = "Substring search on title"),
+        ("limit"     = Option<i64>,    Query, description = "Page size (1..=200, default 50)"),
+        ("offset"    = Option<i64>,    Query, description = "Page offset (default 0)"),
+    ),
+    responses(
+        (status = 200, description = "Caller's inbox queue", body = IssueListResponse),
+    ),
+    tag = "issues",
+)]
+pub async fn me_queue(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    Query(q): Query<ListIssuesQuery>,
+) -> Result<Json<IssueListResponse>, ApiError> {
+    let filter = filter_from_query(&q);
+    let rows = state
+        .store
+        .list_inbox_issues(principal.actor_user_id, &filter)
+        .await?;
+    let total = state
+        .store
+        .count_inbox_issues(principal.actor_user_id, &filter)
+        .await?;
     Ok(Json(IssueListResponse {
         rows: rows.into_iter().map(IssueDto::from).collect(),
         total,
@@ -306,7 +479,8 @@ pub fn issues_read_router(state: Arc<AppState>) -> Router {
             Router::new()
                 .route("/issues", get(list_issues))
                 .route("/issues/{id}", get(get_issue_by_id))
-                .route("/repos/{repo_id}/issues/{number}", get(get_issue_by_number)),
+                .route("/repos/{repo_id}/issues/{number}", get(get_issue_by_number))
+                .route("/me/queue", get(me_queue)),
             "issues",
             "read",
         ))

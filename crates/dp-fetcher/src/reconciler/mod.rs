@@ -146,6 +146,9 @@ pub struct Reconciler {
     /// (not Scope) so a future config knob can disable e.g. commits
     /// without recompiling.
     kinds: Arc<[ResourceKind]>,
+    /// Org-scoped resource kinds — fetched once per unique org per
+    /// tick (not per repo). Cursors use `repo_id = None`.
+    org_kinds: Arc<[ResourceKind]>,
     /// SCOPE-PROJECTS §13.7 / §8.5: how long a `dp_issues`
     /// `pending_remote = TRUE` row is allowed to survive before
     /// the reconciler stops deferring to it and the sweeper rolls
@@ -157,8 +160,9 @@ pub struct Reconciler {
 
 impl Reconciler {
     /// Build a reconciler with the default resource-kind set:
-    /// pull requests, issues, commits. (Reviews / review-comments
-    /// / workflow_runs / deployments / releases ride the webhook
+    /// pull requests, issues, commits (per-repo) and teams,
+    /// members (per-org). (Reviews / review-comments /
+    /// workflow_runs / deployments / releases ride the webhook
     /// path exclusively for now — they have no `since=` parameter
     /// on the list endpoint that would let us page cheaply, so the
     /// cost/benefit favours webhook-only.)
@@ -179,6 +183,9 @@ impl Reconciler {
                 ]
                 .as_slice(),
             ),
+            org_kinds: Arc::from(
+                [ResourceKind::Teams, ResourceKind::Members].as_slice(),
+            ),
             // §13.7 default — matches `issues.pending_remote_timeout_secs`
             // default in `dp-config` (SCOPE-PROJECTS §8.5).
             pending_remote_timeout: Duration::from_secs(60),
@@ -189,6 +196,14 @@ impl Reconciler {
     /// Mostly for tests that want to exercise one kind in isolation.
     pub fn with_kinds(mut self, kinds: &[ResourceKind]) -> Self {
         self.kinds = Arc::from(kinds);
+        self
+    }
+
+    /// Override the set of org-scoped resource kinds reconciled
+    /// per tick. Pass `&[]` to skip the org-level pass entirely
+    /// (e.g. for tests that only care about repo-level kinds).
+    pub fn with_org_kinds(mut self, kinds: &[ResourceKind]) -> Self {
+        self.org_kinds = Arc::from(kinds);
         self
     }
 
@@ -214,6 +229,41 @@ impl Reconciler {
         let mut stats = TickStats::default();
         let mut successes: i64 = 0;
 
+        // -------- org-scoped pass (teams / members) ------------
+        //
+        // Cursors live at `(org_id, repo_id=None, kind)`. We dedupe
+        // the post-scope target list by `org_id` so each org is
+        // touched at most once per tick regardless of how many
+        // repos it owns.
+        let mut seen_orgs: std::collections::HashSet<Uuid> =
+            std::collections::HashSet::new();
+        for target in &targets {
+            if !seen_orgs.insert(target.org_id) {
+                continue;
+            }
+            for &kind in self.org_kinds.iter() {
+                let span = tracing::info_span!(
+                    target: "dp_fetcher::reconciler",
+                    "reconciler.org",
+                    org   = %target.org_id,
+                    owner = %target.owner_login,
+                    kind  = ?kind,
+                );
+                let _enter = span.enter();
+                match self.reconcile_org_one(target, kind).await {
+                    Ok(applied) => {
+                        stats.items += applied;
+                        successes += 1;
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "reconcile (org) failed");
+                        stats.errors += 1;
+                    }
+                }
+            }
+        }
+
+        // -------- per-repo pass --------------------------------
         for target in &targets {
             for &kind in self.kinds.iter() {
                 let span = tracing::info_span!(
@@ -245,6 +295,112 @@ impl Reconciler {
             .await?;
 
         Ok(stats)
+    }
+
+    /// Reconcile one `(org, org-scoped kind)`. Returns the number
+    /// of synthesised deliveries successfully applied.
+    async fn reconcile_org_one(
+        &self,
+        target: &RepoTarget,
+        kind: ResourceKind,
+    ) -> Result<i64, OneError> {
+        // ---- 1. Load the cursor (repo_id = None). --------------
+        let cursor = match self
+            .store
+            .get_cursor(target.org_id, None, kind)
+            .await
+        {
+            Ok(c) => Some(c),
+            Err(StoreError::NotFound { .. }) => None,
+            Err(e) => return Err(OneError::Store(e)),
+        };
+        let etag = cursor.as_ref().and_then(|c| c.etag.clone());
+
+        // ---- 2. Fetch from GitHub. -----------------------------
+        let fetched = match kind {
+            ResourceKind::Teams => {
+                self.client
+                    .list_org_teams(&target.owner_login, etag.as_deref())
+                    .await
+            }
+            ResourceKind::Members => {
+                self.client
+                    .list_org_members(&target.owner_login, etag.as_deref())
+                    .await
+            }
+            // Caller only calls this for org-scoped kinds; other
+            // variants are a no-op rather than a hard error so a
+            // future kind addition doesn't crash a deployed binary.
+            _ => return Ok(0),
+        }
+        .map_err(OneError::Client)?;
+
+        // ---- 3. Decide what to do based on Fetched. ------------
+        let (body, new_etag) = match fetched {
+            Fetched::NotModified { .. } => {
+                let updated = FetchCursor {
+                    org_id: target.org_id,
+                    repo_id: None,
+                    resource_kind: kind,
+                    since: cursor.as_ref().and_then(|c| c.since),
+                    etag,
+                    last_event_id: cursor.as_ref().and_then(|c| c.last_event_id.clone()),
+                    updated_at: Utc::now(),
+                };
+                self.store.put_cursor(&updated).await.map_err(OneError::Store)?;
+                return Ok(0);
+            }
+            Fetched::Ok { body, etag, .. } => (body, etag),
+        };
+
+        // ---- 4. Synthesise webhook deliveries. -----------------
+        let items: &[serde_json::Value] = body
+            .as_array()
+            .map(|v| v.as_slice())
+            .unwrap_or(&[]);
+        let deliveries = match kind {
+            ResourceKind::Teams => synth::teams_response_to_deliveries(
+                target.org_github_id,
+                &target.owner_login,
+                items,
+            ),
+            ResourceKind::Members => synth::members_response_to_deliveries(
+                target.org_github_id,
+                &target.owner_login,
+                items,
+            ),
+            _ => Vec::new(),
+        };
+
+        // ---- 5. Dispatch via the shared handler path. The §13.7
+        // pending-remote guard is issue-scoped only; org-scoped
+        // synth payloads bypass it.
+        let mut applied: i64 = 0;
+        for d in &deliveries {
+            match apply_delivery(self.store.as_ref(), d).await {
+                Ok(_) => applied += 1,
+                Err(HandlerError::Ignored { .. }) => {
+                    applied += 1;
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "org synth dispatch failed");
+                }
+            }
+        }
+
+        // ---- 6. Persist the new etag. --------------------------
+        let updated = FetchCursor {
+            org_id: target.org_id,
+            repo_id: None,
+            resource_kind: kind,
+            since: cursor.as_ref().and_then(|c| c.since),
+            etag: new_etag.or(etag),
+            last_event_id: cursor.and_then(|c| c.last_event_id),
+            updated_at: Utc::now(),
+        };
+        self.store.put_cursor(&updated).await.map_err(OneError::Store)?;
+
+        Ok(applied)
     }
 
     /// Reconcile one `(target, resource_kind)`. Returns the number

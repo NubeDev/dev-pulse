@@ -32,6 +32,7 @@ import {
   type CreateCommentRequest,
   type CreateIssueRequest,
   type CreateTagRequest,
+  type InboxStatus,
   type IssueDto,
   type IssueListResponse,
   type LinkBatchRequest,
@@ -47,14 +48,18 @@ import {
   type TagDto,
   type UpdateIssueRequest,
   type UpdateTagRequest,
+  type UserIssueStateDto,
 } from "../api/client.js";
 import {
   USE_MOCK,
   mockAppInstallBanner,
   mockIssue,
   mockListIssues,
+  mockListMyQueue,
   mockListRepos,
+  mockMarkInboxSeen,
   mockPinsState,
+  mockSetInboxState,
   mockTagDetail,
   mockTagsState,
 } from "./mocks.js";
@@ -71,6 +76,7 @@ export const workflowKeys = {
   tag: (id: string) => ["workflow", "tag", id] as const,
   issue: (id: string) => ["workflow", "issue", id] as const,
   issues: (q: ListIssuesQuery) => ["workflow", "issues", q] as const,
+  myQueue: (q: ListIssuesQuery) => ["workflow", "my-queue", q] as const,
   repos: (q: ListReposQuery) => ["workflow", "repos", q] as const,
   banner: () => ["workflow", "app-install-banner"] as const,
 };
@@ -282,6 +288,74 @@ export function useIssueList(q: ListIssuesQuery) {
     queryKey: workflowKeys.issues(q),
     queryFn: () =>
       USE_MOCK ? Promise.resolve(mockListIssues(q)) : api.listIssues(q),
+  });
+}
+
+/** `GET /me/queue` — the caller's inbox queue
+ *  (`linear-projects-idea.md` §3.8 / §5.4). Same envelope as
+ *  [`useIssueList`] but each row carries `unread` so the table can
+ *  render the §3.8 dot indicator. */
+export function useMyQueue(q: ListIssuesQuery) {
+  return useQuery<IssueListResponse>({
+    queryKey: workflowKeys.myQueue(q),
+    queryFn: () =>
+      USE_MOCK ? Promise.resolve(mockListMyQueue(q)) : api.listMyQueue(q),
+  });
+}
+
+/**
+ * `POST /me/inbox/seen` — bulk-mark issues as read for the caller.
+ *
+ * Invalidates `myQueue` so the next render clears the unread dot.
+ * Pure UI metadata — no audit, no toast on success (the dot
+ * disappearing is the confirmation). Failures swallow silently to
+ * keep the peek-panel-open path latency-free; the next refetch will
+ * resync if it really mattered.
+ */
+export function useMarkInboxSeen() {
+  const qc = useQueryClient();
+  return useMutation<void, Error, string[]>({
+    mutationFn: async (issueIds) => {
+      if (USE_MOCK) {
+        mockMarkInboxSeen(issueIds);
+        return;
+      }
+      return api.markInboxSeen(issueIds);
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["workflow", "my-queue"] });
+    },
+    // Best-effort: if it failed, the dot stays and the next refetch
+    // will reconcile.
+    onError: () => undefined,
+  });
+}
+
+/**
+ * `PATCH /me/inbox/{issue_id}` — set status (inbox/snoozed/done)
+ * and / or snooze deadline. Invalidates `myQueue` so the
+ * disappearing row reflects the new state.
+ */
+export function useSetInboxState() {
+  const qc = useQueryClient();
+  return useMutation<
+    UserIssueStateDto,
+    Error,
+    { issueId: string; status?: InboxStatus; snoozed_until?: string | null }
+  >({
+    mutationFn: async ({ issueId, status, snoozed_until }) => {
+      if (USE_MOCK) {
+        return mockSetInboxState(
+          issueId,
+          status ?? (snoozed_until ? "snoozed" : "inbox"),
+          snoozed_until,
+        );
+      }
+      return api.setInboxState(issueId, { status, snoozed_until });
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["workflow", "my-queue"] });
+    },
   });
 }
 
