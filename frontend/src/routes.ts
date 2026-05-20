@@ -30,6 +30,29 @@ export type Section = "reports" | "directory" | "admin" | "login";
 /** Sub-route under the reports section — drives the reports sub-nav. */
 export type ReportTab = "user" | "team" | "org" | "home-org-split" | "freshness";
 
+/** Sub-route under the admin section — drives the admin sub-nav.
+ *  - `runs` (default): paginated fetch_runs log.
+ *  - `refresh`       : operator-triggered reconciler tick + org scope.
+ *  - `users`         : GDPR controls (anonymise + export). */
+export type AdminTab = "runs" | "refresh" | "users";
+
+/** Parse `#/admin/...` → the active sub-tab. Defaults to `runs`. */
+export function adminTabOf(route: string): AdminTab {
+  const path = route.replace(/^#/, "").replace(/^\/+/, "").split("/");
+  if (path[0] !== "admin") return "runs";
+  switch (path[1]) {
+    case "refresh":
+      return "refresh";
+    case "users":
+      return "users";
+    case "runs":
+    case undefined:
+    case "":
+    default:
+      return "runs";
+  }
+}
+
 /** Sub-route under the directory section — drives the directory sub-nav.
  *  - `users` (default): people list with search + org filter + memberships + home-org badge.
  *  - `orgs`            : org list with member counts.

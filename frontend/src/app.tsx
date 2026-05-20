@@ -9,13 +9,15 @@
  */
 
 import { useAuth, AuthProvider } from "@nube/starter-ui-core/auth";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@nube/starter-ui-kit/components/card";
 
 import { api } from "./api/client.js";
 import { authStrategy } from "./auth/strategy.js";
 import { LoginPage } from "./auth/login-page.jsx";
 import { ProtectedRoute } from "./auth/protected-route.jsx";
 import { AppShell } from "./layout/app-shell.jsx";
+import { AdminUsersPage } from "./admin/users-page.jsx";
+import { RefreshPage } from "./admin/refresh-page.jsx";
+import { RunsPage } from "./admin/runs-page.jsx";
 import { HomeOrgPage } from "./directory/home-org-page.jsx";
 import { OrgsPage } from "./directory/orgs-page.jsx";
 import { TeamsPage } from "./directory/teams-page.jsx";
@@ -26,11 +28,13 @@ import { OrgReportPage } from "./reports/org-report-page.jsx";
 import { TeamReportPage } from "./reports/team-report-page.jsx";
 import { UserReportPage } from "./reports/user-report-page.jsx";
 import {
+  adminTabOf,
   directoryTabOf,
   isLoginRoute,
   reportTabOf,
   sectionOf,
   useRoute,
+  type AdminTab,
   type DirectoryTab,
   type ReportTab,
 } from "./routes.js";
@@ -90,7 +94,7 @@ function SectionPane({
     case "directory":
       return <DirectorySection tab={directoryTabOf(route)} />;
     case "admin":
-      return <AdminHome />;
+      return <AdminSection tab={adminTabOf(route)} />;
   }
 }
 
@@ -237,16 +241,69 @@ function DirectoryPane({ tab }: { tab: DirectoryTab }): JSX.Element {
   }
 }
 
-function AdminHome(): JSX.Element {
+interface AdminNavItem {
+  readonly tab: AdminTab;
+  readonly label: string;
+  readonly href: string;
+}
+
+const ADMIN_TABS: readonly AdminNavItem[] = [
+  { tab: "runs", label: "Runs", href: "#/admin/runs" },
+  { tab: "refresh", label: "Refresh", href: "#/admin/refresh" },
+  { tab: "users", label: "User GDPR", href: "#/admin/users" },
+];
+
+function AdminSection({ tab }: { tab: AdminTab }): JSX.Element {
+  // Same plain-anchor sub-nav pattern as Reports / Directory — the
+  // hash route stays the source of truth so deep links + back-button
+  // work without an extra controlled state.
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Admin</CardTitle>
-        <CardDescription>Refresh, run log, GDPR export / anonymise. Stage 5+.</CardDescription>
-      </CardHeader>
-      <CardContent>
-        <p style={{ color: "var(--muted-foreground)" }}>Admin placeholder.</p>
-      </CardContent>
-    </Card>
+    <div style={{ display: "grid", gap: "1rem" }}>
+      <nav
+        aria-label="Admin"
+        data-testid="admin-subnav"
+        style={{
+          display: "flex",
+          gap: "0.25rem",
+          padding: "0.25rem",
+          background: "var(--muted)",
+          borderRadius: "var(--radius-md, 0.5rem)",
+          alignSelf: "flex-start",
+        }}
+      >
+        {ADMIN_TABS.map((item) => {
+          const isActive = item.tab === tab;
+          return (
+            <a
+              key={item.tab}
+              href={item.href}
+              aria-current={isActive ? "page" : undefined}
+              style={{
+                padding: "0.375rem 0.75rem",
+                borderRadius: "var(--radius-sm, 0.375rem)",
+                fontSize: "0.875rem",
+                textDecoration: "none",
+                color: isActive ? "var(--primary-foreground)" : "var(--foreground)",
+                background: isActive ? "var(--primary)" : "transparent",
+              }}
+            >
+              {item.label}
+            </a>
+          );
+        })}
+      </nav>
+      <AdminPane tab={tab} />
+    </div>
   );
+}
+
+function AdminPane({ tab }: { tab: AdminTab }): JSX.Element {
+  switch (tab) {
+    case "runs":
+      return <RunsPage />;
+    case "refresh":
+      return <RefreshPage />;
+    case "users":
+      return <AdminUsersPage />;
+  }
 }
