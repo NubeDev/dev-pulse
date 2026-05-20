@@ -18,25 +18,25 @@
 
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Alert, AlertDescription, AlertTitle } from "@nube/starter-ui-kit/components/alert";
-import { Badge } from "@nube/starter-ui-kit/components/badge";
-import { Button } from "@nube/starter-ui-kit/components/button";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
   CardHeader,
   CardTitle,
-} from "@nube/starter-ui-kit/components/card";
-import { cn } from "@nube/starter-ui-kit/lib/utils";
-import { Label } from "@nube/starter-ui-kit/components/label";
+} from "@/components/ui/card";
+import { cn } from "@/lib/utils";
+import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@nube/starter-ui-kit/components/select";
-import { Spinner } from "@nube/starter-ui-kit/components/spinner";
+} from "@/components/ui/select";
+import { Spinner } from "@/components/ui/spinner";
 
 import { api } from "../api/client.js";
 import type { RefreshResponse } from "../api/client.js";

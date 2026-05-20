@@ -41,26 +41,26 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-} from "@nube/starter-ui-kit/components/alert-dialog";
-import { Alert, AlertDescription, AlertTitle } from "@nube/starter-ui-kit/components/alert";
-import { Button } from "@nube/starter-ui-kit/components/button";
+} from "@/components/ui/alert-dialog";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
-} from "@nube/starter-ui-kit/components/card";
-import { Input } from "@nube/starter-ui-kit/components/input";
-import { Label } from "@nube/starter-ui-kit/components/label";
-import { Progress } from "@nube/starter-ui-kit/components/progress";
+} from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Progress } from "@/components/ui/progress";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@nube/starter-ui-kit/components/select";
+} from "@/components/ui/select";
 
 import { api, StarterError } from "../api/client.js";
 import type { UserDto } from "../api/client.js";

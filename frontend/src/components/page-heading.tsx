@@ -6,7 +6,7 @@
  */
 
 import type { ReactNode } from "react";
-import { cn } from "@nube/starter-ui-kit/lib/utils";
+import { cn } from "@/lib/utils";
 
 export interface PageHeadingProps {
   title: ReactNode;

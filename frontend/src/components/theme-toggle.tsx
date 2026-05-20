@@ -15,13 +15,13 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
-} from "@nube/starter-ui-kit/components/dropdown-menu";
-import { Button } from "@nube/starter-ui-kit/components/button";
+} from "@/components/ui/dropdown-menu";
+import { Button } from "@/components/ui/button";
 // See note in `main.tsx` — the theme module isn't in the package's
 // `exports` map, so we resolve it via the `@/` alias instead of the
 // `@nube/starter-ui-kit/theme` subpath (which doesn't exist).
-import { useTheme } from "@/theme";
-import type { Theme } from "@/theme/types";
+import { useTheme } from "@kit/theme";
+import type { Theme } from "@kit/theme/types";
 
 const LABEL: Record<Theme, string> = {
   light: "Light",

@@ -12,21 +12,21 @@
  */
 
 import { useState } from "react";
-import { Alert, AlertDescription, AlertTitle } from "@nube/starter-ui-kit/components/alert";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   Card,
   CardContent,
   CardHeader,
   CardTitle,
-} from "@nube/starter-ui-kit/components/card";
-import { Label } from "@nube/starter-ui-kit/components/label";
+} from "@/components/ui/card";
+import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@nube/starter-ui-kit/components/select";
+} from "@/components/ui/select";
 
 import {
   Empty,

@@ -9,9 +9,9 @@
  * the operator sees the data's age before reading totals.
  */
 
-import { Alert, AlertDescription } from "@nube/starter-ui-kit/components/alert";
-import { Badge } from "@nube/starter-ui-kit/components/badge";
-import { cn } from "@nube/starter-ui-kit/lib/utils";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
 
 import type { DataAsOf } from "../api/client.js";
 

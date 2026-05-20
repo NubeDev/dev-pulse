@@ -23,8 +23,8 @@ import {
   CardContent,
   CardHeader,
   CardTitle,
-} from "@nube/starter-ui-kit/components/card";
-import { Progress } from "@nube/starter-ui-kit/components/progress";
+} from "@/components/ui/card";
+import { Progress } from "@/components/ui/progress";
 
 import { api } from "../api/client.js";
 import type {

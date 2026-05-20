@@ -17,7 +17,7 @@ import {
   TabsContent,
   TabsList,
   TabsTrigger,
-} from "@nube/starter-ui-kit/components/tabs";
+} from "@/components/ui/tabs";
 
 import type { ScopeMode } from "../api/client.js";
 import type { ReactNode } from "react";

@@ -20,8 +20,8 @@ import { useAuth } from "@nube/starter-ui-core/auth";
 import {
   Alert,
   AlertDescription,
-} from "@nube/starter-ui-kit/components/alert";
-import { Button } from "@nube/starter-ui-kit/components/button";
+} from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
@@ -29,9 +29,9 @@ import {
   CardFooter,
   CardHeader,
   CardTitle,
-} from "@nube/starter-ui-kit/components/card";
-import { Input } from "@nube/starter-ui-kit/components/input";
-import { Label } from "@nube/starter-ui-kit/components/label";
+} from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 
 import { navigate } from "../routes.js";
 

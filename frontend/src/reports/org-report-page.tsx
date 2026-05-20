@@ -10,15 +10,15 @@ import {
   CardContent,
   CardHeader,
   CardTitle,
-} from "@nube/starter-ui-kit/components/card";
-import { Label } from "@nube/starter-ui-kit/components/label";
+} from "@/components/ui/card";
+import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@nube/starter-ui-kit/components/select";
+} from "@/components/ui/select";
 
 import { api } from "../api/client.js";
 import type {

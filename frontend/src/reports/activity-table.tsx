@@ -14,8 +14,8 @@
  */
 
 import { useState } from "react";
-import { Button } from "@nube/starter-ui-kit/components/button";
-import { cn } from "@nube/starter-ui-kit/lib/utils";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 import type { CountRow } from "../api/client.js";
 import { ACTIVITY_KINDS } from "./activity-types.js";
