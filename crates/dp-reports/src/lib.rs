@@ -16,6 +16,7 @@ pub mod aggregate;
 pub mod envelope;
 pub mod freshness;
 pub mod lenses;
+pub mod tag_filter;
 
 pub use aggregate::{
     compute_percentiles, count_by_bucket, count_by_org, count_by_repo, count_by_team,
@@ -25,7 +26,11 @@ pub use aggregate::{
 };
 pub use envelope::{
     resolve_window, resolve_window_at, GroupBy, ReportRequest, ResolveError, ScopeMode,
-    WindowLabel, WindowSpec,
+    WindowLabel, WindowSpec, MAX_TAGS_FOR_GROUP_BY_TAG,
+};
+pub use tag_filter::{
+    empty_reason_for_tag_filter, is_issue_centric_event_kind, tag_link_kinds_match_event_kind,
+    EMPTY_REASON_TAG_KIND_MISMATCH,
 };
 pub use freshness::{pick_headline as pick_freshness_headline, DataAsOf, DataAsOfExt};
 

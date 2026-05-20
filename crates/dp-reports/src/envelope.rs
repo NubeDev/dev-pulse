@@ -72,7 +72,23 @@ pub enum GroupBy {
     Week,
     /// One row per UTC-truncated month.
     Month,
+    /// One row per tag in [`ReportRequest::tags`]
+    /// (SCOPE-PROJECTS §7.7).
+    ///
+    /// Requires a non-empty [`ReportRequest::tags`] filter — "all
+    /// visible tags" is explicitly rejected as a UI footgun once a
+    /// deployment accumulates hundreds of tags. The filter is also
+    /// capped at [`MAX_TAGS_FOR_GROUP_BY_TAG`] entries.
+    Tag,
 }
+
+/// Maximum number of tags in [`ReportRequest::tags`] when
+/// `group_by = Tag` is requested (SCOPE-PROJECTS §7.7 / §13.5).
+///
+/// Bounded so the response row count and the per-tag SQL UNION the
+/// store will assemble stay small and predictable. Surfaces as a
+/// `400` from the Phase 4 REST handlers when exceeded.
+pub const MAX_TAGS_FOR_GROUP_BY_TAG: usize = 50;
 
 /// The single envelope every report takes. Phase 4 REST handlers and
 /// Phase 5 MCP tools deserialise into this same shape (decision locked
@@ -89,6 +105,22 @@ pub struct ReportRequest {
     /// Team filter. Empty == no filter.
     #[serde(default)]
     pub teams: Vec<Uuid>,
+    /// Repo filter (SCOPE-PROJECTS §7.7). Empty == no filter. Added
+    /// in lock-step with [`Self::tags`] because tag links of kind
+    /// `repo` cannot be expressed via the user / team / org filters.
+    /// Filters on `activity_events.repo_id`.
+    #[serde(default)]
+    pub repos: Vec<Uuid>,
+    /// Tag filter (SCOPE-PROJECTS §7.7). Empty == no filter. Each
+    /// tag contributes an **additional `OR`-predicate** that is the
+    /// union of the tag's visible link targets resolved to the
+    /// metric's natural attribution column (see the metric ×
+    /// link-kind mapping in [`crate::tag_filter`]).
+    ///
+    /// Capped at [`MAX_TAGS_FOR_GROUP_BY_TAG`] when paired with
+    /// `group_by = Tag`; the handler returns `400` if exceeded.
+    #[serde(default)]
+    pub tags: Vec<Uuid>,
     /// The window spec. Resolved server-side via [`resolve_window`].
     pub window: WindowSpec,
     /// Lens (SCOPE §8.1).
@@ -628,6 +660,8 @@ mod tests {
             orgs: vec![Uuid::nil()],
             users: vec![],
             teams: vec![],
+            repos: vec![Uuid::nil()],
+            tags: vec![Uuid::nil()],
             window: WindowSpec {
                 label: WindowLabel::LastWeek,
                 tz: "Australia/Sydney".into(),
@@ -659,6 +693,8 @@ mod tests {
         assert!(req.orgs.is_empty());
         assert!(req.users.is_empty());
         assert!(req.teams.is_empty());
+        assert!(req.repos.is_empty(), "repos defaults to empty");
+        assert!(req.tags.is_empty(), "tags defaults to empty");
         assert!(req.activity_types.is_empty());
         assert!(req.actor_roles.is_empty());
         assert!(req.group_by.is_none());
@@ -675,6 +711,41 @@ mod tests {
             serde_json::to_string(&ScopeMode::PerOrgSplit).unwrap(),
             "\"per_org_split\""
         );
+    }
+
+    #[test]
+    fn group_by_tag_uses_snake_case_wire_form() {
+        // SCOPE-PROJECTS §7.7 — frontend matches the literal
+        // `"tag"` on the wire.
+        assert_eq!(serde_json::to_string(&GroupBy::Tag).unwrap(), "\"tag\"");
+        let back: GroupBy = serde_json::from_str("\"tag\"").unwrap();
+        assert_eq!(back, GroupBy::Tag);
+    }
+
+    #[test]
+    fn max_tags_for_group_by_tag_is_locked_at_50() {
+        // SCOPE-PROJECTS §7.7 working-assumption cap. Test pins
+        // the literal so a "just bump it" PR shows up in review.
+        assert_eq!(MAX_TAGS_FOR_GROUP_BY_TAG, 50);
+    }
+
+    #[test]
+    fn report_request_accepts_tags_and_repos_from_wire() {
+        let json = r#"{
+            "window": {
+                "label": "last_week",
+                "tz": "UTC",
+                "anchor": "utc"
+            },
+            "scope_mode": "single_org",
+            "group_by": "tag",
+            "tags": ["00000000-0000-0000-0000-000000000001"],
+            "repos": ["00000000-0000-0000-0000-000000000002"]
+        }"#;
+        let req: ReportRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.tags.len(), 1);
+        assert_eq!(req.repos.len(), 1);
+        assert_eq!(req.group_by, Some(GroupBy::Tag));
     }
 
     #[test]

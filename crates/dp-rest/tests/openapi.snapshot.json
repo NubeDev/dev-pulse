@@ -1508,6 +1508,13 @@
             "$ref": "#/components/schemas/DataAsOfDto",
             "description": "Per-response freshness envelope (§11.7)."
           },
+          "empty_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the report has no rows, when the emptiness is the\n*intentional* SCOPE-PROJECTS §7.7 outcome of the tag filter\nnot matching the requested metric's attribution column\n(e.g. an `issue`-only tag queried against a commit metric).\n\n`None` for every other empty result (window too tight,\nno matching events, etc.) — those stay as `rows: []` so the\nUI's existing empty-state copy still renders. Locked literal\nis [`EMPTY_REASON_TAG_KIND_MISMATCH`]."
+          },
           "resolved_window": {
             "type": "object",
             "description": "The UTC window the report ran against. Echoed verbatim from\n[`resolve_window`] so the UI can label the report without\nre-resolving (§0.4)."
