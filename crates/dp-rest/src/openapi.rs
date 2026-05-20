@@ -129,6 +129,7 @@ async fn webhook_github_stub() {}
         // Inbox endpoints (slice 1) — were missing from the spec.
         crate::inbox::mark_seen,
         crate::inbox::set_inbox_state,
+        crate::inbox::bulk_inbox,
         // Webhooks (Phase 2 — docs-only stub, real handler in dp-fetcher).
         webhook_github_stub,
     ),
@@ -199,6 +200,9 @@ async fn webhook_github_stub() {}
         crate::inbox::InboxStatusDto,
         crate::inbox::MarkSeenRequest,
         crate::inbox::SetInboxStateRequest,
+        crate::inbox::BulkInboxOp,
+        crate::inbox::BulkInboxRequest,
+        crate::inbox::BulkInboxResponse,
     )),
     tags(
         (name = "reports",   description = "Per-user / team / org activity reports + freshness probe."),

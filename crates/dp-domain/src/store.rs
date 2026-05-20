@@ -415,6 +415,33 @@ pub trait Store: Send + Sync {
         ))
     }
 
+    /// Bulk variant of [`Store::set_inbox_state`]: apply one
+    /// `(status, snoozed_until)` pair to a batch of issues for one
+    /// user. Empty `issue_ids` is a no-op. Returns the number of
+    /// rows touched (inserted + updated).
+    ///
+    /// Semantics:
+    /// * `status = Inbox`   — restore to the inbox; clears any snooze.
+    /// * `status = Snoozed` — `snoozed_until` should be `Some(future)`.
+    /// * `status = Done`    — dismiss; ignores `snoozed_until`.
+    ///
+    /// Last-seen-version is preserved on existing rows (this is the
+    /// dismiss / snooze / restore action, not a "saw it" signal).
+    /// New rows are inserted with `last_seen_version = 0` so the
+    /// next render still shows them as unread until the user
+    /// actually opens them.
+    async fn set_inbox_state_bulk(
+        &self,
+        _user_id: Uuid,
+        _issue_ids: &[Uuid],
+        _status: InboxStatus,
+        _snoozed_until: Option<DateTime<Utc>>,
+    ) -> Result<u64, StoreError> {
+        Err(StoreError::Invalid(
+            "bulk inbox state not supported by this store".into(),
+        ))
+    }
+
     // ---- issue timeline (triage slice 2 — §5.6) -------------------
 
     /// Page of `dp_activity_events` rows scoped to one issue, used

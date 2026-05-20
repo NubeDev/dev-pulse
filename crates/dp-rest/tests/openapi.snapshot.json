@@ -600,6 +600,40 @@
         }
       }
     },
+    "/me/inbox/bulk": {
+      "post": {
+        "tags": [
+          "inbox"
+        ],
+        "summary": "`POST /me/inbox/bulk` — bulk inbox transitions\n(mark-all-seen / snooze-all / done-all / inbox-all). Used by the\nlist-header bulk action menu in the workbench. Audited under the\n`BULK_INBOX_*` vocabulary so the audit log can answer \"who did\nthe mass dismiss?\" without scanning the per-row writes.",
+        "operationId": "bulk_inbox",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BulkInboxRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Bulk transition applied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BulkInboxResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Batch too large / snooze without deadline"
+          }
+        }
+      }
+    },
     "/me/inbox/seen": {
       "post": {
         "tags": [
@@ -1984,6 +2018,61 @@
           "slug": {
             "type": "string",
             "description": "App slug — informational, copied verbatim from\n[`GitHubAppConfig::slug`]. Empty when unset."
+          }
+        }
+      },
+      "BulkInboxOp": {
+        "type": "string",
+        "description": "Operation kind for [`BulkInboxRequest`]. One of mark-seen, snooze,\ndone, or restore-to-inbox — the four bulk actions the workbench\nexposes from the list header.",
+        "enum": [
+          "mark_all_seen",
+          "snooze_all",
+          "done_all",
+          "inbox_all"
+        ]
+      },
+      "BulkInboxRequest": {
+        "type": "object",
+        "description": "Body for `POST /me/inbox/bulk`. One operation applied to a batch\nof issue ids.",
+        "required": [
+          "issue_ids",
+          "op"
+        ],
+        "properties": {
+          "issue_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "`dp_issues.id` rows to touch. Capped at [`SEEN_BATCH_CAP`]."
+          },
+          "op": {
+            "$ref": "#/components/schemas/BulkInboxOp",
+            "description": "Which transition to apply."
+          },
+          "snoozed_until": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Required for `snooze_all`; ignored otherwise."
+          }
+        }
+      },
+      "BulkInboxResponse": {
+        "type": "object",
+        "description": "Response from `POST /me/inbox/bulk`.",
+        "required": [
+          "touched"
+        ],
+        "properties": {
+          "touched": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Number of `dp_user_issue_state` rows touched (inserted +\nupdated). For `mark_all_seen` this is the upsert count from\nthe underlying `mark_issues_seen` call and is reported as the\nlength of the request batch (the store does not surface the\nrow count for that path today).",
+            "minimum": 0
           }
         }
       },

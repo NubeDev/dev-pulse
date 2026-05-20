@@ -1059,6 +1059,43 @@ impl Store for PgStore {
         row_to_user_issue_state(&row)
     }
 
+    async fn set_inbox_state_bulk(
+        &self,
+        user_id: Uuid,
+        issue_ids: &[Uuid],
+        status: InboxStatus,
+        snoozed_until: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<u64, StoreError> {
+        if issue_ids.is_empty() {
+            return Ok(0);
+        }
+        // Done / Inbox ignore the snooze deadline (Inbox clears it;
+        // Done has no wake target). Only Snoozed carries it through.
+        let effective_snooze = match status {
+            InboxStatus::Snoozed => snoozed_until,
+            InboxStatus::Inbox | InboxStatus::Done => None,
+        };
+        let res = sqlx::query(
+            "INSERT INTO dp_user_issue_state
+                 (user_id, issue_id, last_seen_version, status, snoozed_until, updated_at)
+             SELECT $1, i.id, 0, $3, $4, now()
+               FROM dp_issues i
+              WHERE i.id = ANY($2::uuid[])
+             ON CONFLICT (user_id, issue_id) DO UPDATE
+                 SET status        = EXCLUDED.status,
+                     snoozed_until = EXCLUDED.snoozed_until,
+                     updated_at    = now()",
+        )
+        .bind(user_id)
+        .bind(issue_ids)
+        .bind(status.as_str())
+        .bind(effective_snooze)
+        .execute(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        Ok(res.rows_affected())
+    }
+
     async fn record_audit_log(&self, entry: &AuditEntry) -> Result<(), StoreError> {
         sqlx::query(
             "INSERT INTO dp_audit_log (id, actor_user_id, action, target, at) \

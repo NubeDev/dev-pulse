@@ -257,7 +257,7 @@ pub async fn get_repo_sync_status(
 )]
 pub async fn request_repo_sync(
     State(state): State<AppState>,
-    Extension(_principal): Extension<Principal>,
+    Extension(principal): Extension<Principal>,
     axum::extract::Path(id): axum::extract::Path<Uuid>,
 ) -> Result<(axum::http::StatusCode, Json<RepoSyncQueuedDto>), ApiError> {
     let repo = state.store.get_repo(id).await?.ok_or(ApiError::NotFound {
@@ -283,6 +283,17 @@ pub async fn request_repo_sync(
             tracing::warn!(error = %e, repo_id = %repo.id, "per-repo sync trigger failed");
         }
     });
+    // Audit the *request* (the tick itself is async; the audit log
+    // captures operator intent, not the outcome). Failures here
+    // never block the 202 the caller already expects.
+    crate::audit::record(
+        state.store.as_ref(),
+        principal.actor_user_id,
+        crate::audit::REPO_SYNC_REQUESTED,
+        repo.id.to_string(),
+    )
+    .await
+    .ok();
     Ok((
         axum::http::StatusCode::ACCEPTED,
         Json(RepoSyncQueuedDto { queued: true }),

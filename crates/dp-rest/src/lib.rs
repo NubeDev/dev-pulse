@@ -66,8 +66,9 @@ pub use directory::{
 };
 pub use error::ApiError;
 pub use inbox::{
-    inbox_router, mark_seen, set_inbox_state, InboxStatusDto, MarkSeenRequest,
-    SetInboxStateRequest, UserIssueStateDto, SEEN_BATCH_CAP,
+    bulk_inbox, inbox_router, mark_seen, set_inbox_state, BulkInboxOp, BulkInboxRequest,
+    BulkInboxResponse, InboxStatusDto, MarkSeenRequest, SetInboxStateRequest, UserIssueStateDto,
+    SEEN_BATCH_CAP,
 };
 pub use issues::{
     acquire_issue_mutation_slot, commit_issue_mutation, rollback_issue_mutation,
