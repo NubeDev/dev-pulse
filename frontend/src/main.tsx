@@ -1,24 +1,36 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+// `@/theme` resolves through the Vite + tsconfig `@/*` alias to
+// `starter-ui-kit/src/theme` — the package doesn't expose a `./theme`
+// subpath in its `exports` map, and importing from the barrel
+// (`@nube/starter-ui-kit`) would drag every component into the
+// type-check graph and trip the React 18/19 typing mismatch on
+// upstream `skeleton.tsx` / `empty.tsx`.
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports
+import { ThemeProvider } from "@/theme";
 
 import "./globals.css";
 import { App } from "./app.jsx";
 
 /**
  * One QueryClient per browser session. The report pages added in stage
- * 4+ hang their `useQuery` hooks off this client; stage 3 just gets it
- * in place so we don't re-mount providers later. Defaults are tuned for
+ * 4+ hang their `useQuery` hooks off this client. Defaults are tuned for
  * an operator UI: no aggressive refetches, but stale-on-focus is on so
  * the "Data as of <ts>" banner updates after the user comes back to the
- * tab.
+ * tab. Stage 9 widens retry to 1 attempt so a transient blip on the
+ * dev-proxy doesn't permanently red-flag a panel — the user can also
+ * hit the in-page Retry buttons / error-boundary reset.
  */
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       staleTime: 30_000,
       refetchOnWindowFocus: true,
-      retry: false,
+      retry: 1,
+    },
+    mutations: {
+      retry: 0,
     },
   },
 });
@@ -28,8 +40,10 @@ if (!root) throw new Error("missing #root in index.html");
 
 createRoot(root).render(
   <StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <App />
-    </QueryClientProvider>
+    <ThemeProvider defaultTheme="system">
+      <QueryClientProvider client={queryClient}>
+        <App />
+      </QueryClientProvider>
+    </ThemeProvider>
   </StrictMode>,
 );

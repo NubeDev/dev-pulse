@@ -1,20 +1,23 @@
 /**
  * App shell — sidebar nav + top bar + main content slot.
  *
- * Stage 3 ships the chrome only; the section panes are placeholders so
- * the navigation + logout flow can be exercised end-to-end before the
- * SCOPE §11.5 report pages land in stage 4+.
- *
- * Nav sections (per the stage description): Reports, Directory, Admin.
- * Active section is derived from `useRoute()` via `sectionOf` so the
- * sidebar highlight survives a manual hash edit / back-button.
+ * Stage 9 widens the polish surface:
+ *   - responsive layout: at <= 768px the sidebar collapses into a
+ *     horizontal scroll-strip below the header so reports + directory
+ *     remain reachable on a phone (Lighthouse Mobile a11y signal),
+ *   - the header gains a theme-toggle button driven by the
+ *     `@nube/starter-ui-kit` `<ThemeProvider>` (light / dark / system),
+ *   - active section is still derived from `useRoute()` via `sectionOf`
+ *     so deep links + back-button keep working without a controlled
+ *     state in the shell.
  */
 
-import type { ReactNode } from "react";
+import { useSyncExternalStore, type ReactNode } from "react";
 import { useAuth } from "@nube/starter-ui-core/auth";
 import { Button } from "@nube/starter-ui-kit/components/button";
 import { Separator } from "@nube/starter-ui-kit/components/separator";
 
+import { ThemeToggle } from "../components/theme-toggle.jsx";
 import { sectionOf, useRoute, type Section } from "../routes.js";
 
 interface NavItem {
@@ -29,6 +32,25 @@ const NAV: readonly NavItem[] = [
   { section: "admin", label: "Admin", href: "#/admin" },
 ];
 
+/** Mobile breakpoint — below this width we collapse the sidebar into a
+ *  horizontal nav strip under the header. Matches the Tailwind `md` token. */
+const MOBILE_MAX_PX = 768;
+
+function subscribeViewport(cb: () => void): () => void {
+  window.addEventListener("resize", cb);
+  return () => window.removeEventListener("resize", cb);
+}
+
+function snapshotIsMobile(): boolean {
+  if (typeof window === "undefined") return false;
+  return window.innerWidth <= MOBILE_MAX_PX;
+}
+
+/** Reactive `isMobile` flag driven by viewport width. SSR returns `false`. */
+function useIsMobile(): boolean {
+  return useSyncExternalStore(subscribeViewport, snapshotIsMobile, () => false);
+}
+
 export interface AppShellProps {
   children: ReactNode;
 }
@@ -37,14 +59,17 @@ export function AppShell({ children }: AppShellProps): JSX.Element {
   const auth = useAuth();
   const route = useRoute();
   const active = sectionOf(route);
+  const isMobile = useIsMobile();
 
   return (
     <div
+      data-testid="app-shell"
+      data-layout={isMobile ? "mobile" : "desktop"}
       style={{
         minHeight: "100dvh",
         display: "grid",
-        gridTemplateColumns: "16rem 1fr",
-        gridTemplateRows: "auto 1fr",
+        gridTemplateColumns: isMobile ? "1fr" : "16rem 1fr",
+        gridTemplateRows: isMobile ? "auto auto 1fr" : "auto 1fr",
         background: "var(--background)",
         color: "var(--foreground)",
       }}
@@ -55,14 +80,23 @@ export function AppShell({ children }: AppShellProps): JSX.Element {
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
-          padding: "0.75rem 1.25rem",
+          padding: "0.75rem 1rem",
           borderBottom: "1px solid var(--border)",
           background: "var(--card)",
+          gap: "0.5rem",
         }}
       >
         <strong style={{ fontSize: "0.95rem" }}>dev-pulse</strong>
-        <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
-          {auth.user && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "0.5rem",
+            flexWrap: "wrap",
+            justifyContent: "flex-end",
+          }}
+        >
+          {auth.user && !isMobile && (
             <span style={{ color: "var(--muted-foreground)", fontSize: "0.875rem" }}>
               {auth.user.email}
               <span
@@ -78,6 +112,7 @@ export function AppShell({ children }: AppShellProps): JSX.Element {
               </span>
             </span>
           )}
+          <ThemeToggle />
           <Button
             variant="outline"
             size="sm"
@@ -92,14 +127,29 @@ export function AppShell({ children }: AppShellProps): JSX.Element {
 
       <nav
         aria-label="Primary"
-        style={{
-          borderRight: "1px solid var(--border)",
-          padding: "1rem 0.75rem",
-          background: "var(--card)",
-          display: "flex",
-          flexDirection: "column",
-          gap: "0.25rem",
-        }}
+        data-testid="primary-nav"
+        data-layout={isMobile ? "horizontal" : "vertical"}
+        style={
+          isMobile
+            ? {
+                borderBottom: "1px solid var(--border)",
+                padding: "0.5rem 0.75rem",
+                background: "var(--card)",
+                display: "flex",
+                flexDirection: "row",
+                gap: "0.25rem",
+                overflowX: "auto",
+                WebkitOverflowScrolling: "touch",
+              }
+            : {
+                borderRight: "1px solid var(--border)",
+                padding: "1rem 0.75rem",
+                background: "var(--card)",
+                display: "flex",
+                flexDirection: "column",
+                gap: "0.25rem",
+              }
+        }
       >
         {NAV.map((item) => {
           const isActive = item.section === active;
@@ -114,6 +164,7 @@ export function AppShell({ children }: AppShellProps): JSX.Element {
                 borderRadius: "var(--radius-sm, 0.375rem)",
                 fontSize: "0.9rem",
                 textDecoration: "none",
+                whiteSpace: "nowrap",
                 color: isActive ? "var(--primary-foreground)" : "var(--foreground)",
                 background: isActive ? "var(--primary)" : "transparent",
               }}
@@ -122,13 +173,31 @@ export function AppShell({ children }: AppShellProps): JSX.Element {
             </a>
           );
         })}
-        <Separator style={{ margin: "0.75rem 0" }} />
-        <span style={{ fontSize: "0.75rem", color: "var(--muted-foreground)", padding: "0 0.75rem" }}>
-          Phase 7 frontend · stage 3
-        </span>
+        {!isMobile && (
+          <>
+            <Separator style={{ margin: "0.75rem 0" }} />
+            <span
+              style={{
+                fontSize: "0.75rem",
+                color: "var(--muted-foreground)",
+                padding: "0 0.75rem",
+              }}
+            >
+              Phase 7 frontend
+            </span>
+          </>
+        )}
       </nav>
 
-      <main style={{ padding: "1.5rem", overflow: "auto" }}>{children}</main>
+      <main
+        style={{
+          padding: isMobile ? "1rem" : "1.5rem",
+          overflow: "auto",
+          minWidth: 0,
+        }}
+      >
+        {children}
+      </main>
     </div>
   );
 }

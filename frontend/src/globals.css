@@ -17,3 +17,31 @@ body {
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
 }
+
+/* Stage 9: keyframe used by the local `<Skeleton>` primitive (see
+ * `src/components/skeleton.tsx`). We mirror Tailwind's `animate-pulse`
+ * timing so loading shimmers feel consistent with shadcn components. */
+@keyframes dp-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.5; }
+}
+
+/* Stage 9: smaller-screen tweaks for content surfaces inside the app
+ * shell. The shell itself swaps to a horizontal nav at <= 768px (see
+ * `layout/app-shell.tsx`); these rules tighten paddings and let tables
+ * scroll horizontally rather than overflow the viewport. */
+@media (max-width: 768px) {
+  table {
+    display: block;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  main h1, main h2, main h3 {
+    word-break: break-word;
+  }
+  /* Reports / directory / admin sub-nav strips wrap onto two rows
+   * instead of pushing the layout wider than the viewport. */
+  [data-testid$="-subnav"] {
+    flex-wrap: wrap;
+  }
+}

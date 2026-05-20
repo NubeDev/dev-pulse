@@ -147,3 +147,22 @@ export function sectionOf(route: string): Section {
 export function isLoginRoute(route: string): boolean {
   return sectionOf(route) === "login";
 }
+
+/**
+ * True if the leading hash segment names a real section. Used by the
+ * 404 gate in `app.tsx` — `sectionOf` deliberately defaults unknown
+ * heads to "reports" so a typo still lands somewhere useful, but a
+ * completely unknown root segment (e.g. `#/foo/bar`) should render
+ * NotFound instead of silently rewriting.
+ */
+export function isKnownRoute(route: string): boolean {
+  const path = route.replace(/^#/, "").replace(/^\/+/, "");
+  const head = path.split("/")[0] ?? "";
+  return (
+    head === "" ||
+    head === "login" ||
+    head === "reports" ||
+    head === "directory" ||
+    head === "admin"
+  );
+}

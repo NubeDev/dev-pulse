@@ -9,6 +9,7 @@
 
 import { useState } from "react";
 import { Button } from "@nube/starter-ui-kit/components/button";
+import { Skeleton } from "../components/skeleton.jsx";
 
 import type { CountRow } from "../api/client.js";
 import { ACTIVITY_KINDS } from "./activity-types.js";
@@ -70,6 +71,10 @@ export function ActivityTable({ rows }: ActivityTableProps): JSX.Element {
     if (sortKey === "label") return a.label.localeCompare(b.label) * mul;
     return (a.total - b.total) * mul;
   });
+
+  // Empty-state: every row is loaded and every total is zero.
+  const allLoaded = rows.every((r) => !r.loading);
+  const allZero = allLoaded && rows.every((r) => r.total === 0);
 
   const sortIndicator = (key: SortKey): string =>
     sortKey === key ? (sortDir === "asc" ? "▲" : "▼") : "";
@@ -143,14 +148,29 @@ export function ActivityTable({ rows }: ActivityTableProps): JSX.Element {
               <td style={cellStyle}>{row.label}</td>
               <td style={numStyle}>
                 {row.loading ? (
-                  <span style={{ color: "var(--muted-foreground)" }}>…</span>
+                  <Skeleton
+                    data-testid="activity-skel-total"
+                    style={{
+                      height: "0.875rem",
+                      width: "2.5rem",
+                      borderRadius: "0.25rem",
+                      marginLeft: "auto",
+                    }}
+                  />
                 ) : (
                   row.total
                 )}
               </td>
               <td style={{ ...numStyle, width: "10rem" }}>
                 {row.loading ? (
-                  <span style={{ color: "var(--muted-foreground)" }}>…</span>
+                  <Skeleton
+                    data-testid="activity-skel-trend"
+                    style={{
+                      height: "1.25rem",
+                      width: "100%",
+                      borderRadius: "0.25rem",
+                    }}
+                  />
                 ) : (
                   <Sparkline
                     points={row.trend.map((r) => ({ key: r.key, value: r.count }))}
@@ -160,6 +180,22 @@ export function ActivityTable({ rows }: ActivityTableProps): JSX.Element {
               </td>
             </tr>
           ))}
+          {allZero && (
+            <tr data-testid="activity-table-empty">
+              <td
+                colSpan={3}
+                style={{
+                  ...cellStyle,
+                  textAlign: "center",
+                  color: "var(--muted-foreground)",
+                  padding: "1.5rem 0.75rem",
+                  borderBottom: "none",
+                }}
+              >
+                No activity recorded in the selected window.
+              </td>
+            </tr>
+          )}
         </tbody>
       </table>
     </div>

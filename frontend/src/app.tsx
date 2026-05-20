@@ -14,6 +14,8 @@ import { api } from "./api/client.js";
 import { authStrategy } from "./auth/strategy.js";
 import { LoginPage } from "./auth/login-page.jsx";
 import { ProtectedRoute } from "./auth/protected-route.jsx";
+import { ErrorBoundary } from "./components/error-boundary.jsx";
+import { NotFoundPage } from "./components/not-found.jsx";
 import { AppShell } from "./layout/app-shell.jsx";
 import { AdminUsersPage } from "./admin/users-page.jsx";
 import { RefreshPage } from "./admin/refresh-page.jsx";
@@ -30,6 +32,7 @@ import { UserReportPage } from "./reports/user-report-page.jsx";
 import {
   adminTabOf,
   directoryTabOf,
+  isKnownRoute,
   isLoginRoute,
   reportTabOf,
   sectionOf,
@@ -59,12 +62,29 @@ function Router(): JSX.Element {
       return (
         <ProtectedRoute>
           <AppShell>
-            <SectionPane section="reports" route={route} />
+            <ErrorBoundary scope="reports" resetKey={route}>
+              <SectionPane section="reports" route={route} />
+            </ErrorBoundary>
           </AppShell>
         </ProtectedRoute>
       );
     }
     return <LoginPage />;
+  }
+
+  // Truly unknown root segment (e.g. `#/foo/bar`) -> dedicated 404.
+  // Sub-path typos still fall back to the section default per
+  // `*TabOf` parsers; that's intentional.
+  if (!isKnownRoute(route)) {
+    return (
+      <ProtectedRoute>
+        <AppShell>
+          <ErrorBoundary scope="this page" resetKey={route}>
+            <NotFoundPage />
+          </ErrorBoundary>
+        </AppShell>
+      </ProtectedRoute>
+    );
   }
 
   const section = sectionOf(route);
@@ -75,7 +95,9 @@ function Router(): JSX.Element {
   return (
     <ProtectedRoute>
       <AppShell>
-        <SectionPane section={proteced} route={route} />
+        <ErrorBoundary scope={proteced} resetKey={route}>
+          <SectionPane section={proteced} route={route} />
+        </ErrorBoundary>
       </AppShell>
     </ProtectedRoute>
   );
