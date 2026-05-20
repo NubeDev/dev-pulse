@@ -29,6 +29,8 @@ import {
   DpRestError,
   type AddPinRequest,
   type AppInstallBannerResponse,
+  type BulkInboxOp,
+  type BulkInboxResponse,
   type CreateCommentRequest,
   type CreateIssueRequest,
   type CreateTagRequest,
@@ -352,6 +354,55 @@ export function useSetInboxState() {
         );
       }
       return api.setInboxState(issueId, { status, snoozed_until });
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["workflow", "my-queue"] });
+    },
+  });
+}
+
+/**
+ * `POST /me/inbox/bulk` — one transition applied to a batch of
+ * issue ids (slice-2 §3.8 bulk actions). Invalidates `myQueue` so
+ * the rows disappear (or unread dots clear) on the next render.
+ *
+ * Mocked mode just routes the call back through the per-row
+ * helpers so the storybook / smoke harness exercises the same UI
+ * paths without a backend.
+ */
+export function useBulkInbox() {
+  const qc = useQueryClient();
+  return useMutation<
+    BulkInboxResponse,
+    Error,
+    { issueIds: string[]; op: BulkInboxOp; snoozedUntil?: string | null }
+  >({
+    mutationFn: async ({ issueIds, op, snoozedUntil }) => {
+      if (issueIds.length === 0) return { touched: 0 };
+      if (USE_MOCK) {
+        switch (op) {
+          case "mark_all_seen":
+            mockMarkInboxSeen(issueIds);
+            break;
+          case "snooze_all":
+            for (const id of issueIds) {
+              mockSetInboxState(id, "snoozed", snoozedUntil ?? null);
+            }
+            break;
+          case "done_all":
+            for (const id of issueIds) mockSetInboxState(id, "done", null);
+            break;
+          case "inbox_all":
+            for (const id of issueIds) mockSetInboxState(id, "inbox", null);
+            break;
+        }
+        return { touched: issueIds.length };
+      }
+      return api.bulkInbox({
+        issue_ids: issueIds,
+        op,
+        snoozed_until: snoozedUntil ?? null,
+      });
     },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["workflow", "my-queue"] });

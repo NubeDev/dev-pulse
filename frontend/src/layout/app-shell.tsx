@@ -112,6 +112,7 @@ const SECTION_TITLE: Record<Section, string> = {
   directory: "Directory",
   admin: "Admin",
   workflow: "Workflow",
+  account: "Account",
   login: "Login",
 }
 
@@ -174,6 +175,8 @@ function titleFor(route: string): string {
       const t = workflowTabOf(route)
       return `Workflow · ${WORKFLOW_TITLE[t] ?? t}`
     }
+    case "account":
+      return "Account · Identities"
     case "login":
     default:
       return SECTION_TITLE[section]
@@ -245,7 +248,23 @@ export function AppShell({ children }: AppShellProps): JSX.Element {
           extraContent={<PinSidebar />}
         />
         <SidebarInset>
-          <SiteHeader title={titleFor(route)} actions={<ThemeToggle />} />
+          <SiteHeader
+            title={titleFor(route)}
+            actions={
+              <>
+                <a
+                  href="#/account/identities"
+                  data-testid="user-menu-identity-badge"
+                  title="Linked identities (slice 2 §10)"
+                  className="hidden items-center gap-1 rounded-md border border-border bg-background px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-accent sm:inline-flex"
+                >
+                  <span className="size-1.5 rounded-full bg-primary" />
+                  <span>1 identity</span>
+                </a>
+                <ThemeToggle />
+              </>
+            }
+          />
           <div className="flex flex-1 flex-col">
             <div className="@container/main flex flex-1 flex-col gap-2">
               <div className="flex flex-col gap-4 py-4 md:gap-6 md:py-6">

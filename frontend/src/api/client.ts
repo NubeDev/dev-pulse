@@ -598,6 +598,33 @@ export interface SetInboxStateRequest {
   snoozed_until?: string | null;
 }
 
+/** Operation kind for [`BulkInboxRequest`] — one of the four §3.8
+ *  list-header bulk actions (mark-all-seen / snooze-all / done-all
+ *  / inbox-all). Names match the snake_case wire form. */
+export const BulkInboxOpSchema = z.enum([
+  "mark_all_seen",
+  "snooze_all",
+  "done_all",
+  "inbox_all",
+]);
+export type BulkInboxOp = z.infer<typeof BulkInboxOpSchema>;
+
+/** Body for `POST /me/inbox/bulk`. `snoozed_until` is required for
+ *  `snooze_all` and ignored otherwise. Capped at 200 ids per
+ *  request (server-enforced). */
+export interface BulkInboxRequest {
+  issue_ids: string[];
+  op: BulkInboxOp;
+  snoozed_until?: string | null;
+}
+
+/** Response from `POST /me/inbox/bulk`. `touched` is the number of
+ *  `dp_user_issue_state` rows the server upserted. */
+export const BulkInboxResponseSchema = z.object({
+  touched: z.number().int().nonnegative(),
+});
+export type BulkInboxResponse = z.infer<typeof BulkInboxResponseSchema>;
+
 /**
  * Serialise a [`ListIssuesQuery`] into a `?key=value` query string
  * for `GET /issues` and `GET /me/queue`. Array fields are joined
@@ -1052,6 +1079,19 @@ export class DevPulseApi {
       `/me/inbox/${encodeURIComponent(issueId)}`,
       req,
       UserIssueStateDtoSchema,
+    );
+  }
+
+  /** `POST /me/inbox/bulk` — bulk inbox transitions
+   *  (mark-all-seen / snooze-all / done-all / inbox-all) per §3.8.
+   *  Skips the round-trip when `issue_ids` is empty. */
+  async bulkInbox(req: BulkInboxRequest): Promise<BulkInboxResponse> {
+    if (req.issue_ids.length === 0) return { touched: 0 };
+    return this.sendJson(
+      "POST",
+      "/me/inbox/bulk",
+      req,
+      BulkInboxResponseSchema,
     );
   }
 

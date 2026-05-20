@@ -44,13 +44,18 @@ import { useEffect, useMemo, useState } from "react";
 import {
   IconBookmark,
   IconCheck,
+  IconChevronDown,
+  IconChevronRight,
   IconClock,
+  IconCommand,
   IconExternalLink,
   IconInbox,
   IconKeyboard,
   IconList,
   IconMoon,
   IconSparkles,
+  IconUser,
+  IconUsers,
   IconX,
 } from "@tabler/icons-react";
 
@@ -78,6 +83,7 @@ import {
 
 import { IssueEditCard } from "./issues-page.jsx";
 import {
+  useBulkInbox,
   useIssueList,
   useMarkInboxSeen,
   useMyQueue,
@@ -86,6 +92,16 @@ import {
 } from "./use-workflow-data.js";
 
 const PAGE_SIZE = 100;
+
+/** Group-by axis on the middle pane. `none` keeps the flat list
+ *  (default). The other modes bucket rows by status / assignee /
+ *  repo into collapsible sections — pure UI, no extra round-trip. */
+type GroupBy = "none" | "status" | "assignee" | "repo";
+
+/** Sort axis on the middle pane. Server still returns newest-first
+ *  by `updated_at DESC` — the UI then re-orders client-side so
+ *  toggling sort is instant and never triggers a refetch. */
+type SortBy = "updated_desc" | "updated_asc" | "created_desc" | "number_asc";
 
 interface ViewDef {
   id: TriageView;
@@ -199,6 +215,29 @@ export function TriagePage(): JSX.Element {
 
   const markSeen = useMarkInboxSeen();
   const setInboxState = useSetInboxState();
+  const bulkInbox = useBulkInbox();
+
+  // ----- Multi-select + bulk-action state (slice 2 §3.8) --------------
+  const [selected, setSelected] = useState<Set<string>>(() => new Set());
+  const toggleSelected = (id: string) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  const clearSelected = () => setSelected(new Set());
+
+  // ----- Middle-pane group/sort (slice 2) ----------------------------
+  const [groupBy, setGroupBy] = useState<GroupBy>("none");
+  const [sortBy, setSortBy] = useState<SortBy>("updated_desc");
+
+  // ----- Rail collapsible sections (§13.5 sidebar render cap) ---------
+  const [peopleOpen, setPeopleOpen] = useState(false); // collapsed-by-default
+  const [teamsOpen, setTeamsOpen] = useState(true);
+
+  // ----- ⌘K command palette (slice 2 jump-to / view-switch / apply) ---
+  const [paletteOpen, setPaletteOpen] = useState(false);
 
   const goToView = (v: TriageView) =>
     navigate(workflowTriageRoute({ view: v, repoId, issueId: selectedIssueId }));
@@ -240,7 +279,50 @@ export function TriagePage(): JSX.Element {
       setInboxState.mutate({ issueId: id, status: "snoozed", snoozed_until: wake });
     };
     const onKey = (e: KeyboardEvent): void => {
+      // ⌘K / ctrl-K opens the command palette regardless of focus
+      // (this is the slice-2 jump-to / view-switch / apply-to-
+      // selection entry point — must work from inside the peek
+      // panel and from any input).
+      if ((e.metaKey || e.ctrlKey) && (e.key === "k" || e.key === "K")) {
+        setPaletteOpen((p) => !p);
+        e.preventDefault();
+        return;
+      }
       if (e.metaKey || e.ctrlKey || e.altKey) return;
+      // Shift-E / Shift-H / Shift-D bulk transitions over the
+      // current selection (slice 2 §3.8). Skipped when no rows
+      // are selected — the per-row `e`/`h` keys still cover the
+      // single-row path.
+      if (e.shiftKey && !inEditable(e.target)) {
+        const ids = Array.from(selected);
+        if (ids.length === 0) return;
+        if (e.key === "E") {
+          bulkInbox.mutate({ issueIds: ids, op: "done_all" });
+          clearSelected();
+          e.preventDefault();
+          return;
+        }
+        if (e.key === "H") {
+          const wake = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+          bulkInbox.mutate({
+            issueIds: ids,
+            op: "snooze_all",
+            snoozedUntil: wake,
+          });
+          clearSelected();
+          e.preventDefault();
+          return;
+        }
+        if (e.key === "D") {
+          // Shift-D mirrors the "dismiss back to inbox" affordance
+          // — restore selected rows to the inbox so an over-eager
+          // shift-E can be reversed without per-row clicks.
+          bulkInbox.mutate({ issueIds: ids, op: "inbox_all" });
+          clearSelected();
+          e.preventDefault();
+          return;
+        }
+      }
       if (e.key === "?" && !inEditable(e.target)) {
         setHelpOpen((h) => !h);
         e.preventDefault();
@@ -302,10 +384,42 @@ export function TriagePage(): JSX.Element {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows.length, cursor, selectedIssueId, helpOpen]);
+  }, [rows.length, cursor, selectedIssueId, helpOpen, selected]);
 
   const activeViewDef = VIEWS.find((v) => v.id === view) ?? VIEWS[0]!;
   const total = rowsQ.data?.total ?? 0;
+
+  // Apply client-side sort. The list is bounded by `PAGE_SIZE`, so
+  // the cost is negligible; the comparator order matches the four
+  // §3.5 sort axes.
+  const sortedRows = useMemo<IssueListItem[]>(() => {
+    const copy = rows.slice();
+    switch (sortBy) {
+      case "updated_asc":
+        copy.sort((a, b) => a.updated_at.localeCompare(b.updated_at));
+        break;
+      case "created_desc":
+        // `IssueListItem` does not surface `created_at` — falls
+        // back to issue number which is monotonic in creation
+        // order per repo. Cross-repo lists therefore mix.
+        copy.sort((a, b) => b.number - a.number);
+        break;
+      case "number_asc":
+        copy.sort((a, b) => a.number - b.number);
+        break;
+      case "updated_desc":
+      default:
+        copy.sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+        break;
+    }
+    return copy;
+  }, [rows, sortBy]);
+
+  // Visual group-by labels are deferred — the dropdown still sets
+  // state so the URL / e2e tooling can read the user's choice, but
+  // the middle pane keeps the flat sorted-list rendering until the
+  // group-collapse UX lands in a follow-up.
+  void groupBy;
 
   // Repo pins for the rail's "Pinned repos" section (§3.5). Tag
   // pins are skipped here — the rail mirrors Linear's "Favorites"
@@ -360,6 +474,60 @@ export function TriagePage(): JSX.Element {
             </button>
           );
         })}
+
+        {/* Teams rail — placeholder until backend ships team-scoped
+            queue endpoints. Open-by-default per §13.5; clicking a
+            row just stages the filter (no-op until §3.5 follow-up). */}
+        <Separator className="my-3" />
+        <button
+          type="button"
+          data-testid="triage-rail-teams-toggle"
+          data-open={teamsOpen ? "true" : "false"}
+          onClick={() => setTeamsOpen((v) => !v)}
+          className="flex items-center gap-1.5 px-2 pb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground"
+        >
+          {teamsOpen ? (
+            <IconChevronDown className="size-3.5" />
+          ) : (
+            <IconChevronRight className="size-3.5" />
+          )}
+          <IconUsers className="size-3.5" /> Teams
+        </button>
+        {teamsOpen && (
+          <div
+            className="px-2 pb-1 text-xs text-muted-foreground"
+            data-testid="triage-rail-teams"
+          >
+            Team-scoped queues land with §3.5 follow-up.
+          </div>
+        )}
+
+        {/* People rail — §10 multi-identity. Collapsed-by-default
+            so the rail stays under the §13.5 50-row render cap on
+            large orgs (a 200-person org would otherwise blow past
+            the budget on first paint). */}
+        <button
+          type="button"
+          data-testid="triage-rail-people-toggle"
+          data-open={peopleOpen ? "true" : "false"}
+          onClick={() => setPeopleOpen((v) => !v)}
+          className="mt-1 flex items-center gap-1.5 px-2 pb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground"
+        >
+          {peopleOpen ? (
+            <IconChevronDown className="size-3.5" />
+          ) : (
+            <IconChevronRight className="size-3.5" />
+          )}
+          <IconUser className="size-3.5" /> People
+        </button>
+        {peopleOpen && (
+          <div
+            className="px-2 pb-1 text-xs text-muted-foreground"
+            data-testid="triage-rail-people"
+          >
+            Per-person queues land with §10 identity handlers.
+          </div>
+        )}
 
         {repoPins.length > 0 && (
           <>
@@ -428,17 +596,104 @@ export function TriagePage(): JSX.Element {
               </Badge>
             )}
           </div>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setHelpOpen(true)}
-            data-testid="triage-help-trigger"
-            title="Keyboard shortcuts (?)"
-          >
-            <IconKeyboard className="mr-1 size-4" />
-            <span className="hidden sm:inline">Shortcuts</span>
-          </Button>
+          <div className="flex items-center gap-1">
+            <select
+              data-testid="triage-group-by"
+              value={groupBy}
+              onChange={(e) => setGroupBy(e.target.value as GroupBy)}
+              className="h-8 rounded-md border border-border bg-background px-2 text-xs"
+              title="Group by"
+            >
+              <option value="none">Group: none</option>
+              <option value="status">Group: status</option>
+              <option value="assignee">Group: assignee</option>
+              <option value="repo">Group: repo</option>
+            </select>
+            <select
+              data-testid="triage-sort-by"
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value as SortBy)}
+              className="h-8 rounded-md border border-border bg-background px-2 text-xs"
+              title="Sort by"
+            >
+              <option value="updated_desc">Updated · newest</option>
+              <option value="updated_asc">Updated · oldest</option>
+              <option value="created_desc">Number · newest</option>
+              <option value="number_asc">Number · oldest</option>
+            </select>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setPaletteOpen(true)}
+              data-testid="triage-palette-trigger"
+              title="Command palette (⌘K)"
+            >
+              <IconCommand className="mr-1 size-4" />
+              <span className="hidden sm:inline">⌘K</span>
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setHelpOpen(true)}
+              data-testid="triage-help-trigger"
+              title="Keyboard shortcuts (?)"
+            >
+              <IconKeyboard className="mr-1 size-4" />
+              <span className="hidden sm:inline">Shortcuts</span>
+            </Button>
+          </div>
         </header>
+
+        {selected.size > 0 && (
+          <div
+            className="flex items-center gap-2 border-b border-border bg-accent/30 px-4 py-1.5 text-xs"
+            data-testid="triage-bulk-bar"
+          >
+            <span className="font-medium">{selected.size} selected</span>
+            <span className="text-muted-foreground">
+              Shift-E done · Shift-H snooze 1d · Shift-D restore
+            </span>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                const ids = Array.from(selected);
+                bulkInbox.mutate({ issueIds: ids, op: "done_all" });
+                clearSelected();
+              }}
+              data-testid="triage-bulk-done"
+            >
+              Done
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                const ids = Array.from(selected);
+                const wake = new Date(
+                  Date.now() + 24 * 60 * 60 * 1000,
+                ).toISOString();
+                bulkInbox.mutate({
+                  issueIds: ids,
+                  op: "snooze_all",
+                  snoozedUntil: wake,
+                });
+                clearSelected();
+              }}
+              data-testid="triage-bulk-snooze"
+            >
+              Snooze 1d
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={clearSelected}
+              data-testid="triage-bulk-clear"
+            >
+              Clear
+            </Button>
+          </div>
+        )}
 
         <ol
           className="flex-1 overflow-y-auto"
@@ -464,9 +719,10 @@ export function TriagePage(): JSX.Element {
                   : "No issues match this view."}
             </li>
           )}
-          {rows.map((row, i) => {
+          {sortedRows.map((row, i) => {
             const active = row.id === selectedIssueId;
             const cursored = i === cursor;
+            const isSelected = selected.has(row.id);
             return (
               <li
                 key={row.id}
@@ -497,6 +753,15 @@ export function TriagePage(): JSX.Element {
                     />
                   )}
                 </span>
+                <input
+                  type="checkbox"
+                  data-testid="triage-row-select"
+                  className="size-4 shrink-0 cursor-pointer"
+                  checked={isSelected}
+                  onClick={(e) => e.stopPropagation()}
+                  onChange={() => toggleSelected(row.id)}
+                  aria-label={isSelected ? "Deselect issue" : "Select issue"}
+                />
                 <Badge
                   variant={row.state === "open" ? "default" : "secondary"}
                   className="shrink-0 px-1.5 py-0 text-[10px] uppercase"
@@ -632,6 +897,81 @@ export function TriagePage(): JSX.Element {
         )}
       </aside>
 
+      {/* ⌘K command palette — slice-2 scope: jump-to (smart view),
+          view switch, and apply-to-selection. Lightweight: a list
+          of commands gated by query substring with keyboard cursor
+          navigation deferred to a future iteration (clicking and
+          Enter on the focused row already cover the slice-2 goal). */}
+      <CommandPalette
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+        commands={[
+          {
+            id: "view:mine",
+            label: "Go to My queue",
+            run: () => goToView("mine"),
+          },
+          {
+            id: "view:untriaged",
+            label: "Go to Untriaged",
+            run: () => goToView("untriaged"),
+          },
+          {
+            id: "view:snoozed",
+            label: "Go to Snoozed",
+            run: () => goToView("snoozed"),
+          },
+          {
+            id: "view:all",
+            label: "Go to All issues",
+            run: () => goToView("all"),
+          },
+          ...(selected.size > 0
+            ? [
+                {
+                  id: "apply:done",
+                  label: `Mark ${selected.size} done`,
+                  run: () => {
+                    const ids = Array.from(selected);
+                    bulkInbox.mutate({ issueIds: ids, op: "done_all" });
+                    clearSelected();
+                  },
+                },
+                {
+                  id: "apply:snooze",
+                  label: `Snooze ${selected.size} for 1 day`,
+                  run: () => {
+                    const ids = Array.from(selected);
+                    const wake = new Date(
+                      Date.now() + 24 * 60 * 60 * 1000,
+                    ).toISOString();
+                    bulkInbox.mutate({
+                      issueIds: ids,
+                      op: "snooze_all",
+                      snoozedUntil: wake,
+                    });
+                    clearSelected();
+                  },
+                },
+                {
+                  id: "apply:restore",
+                  label: `Restore ${selected.size} to inbox`,
+                  run: () => {
+                    const ids = Array.from(selected);
+                    bulkInbox.mutate({ issueIds: ids, op: "inbox_all" });
+                    clearSelected();
+                  },
+                },
+              ]
+            : []),
+          ...sortedRows.slice(0, 8).map((r) => ({
+            id: `jump:${r.id}`,
+            label: `#${r.number} · ${r.title}`,
+            run: () => openIssue(r.id),
+          })),
+        ]}
+      />
+
       {/* `?` cheatsheet — same content as the legacy issues page. */}
       <Dialog open={helpOpen} onOpenChange={setHelpOpen}>
         <DialogContent className="sm:max-w-md" data-testid="triage-help-dialog">
@@ -684,4 +1024,114 @@ function formatRelative(iso: string): string {
     month: "short",
     day: "numeric",
   });
+}
+
+interface PaletteCommand {
+  id: string;
+  label: string;
+  run: () => void;
+}
+
+/**
+ * Minimal ⌘K palette — substring filter over the supplied command
+ * list, ↑/↓ moves the cursor, Enter runs, Esc closes. Deliberately
+ * built without a third-party (cmdk) so it can land in slice 2
+ * without bumping the dependency surface; if the operator wants
+ * fuzzy ranking later, swap the filter line.
+ */
+function CommandPalette({
+  open,
+  onClose,
+  commands,
+}: {
+  open: boolean;
+  onClose: () => void;
+  commands: PaletteCommand[];
+}): JSX.Element {
+  const [q, setQ] = useState("");
+  const [cursor, setCursor] = useState(0);
+  const filtered = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    if (!needle) return commands;
+    return commands.filter((c) => c.label.toLowerCase().includes(needle));
+  }, [commands, q]);
+  useEffect(() => {
+    if (open) {
+      setQ("");
+      setCursor(0);
+    }
+  }, [open]);
+  useEffect(() => {
+    setCursor((c) => Math.min(c, Math.max(0, filtered.length - 1)));
+  }, [filtered.length]);
+  return (
+    <Dialog open={open} onOpenChange={(v) => (v ? undefined : onClose())}>
+      <DialogContent
+        className="sm:max-w-lg"
+        data-testid="triage-palette"
+        aria-label="Command palette"
+      >
+        <DialogHeader>
+          <DialogTitle className="sr-only">Command palette</DialogTitle>
+          <DialogDescription className="sr-only">
+            Jump to a view, switch sections, or apply an action to the
+            current selection.
+          </DialogDescription>
+        </DialogHeader>
+        <input
+          autoFocus
+          data-testid="triage-palette-input"
+          value={q}
+          placeholder="Type a command…"
+          onChange={(e) => setQ(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "ArrowDown") {
+              setCursor((c) => Math.min(filtered.length - 1, c + 1));
+              e.preventDefault();
+            } else if (e.key === "ArrowUp") {
+              setCursor((c) => Math.max(0, c - 1));
+              e.preventDefault();
+            } else if (e.key === "Enter") {
+              const cmd = filtered[cursor];
+              if (cmd) {
+                cmd.run();
+                onClose();
+              }
+              e.preventDefault();
+            }
+          }}
+          className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+        />
+        <ul
+          className="max-h-72 overflow-y-auto"
+          data-testid="triage-palette-list"
+        >
+          {filtered.length === 0 && (
+            <li className="px-3 py-6 text-center text-xs text-muted-foreground">
+              No matches.
+            </li>
+          )}
+          {filtered.map((c, i) => (
+            <li key={c.id}>
+              <button
+                type="button"
+                data-testid="triage-palette-item"
+                data-cursor={i === cursor ? "true" : undefined}
+                onClick={() => {
+                  c.run();
+                  onClose();
+                }}
+                onMouseEnter={() => setCursor(i)}
+                className={`w-full truncate rounded-md px-3 py-2 text-left text-sm ${
+                  i === cursor ? "bg-accent" : "hover:bg-accent/50"
+                }`}
+              >
+                {c.label}
+              </button>
+            </li>
+          ))}
+        </ul>
+      </DialogContent>
+    </Dialog>
+  );
 }

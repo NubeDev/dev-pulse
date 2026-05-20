@@ -25,7 +25,24 @@
 
 import { useSyncExternalStore } from "react";
 
-export type Section = "reports" | "directory" | "admin" | "workflow" | "login";
+export type Section =
+  | "reports"
+  | "directory"
+  | "admin"
+  | "workflow"
+  | "account"
+  | "login";
+
+/** Sub-route under the account section
+ *  (`linear-projects-idea.md` §10 multi-identity). Defaults to
+ *  `identities` — the link / unlink / transfer / set-primary
+ *  surface. */
+export type AccountTab = "identities";
+
+/** Parse `#/account/...` → the active sub-tab. */
+export function accountTabOf(_route: string): AccountTab {
+  return "identities";
+}
 
 /** §14.1 deep-link selection — `#/workflow?issue=<uuid>` carries the
  *  detail-pane focus across copy-paste / back-forward. `null` ⇒ no
@@ -234,6 +251,8 @@ export function sectionOf(route: string): Section {
       return "admin";
     case "workflow":
       return "workflow";
+    case "account":
+      return "account";
     case "reports":
     case "":
     default:
@@ -262,6 +281,7 @@ export function isKnownRoute(route: string): boolean {
     head === "reports" ||
     head === "directory" ||
     head === "admin" ||
-    head === "workflow"
+    head === "workflow" ||
+    head === "account"
   );
 }
