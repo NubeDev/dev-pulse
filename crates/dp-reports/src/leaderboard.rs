@@ -165,6 +165,31 @@ pub struct LeaderboardEnvelope {
     /// form when empty so the stage-3 shape stays stable.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub also_compute: Vec<MetricId>,
+    /// Small-N "compare these subjects" filter (ORG-REPORTS §6.10).
+    ///
+    /// When non-empty, ranking is restricted to subjects whose
+    /// `subject_id` is in this set; the §6.1 tie-break order still
+    /// applies within the filtered population. Capped at
+    /// [`LEADERBOARD_SUBJECT_IDS_CAP`]; over-cap requests fail at
+    /// envelope resolution with
+    /// [`LeaderboardError::SubjectIdsTooLarge`].
+    ///
+    /// **Pagination is disabled in this mode** — the server returns
+    /// every matching row in one response, so the compare-users UI
+    /// can pair `subject_ids` with `also_compute` and never deal with
+    /// cursors. Sending a cursor or a non-zero `page.size` alongside
+    /// a non-empty `subject_ids` is a typed
+    /// [`LeaderboardError::PaginationDisabledForSubjectIds`].
+    ///
+    /// Values are opaque strings (UUIDs for `user`/`team`/`org`,
+    /// labels for `home_org_label` — possibly
+    /// [`HOME_ORG_LABEL_UNLABELED_BUCKET`]). The store binds the list
+    /// as a single `text[]` predicate that lives *outside* the
+    /// GROUP BY (§6.10), so the §6.1 tie-break order is unaffected.
+    /// Empty by default; omitted from the wire form when empty so
+    /// the stage-3 shape stays stable.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subject_ids: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -198,6 +223,14 @@ pub struct ResolvedLeaderboardEnvelope {
     /// stage-3 shape.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub also_compute: Vec<MetricId>,
+    /// `subject_ids` echoed back (ORG-REPORTS §6.10). The wire-form
+    /// echo lets clients confirm which subjects the server ranked
+    /// against and lets caches key on the full
+    /// (rank_by + extras + subject_ids) tuple. Omitted from the wire
+    /// form when empty so responses without the small-N filter keep
+    /// their stage-3 shape.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subject_ids: Vec<String>,
 }
 
 /// Headline counters above the table (ORG-REPORTS §4).
@@ -334,6 +367,16 @@ pub struct LeaderboardResponse {
 /// against an unbounded fan-out.
 pub const LEADERBOARD_ALSO_COMPUTE_CAP: usize = 5;
 
+/// Cap on `subject_ids` cardinality. ORG-REPORTS §6.10.
+///
+/// `subject_ids` is the "compare these subjects" small-N path —
+/// 50 is the inflection point above which the UI affordance
+/// (chips, a side-by-side matrix) stops making sense and the
+/// general leaderboard is the right tool. Enforced at envelope
+/// resolution via [`validate_subject_ids`] so the SQL layer never
+/// has to defend against an unbounded `ANY(...)` predicate.
+pub const LEADERBOARD_SUBJECT_IDS_CAP: usize = 50;
+
 /// Default page size when the client omits `page.size`. ORG-REPORTS §6.5.
 pub const LEADERBOARD_PAGE_SIZE_DEFAULT: u32 = 25;
 
@@ -465,6 +508,16 @@ pub fn validate_page_request(
     req: &PageRequest,
     resolved: &ResolvedLeaderboardEnvelope,
 ) -> Result<u32, LeaderboardError> {
+    // §6.10: pagination is disabled in `subject_ids` mode. A cursor
+    // or an explicit non-default `size` is a client bug, not a
+    // request to quietly fall back. We check this *before* the size
+    // bound so an over-cap size in subject_ids mode reports the more
+    // actionable error.
+    if !resolved.subject_ids.is_empty() && (req.cursor.is_some() || req.size != 0) {
+        return Err(LeaderboardError::PaginationDisabledForSubjectIds {
+            subject_ids_len: resolved.subject_ids.len(),
+        });
+    }
     let size = effective_page_size(req)?;
     if let Some(raw) = req.cursor.as_deref() {
         let cursor = PageCursor::decode(raw)?;
@@ -552,6 +605,53 @@ pub const LEADERBOARD_BIND_ORDER_PAGED_WITH_CURSOR: &[&str] = &[
 /// preserves the inner `ORDER BY` through the outer `SELECT *` here
 /// in practice, but we re-emit the §6.1 clause on the outer query
 /// too so any subsequent rewrite cannot drift.
+/// Bind order for [`build_subject_ids_leaderboard_sql`].
+///
+/// The base [`LEADERBOARD_BIND_ORDER`] is extended with one
+/// trailing slot for the `subject_ids` predicate. Pagination is
+/// disabled in this mode (§6.10), so there is no `LIMIT` slot and
+/// no cursor slot — the server returns every matching row in one
+/// response.
+pub const LEADERBOARD_BIND_ORDER_SUBJECT_IDS: &[&str] = &[
+    "$1 window.start (timestamptz)",
+    "$2 window.end (timestamptz, exclusive)",
+    "$3 org_ids (uuid[]; cardinality >= 1)",
+    "$4 event_kind (text — from CountMetric::event_kind())",
+    "$5 actor_roles (text[] — from envelope.actor_roles or CountMetric::default_actor_roles())",
+    "$6 repos (uuid[]; cardinality 0 == no filter)",
+    "$7 subject_ids (text[]; cardinality 1..=LEADERBOARD_SUBJECT_IDS_CAP)",
+];
+
+/// Wrap the base [`build_leaderboard_sql`] in a `subject_ids` filter
+/// for the §6.10 small-N "compare these subjects" path.
+///
+/// The filter lives on the *outer* query — `WHERE sub.subject_id =
+/// ANY($7::text[])` — so the inner GROUP BY and §6.1 tie-break
+/// `ORDER BY` are untouched. This is the same wrapping trick
+/// [`build_paginated_leaderboard_sql`] uses, for the same reason:
+/// it keeps each per-variant SQL string authoritative for the
+/// aggregate shape.
+///
+/// No `LIMIT` is emitted — pagination is disabled in this mode
+/// (§6.10), and the cap on `subject_ids` cardinality
+/// ([`LEADERBOARD_SUBJECT_IDS_CAP`] = 50) is what bounds the
+/// response size. The outer `ORDER BY` is re-emitted so callers
+/// can rely on §6.1 ordering even if a future PostgreSQL rewrite
+/// drops the inner sort.
+pub fn build_subject_ids_leaderboard_sql(
+    subject: SubjectKind,
+    scope_mode: ScopeMode,
+) -> Result<String, LeaderboardError> {
+    let base = build_leaderboard_sql(subject, scope_mode)?;
+    Ok(format!(
+        "SELECT * FROM ({base}) AS sub \
+          WHERE sub.subject_id = ANY($7::text[]) \
+          {tie_break}",
+        base = base,
+        tie_break = LEADERBOARD_TIE_BREAK_ORDER_BY_CLAUSE,
+    ))
+}
+
 pub fn build_paginated_leaderboard_sql(
     subject: SubjectKind,
     scope_mode: ScopeMode,
@@ -676,6 +776,31 @@ pub enum LeaderboardError {
         /// Server-side cap ([`LEADERBOARD_ALSO_COMPUTE_CAP`], = 5).
         cap: usize,
     },
+    /// `subject_ids` exceeded [`LEADERBOARD_SUBJECT_IDS_CAP`]. §6.10.
+    ///
+    /// The wire form is `400 subject_ids_too_large`; the typed
+    /// payload echoes the requested length and the server-side cap
+    /// (= 50) so a UI that paginated a chip-picker over the cap can
+    /// render a precise message without re-grepping the spec.
+    #[error("subject_ids_too_large: len={len} cap={cap}")]
+    SubjectIdsTooLarge {
+        /// Requested `subject_ids` length.
+        len: usize,
+        /// Server-side cap ([`LEADERBOARD_SUBJECT_IDS_CAP`], = 50).
+        cap: usize,
+    },
+    /// Pagination was requested alongside a non-empty `subject_ids`.
+    /// §6.10: in `subject_ids` mode the server returns every
+    /// matching row in one response, so a cursor or non-zero
+    /// `page.size` is a client bug rather than a quietly-degraded
+    /// query. Surfaced as a typed error so REST and MCP can return
+    /// a precise 400.
+    #[error("pagination_disabled_for_subject_ids: subject_ids mode returns all rows in one response (subject_ids_len={subject_ids_len})")]
+    PaginationDisabledForSubjectIds {
+        /// Cardinality of the requested `subject_ids` set, echoed
+        /// back so the client message can be specific.
+        subject_ids_len: usize,
+    },
     /// Window spec failed to resolve.
     #[error(transparent)]
     Resolve(#[from] ResolveError),
@@ -722,6 +847,22 @@ pub fn validate_also_compute(also_compute: &[MetricId]) -> Result<(), Leaderboar
     Ok(())
 }
 
+/// Validate the `subject_ids` list against the §6.10 cap.
+///
+/// Returns `Ok(())` on the empty list (the default "no small-N
+/// filter" shape). Over-cap requests surface
+/// [`LeaderboardError::SubjectIdsTooLarge`] at envelope resolution
+/// so the SQL layer never sees an unbounded `ANY(...)` predicate.
+pub fn validate_subject_ids(subject_ids: &[String]) -> Result<(), LeaderboardError> {
+    if subject_ids.len() > LEADERBOARD_SUBJECT_IDS_CAP {
+        return Err(LeaderboardError::SubjectIdsTooLarge {
+            len: subject_ids.len(),
+            cap: LEADERBOARD_SUBJECT_IDS_CAP,
+        });
+    }
+    Ok(())
+}
+
 /// Resolve a [`LeaderboardEnvelope`] at `now`, returning the
 /// [`ResolvedLeaderboardEnvelope`] echoed in the response.
 ///
@@ -736,6 +877,7 @@ pub fn resolve_leaderboard_envelope(
 ) -> Result<ResolvedLeaderboardEnvelope, LeaderboardError> {
     validate_subject_scope_combo(env.subject, env.scope_mode)?;
     validate_also_compute(&env.also_compute)?;
+    validate_subject_ids(&env.subject_ids)?;
     match env.scope_mode {
         ScopeMode::SingleOrg => {
             if env.orgs.len() != 1 {
@@ -760,6 +902,7 @@ pub fn resolve_leaderboard_envelope(
         subject: env.subject,
         rank_by: env.rank_by,
         also_compute: env.also_compute.clone(),
+        subject_ids: env.subject_ids.clone(),
     })
 }
 
@@ -1281,6 +1424,7 @@ mod tests {
             include_bots: false,
             page: PageRequest::default(),
             also_compute: vec![],
+            subject_ids: vec![],
         }
     }
 
@@ -1926,6 +2070,7 @@ mod tests {
             subject: SubjectKind::User,
             rank_by: MetricId::Count(CountMetric::PullRequestsOpened),
             also_compute: vec![],
+            subject_ids: vec![],
         }
     }
 
@@ -2479,6 +2624,235 @@ mod tests {
         assert_eq!(fixture.resolved_window.end, window_end);
         let _ = validate_page_request(&req, &resolved_with_extras)
             .expect("cursor minted without extras must still validate with extras present");
+    }
+
+    // ----- Stage 8: §6.10 `subject_ids` small-N path -------------------
+
+    fn subject_ids_of(n: usize) -> Vec<String> {
+        // Stable, deterministic ids — the validator is purely
+        // cardinality-based, so identity content doesn't matter.
+        (0..n).map(|i| format!("u{i:04}")).collect()
+    }
+
+    #[test]
+    fn subject_ids_cap_is_fifty() {
+        // §6.10 nails the cap at 50 — surface it as a const so a
+        // future bump is a single, reviewable change rather than
+        // scattered magic numbers across REST / MCP / frontend.
+        assert_eq!(LEADERBOARD_SUBJECT_IDS_CAP, 50);
+    }
+
+    #[test]
+    fn validate_subject_ids_accepts_empty_and_up_to_cap() {
+        assert!(validate_subject_ids(&[]).is_ok());
+        assert!(validate_subject_ids(&subject_ids_of(1)).is_ok());
+        assert!(validate_subject_ids(&subject_ids_of(LEADERBOARD_SUBJECT_IDS_CAP)).is_ok());
+    }
+
+    #[test]
+    fn validate_subject_ids_rejects_over_cap() {
+        // §6.10: anything beyond 50 must fail with the typed
+        // `subject_ids_too_large` error so REST/MCP can return a
+        // precise 400.
+        let too_many = subject_ids_of(LEADERBOARD_SUBJECT_IDS_CAP + 1);
+        let err = validate_subject_ids(&too_many).unwrap_err();
+        assert_eq!(
+            err,
+            LeaderboardError::SubjectIdsTooLarge {
+                len: LEADERBOARD_SUBJECT_IDS_CAP + 1,
+                cap: LEADERBOARD_SUBJECT_IDS_CAP,
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_envelope_enforces_subject_ids_cap() {
+        // The cap must be checked at envelope resolution — not at
+        // the SQL layer — so an over-sized payload never reaches the
+        // store.
+        let mut env = sample_envelope();
+        env.subject_ids = subject_ids_of(LEADERBOARD_SUBJECT_IDS_CAP + 1);
+        let err = resolve_leaderboard_envelope(&env, utc(2025, 6, 18, 12, 0, 0)).unwrap_err();
+        assert!(matches!(err, LeaderboardError::SubjectIdsTooLarge { .. }));
+    }
+
+    #[test]
+    fn resolve_envelope_echoes_subject_ids() {
+        // §4 echo rule: the resolved envelope carries every input
+        // axis the response shape can depend on. Caches keying on
+        // (rank_by + extras + subject_ids) need the echo.
+        let mut env = sample_envelope();
+        env.subject_ids = subject_ids_of(3);
+        let resolved = resolve_leaderboard_envelope(&env, utc(2025, 6, 18, 12, 0, 0)).unwrap();
+        assert_eq!(resolved.subject_ids, env.subject_ids);
+    }
+
+    #[test]
+    fn envelope_subject_ids_round_trips_through_json() {
+        // Wire form: present when non-empty, omitted when empty so
+        // the stage-3 shape stays stable for clients that don't use
+        // the §6.10 small-N path.
+        let mut env = sample_envelope();
+        assert!(env.subject_ids.is_empty());
+        let json = serde_json::to_string(&env).unwrap();
+        assert!(
+            !json.contains("subject_ids"),
+            "empty subject_ids must be omitted: {json}",
+        );
+
+        env.subject_ids = subject_ids_of(2);
+        let json = serde_json::to_string(&env).unwrap();
+        assert!(json.contains("\"subject_ids\""), "{json}");
+        let back: LeaderboardEnvelope = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.subject_ids, env.subject_ids);
+    }
+
+    #[test]
+    fn envelope_default_subject_ids_is_empty_when_field_absent() {
+        // Backwards compat: a missing `subject_ids` in the request
+        // JSON must deserialise as an empty list. A previously-shipped
+        // client that pre-dates §6.10 keeps working unchanged.
+        let json = r#"{
+            "window": { "label": "today", "tz": "UTC", "anchor": "utc" },
+            "scope_mode": "single_org",
+            "orgs": ["00000000-0000-0000-0000-000000000000"],
+            "subject": "user",
+            "rank_by": { "family": "count", "id": "pull_requests_opened" }
+        }"#;
+        let env: LeaderboardEnvelope = serde_json::from_str(json).unwrap();
+        assert!(env.subject_ids.is_empty());
+    }
+
+    #[test]
+    fn validate_page_request_rejects_cursor_in_subject_ids_mode() {
+        // §6.10: pagination is disabled when `subject_ids` is
+        // non-empty. A cursor alongside the small-N filter is a
+        // client bug, surfaced as a precise typed error so REST/MCP
+        // return 400 rather than silently mixing two modes.
+        let mut env = sample_envelope();
+        env.subject_ids = subject_ids_of(3);
+        let resolved = resolve_leaderboard_envelope(&env, utc(2025, 6, 18, 12, 0, 0)).unwrap();
+        let cursor = PageCursor {
+            resolved_window_end: resolved.resolved_window.end,
+            rank_by_value: 10,
+            subject_id: "u1".into(),
+        };
+        let req = PageRequest { size: 0, cursor: Some(cursor.encode()) };
+        let err = validate_page_request(&req, &resolved).unwrap_err();
+        assert_eq!(
+            err,
+            LeaderboardError::PaginationDisabledForSubjectIds { subject_ids_len: 3 },
+        );
+    }
+
+    #[test]
+    fn validate_page_request_rejects_explicit_size_in_subject_ids_mode() {
+        // A non-zero `size` is also a client bug in this mode — the
+        // server returns every matching row in one response, so
+        // asking for "page size = 10" is meaningless. Default
+        // (`size == 0`, no cursor) is accepted.
+        let mut env = sample_envelope();
+        env.subject_ids = subject_ids_of(5);
+        let resolved = resolve_leaderboard_envelope(&env, utc(2025, 6, 18, 12, 0, 0)).unwrap();
+
+        // Explicit size — rejected.
+        let req = PageRequest { size: 10, cursor: None };
+        let err = validate_page_request(&req, &resolved).unwrap_err();
+        assert!(matches!(
+            err,
+            LeaderboardError::PaginationDisabledForSubjectIds { subject_ids_len: 5 },
+        ));
+
+        // Default request shape — accepted (no cursor, size == 0).
+        let req = PageRequest::default();
+        assert!(validate_page_request(&req, &resolved).is_ok());
+    }
+
+    #[test]
+    fn build_subject_ids_sql_appends_outer_filter() {
+        // §6.10: the predicate lives on the *outer* query so the
+        // inner GROUP BY and §6.1 tie-break ORDER BY are
+        // untouched. A drift here (e.g. predicate inlined into the
+        // base SQL) would shift active_days / repos_touched
+        // aggregates because filtered-out subjects would no longer
+        // contribute to the per-subject counts.
+        let sql = build_subject_ids_leaderboard_sql(
+            SubjectKind::User,
+            ScopeMode::SingleOrg,
+        )
+        .unwrap();
+        let lower = sql.to_ascii_lowercase();
+        assert!(lower.contains("select * from ("), "outer wrap missing: {sql}");
+        assert!(
+            lower.contains("where sub.subject_id = any($7::text[])"),
+            "outer predicate missing: {sql}",
+        );
+        // No LIMIT — pagination is disabled in this mode (§6.10).
+        assert!(!lower.contains("limit"), "unexpected LIMIT in subject_ids SQL: {sql}");
+        // Tie-break re-emitted on the outer query for §6.1.
+        assert!(
+            lower.contains("order by primary_value desc, active_days desc, subject_id asc"),
+            "outer tie-break missing: {sql}",
+        );
+    }
+
+    #[test]
+    fn subject_ids_sql_bind_order_has_seven_slots() {
+        // The base bind order is 6 slots; subject_ids adds exactly
+        // one trailing `text[]`. No cursor / limit slot — pagination
+        // is disabled in this mode (§6.10). Locked here so a future
+        // change to either constant is a single, reviewable diff.
+        assert_eq!(LEADERBOARD_BIND_ORDER.len(), 6);
+        assert_eq!(LEADERBOARD_BIND_ORDER_SUBJECT_IDS.len(), 7);
+        assert!(
+            LEADERBOARD_BIND_ORDER_SUBJECT_IDS[6].contains("subject_ids"),
+            "trailing slot must document subject_ids: {:?}",
+            LEADERBOARD_BIND_ORDER_SUBJECT_IDS[6],
+        );
+    }
+
+    #[test]
+    fn subject_ids_sql_works_for_every_valid_subject_scope_pair() {
+        // §6.10 applies to every (subject, scope_mode) pair the
+        // base builder honours — the outer wrap is purely a
+        // predicate addition. Locked here so a future refactor of
+        // `build_leaderboard_sql`'s per-variant strings can't
+        // silently break the small-N path for one combo.
+        for (subject, scope_mode) in [
+            (SubjectKind::User, ScopeMode::SingleOrg),
+            (SubjectKind::User, ScopeMode::AllOrgsCombined),
+            (SubjectKind::User, ScopeMode::PerOrgSplit),
+            (SubjectKind::Team, ScopeMode::SingleOrg),
+            (SubjectKind::Team, ScopeMode::PerOrgSplit),
+            (SubjectKind::Org, ScopeMode::AllOrgsCombined),
+            (SubjectKind::Org, ScopeMode::PerOrgSplit),
+            (SubjectKind::HomeOrgLabel, ScopeMode::SingleOrg),
+            (SubjectKind::HomeOrgLabel, ScopeMode::AllOrgsCombined),
+            (SubjectKind::HomeOrgLabel, ScopeMode::PerOrgSplit),
+        ] {
+            let sql = build_subject_ids_leaderboard_sql(subject, scope_mode).unwrap_or_else(|e| {
+                panic!("subject_ids SQL failed for ({subject:?}, {scope_mode:?}): {e}")
+            });
+            assert!(
+                sql.to_ascii_lowercase().contains("any($7::text[])"),
+                "outer predicate missing for ({subject:?}, {scope_mode:?}): {sql}",
+            );
+        }
+    }
+
+    #[test]
+    fn subject_ids_sql_rejects_invalid_subject_scope_combo() {
+        // §2 invalid pairings (team×all_orgs_combined, org×single_org)
+        // are rejected at the SQL layer too — the outer wrap can't
+        // rescue a meaningless aggregate.
+        assert!(matches!(
+            build_subject_ids_leaderboard_sql(SubjectKind::Team, ScopeMode::AllOrgsCombined),
+            Err(LeaderboardError::InvalidSubjectScopeCombo { .. }),
+        ));
+        assert!(matches!(
+            build_subject_ids_leaderboard_sql(SubjectKind::Org, ScopeMode::SingleOrg),
+            Err(LeaderboardError::InvalidSubjectScopeCombo { .. }),
+        ));
     }
 
     #[test]
