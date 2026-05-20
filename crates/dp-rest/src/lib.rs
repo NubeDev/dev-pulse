@@ -38,9 +38,11 @@ pub mod audit;
 pub mod directory;
 pub mod error;
 pub mod issues;
+pub mod issues_read;
 pub mod openapi;
 pub mod pins;
 pub mod reports;
+pub mod repos;
 pub mod state;
 pub mod tags;
 
@@ -63,6 +65,13 @@ pub use error::ApiError;
 pub use issues::{
     acquire_issue_mutation_slot, commit_issue_mutation, rollback_issue_mutation,
     sweep_pending_remote_timeouts, AcquireOutcome, AcquiredSlot, SweepReport,
+};
+pub use issues_read::{
+    get_issue_by_id, get_issue_by_number, issues_read_router, list_issues, IssueDto,
+    IssueListResponse, IssueStateDto, ListIssuesQuery, StateFilter,
+};
+pub use repos::{
+    list_repos, repos_router, ListReposQuery, RepoListResponse, RepoSummaryDto,
 };
 pub use openapi::DevPulseApi;
 pub use pins::{

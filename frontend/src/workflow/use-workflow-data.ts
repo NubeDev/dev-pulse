@@ -33,11 +33,15 @@ import {
   type CreateIssueRequest,
   type CreateTagRequest,
   type IssueDto,
+  type IssueListResponse,
   type LinkBatchRequest,
   type LinkBatchResponse,
+  type ListIssuesQuery,
+  type ListReposQuery,
   type PinDto,
   type PinKeyDto,
   type PinKind,
+  type RepoListResponse,
   type ReorderRequest,
   type TagDetailResponse,
   type TagDto,
@@ -48,6 +52,8 @@ import {
   USE_MOCK,
   mockAppInstallBanner,
   mockIssue,
+  mockListIssues,
+  mockListRepos,
   mockPinsState,
   mockTagDetail,
   mockTagsState,
@@ -64,6 +70,8 @@ export const workflowKeys = {
   myTags: () => ["workflow", "my-tags"] as const,
   tag: (id: string) => ["workflow", "tag", id] as const,
   issue: (id: string) => ["workflow", "issue", id] as const,
+  issues: (q: ListIssuesQuery) => ["workflow", "issues", q] as const,
+  repos: (q: ListReposQuery) => ["workflow", "repos", q] as const,
   banner: () => ["workflow", "app-install-banner"] as const,
 };
 
@@ -266,6 +274,27 @@ export function useAppInstallBanner() {
 // Issues (SCOPE-PROJECTS §8.2)
 // ---------------------------------------------------------------------------
 
+/** Workflow drill-down list pane. Returns the paginated
+ *  `{rows, total, limit, offset}` envelope so the table can
+ *  render `Showing X–Y of Z` and page through 1000s of issues. */
+export function useIssueList(q: ListIssuesQuery) {
+  return useQuery<IssueListResponse>({
+    queryKey: workflowKeys.issues(q),
+    queryFn: () =>
+      USE_MOCK ? Promise.resolve(mockListIssues(q)) : api.listIssues(q),
+  });
+}
+
+/** Workflow master list pane — paginated repo list with
+ *  open-issue counts + last-activity timestamps. */
+export function useRepoList(q: ListReposQuery) {
+  return useQuery<RepoListResponse>({
+    queryKey: workflowKeys.repos(q),
+    queryFn: () =>
+      USE_MOCK ? Promise.resolve(mockListRepos(q)) : api.listRepos(q),
+  });
+}
+
 export function useIssue(id: string | undefined) {
   return useQuery<IssueDto>({
     queryKey: id ? workflowKeys.issue(id) : ["workflow", "issue", "<none>"],
@@ -273,7 +302,7 @@ export function useIssue(id: string | undefined) {
     queryFn: () => {
       if (!id) throw new Error("issue id required");
       if (USE_MOCK) return Promise.resolve({ ...mockIssue });
-      return api.getIssue(mockIssue.repo_id, mockIssue.number);
+      return api.getIssueById(id);
     },
   });
 }

@@ -33,8 +33,9 @@ use dp_domain::membership::Membership;
 use dp_domain::org::Org;
 use dp_domain::pin::{Pin, PinKind};
 use dp_domain::repo::Repo;
+use dp_domain::issue::{Issue, IssueState, RepoSummary};
 use dp_domain::issue_mutation::{IssueMutation, IssueMutationOp, IssueMutationResult};
-use dp_domain::store::{EventActorRow, PendingRemoteIssue, Store, StoreError};
+use dp_domain::store::{EventActorRow, IssueListFilter, PendingRemoteIssue, RepoListFilter, Store, StoreError};
 use dp_domain::team::Team;
 use dp_domain::user::User;
 use dp_domain::webhook::WebhookDelivery;
@@ -146,6 +147,44 @@ fn row_to_repo(r: &sqlx::postgres::PgRow) -> Result<Repo, StoreError> {
         org_id: r.try_get("org_id").map_err(map_sqlx)?,
         github_id: r.try_get("github_id").map_err(map_sqlx)?,
         name: r.try_get("name").map_err(map_sqlx)?,
+    })
+}
+
+fn row_to_repo_summary(r: &sqlx::postgres::PgRow) -> Result<RepoSummary, StoreError> {
+    Ok(RepoSummary {
+        id: r.try_get("id").map_err(map_sqlx)?,
+        org_id: r.try_get("org_id").map_err(map_sqlx)?,
+        org_login: r.try_get("org_login").map_err(map_sqlx)?,
+        name: r.try_get("name").map_err(map_sqlx)?,
+        open_issue_count: r.try_get("open_issue_count").map_err(map_sqlx)?,
+        last_activity_at: r.try_get("last_activity_at").map_err(map_sqlx)?,
+    })
+}
+
+fn row_to_issue(r: &sqlx::postgres::PgRow) -> Result<Issue, StoreError> {
+    let state_text: String = r.try_get("state").map_err(map_sqlx)?;
+    let state = IssueState::from_str(&state_text)
+        .ok_or_else(|| StoreError::Invalid(format!("unknown issue state: {state_text}")))?;
+    let labels_json: JsonValue = r.try_get("labels").map_err(map_sqlx)?;
+    let assignees_json: JsonValue = r.try_get("assignees").map_err(map_sqlx)?;
+    let labels: Vec<String> = serde_json::from_value(labels_json)
+        .map_err(|e| StoreError::Invalid(format!("labels not a string array: {e}")))?;
+    let assignees: Vec<String> = serde_json::from_value(assignees_json)
+        .map_err(|e| StoreError::Invalid(format!("assignees not a string array: {e}")))?;
+    Ok(Issue {
+        id: r.try_get("id").map_err(map_sqlx)?,
+        org_id: r.try_get("org_id").map_err(map_sqlx)?,
+        repo_id: r.try_get("repo_id").map_err(map_sqlx)?,
+        github_id: r.try_get("github_id").map_err(map_sqlx)?,
+        number: r.try_get("number").map_err(map_sqlx)?,
+        title: r.try_get("title").map_err(map_sqlx)?,
+        body: r.try_get("body").map_err(map_sqlx)?,
+        state,
+        labels,
+        assignees,
+        milestone: r.try_get("milestone").map_err(map_sqlx)?,
+        version: r.try_get("version").map_err(map_sqlx)?,
+        updated_at: r.try_get("updated_at").map_err(map_sqlx)?,
     })
 }
 
@@ -562,6 +601,150 @@ impl Store for PgStore {
         .await
         .map_err(map_sqlx)?;
         rows.iter().map(row_to_user).collect()
+    }
+
+    // ---- repos / issues read surface --------------------------------
+
+    async fn list_repos(&self, filter: &RepoListFilter) -> Result<Vec<RepoSummary>, StoreError> {
+        // Open-issue count + last-activity timestamp are computed
+        // via LATERAL subselects so the repo→issue join doesn't
+        // multiply rows. Both subselects hit the indexes already
+        // declared on dp_issues (repo_updated, org_state). For the
+        // expected scale (100s of repos) this stays well under
+        // 100ms; if it ever creeps up the obvious fix is a
+        // materialised `dp_repo_stats` table refreshed by the
+        // webhook worker.
+        let q_norm = filter.q.as_deref().map(str::trim).filter(|s| !s.is_empty());
+        let rows = sqlx::query(
+            "SELECT r.id, r.org_id, o.login AS org_login, r.name,
+                    COALESCE(c.open_issue_count, 0) AS open_issue_count,
+                    a.last_activity_at
+             FROM dp_repos r
+             JOIN dp_orgs o ON o.id = r.org_id
+             LEFT JOIN LATERAL (
+                 SELECT COUNT(*)::bigint AS open_issue_count
+                 FROM dp_issues i WHERE i.repo_id = r.id AND i.state = 'open'
+             ) c ON TRUE
+             LEFT JOIN LATERAL (
+                 SELECT MAX(updated_at) AS last_activity_at
+                 FROM dp_issues i WHERE i.repo_id = r.id
+             ) a ON TRUE
+             WHERE ($1::uuid IS NULL OR r.org_id = $1)
+               AND ($2::text IS NULL
+                    OR r.name ILIKE '%' || $2 || '%'
+                    OR o.login ILIKE '%' || $2 || '%')
+             ORDER BY a.last_activity_at DESC NULLS LAST, o.login ASC, r.name ASC
+             LIMIT $3 OFFSET $4",
+        )
+        .bind(filter.org_id)
+        .bind(q_norm)
+        .bind(filter.limit)
+        .bind(filter.offset)
+        .fetch_all(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        rows.iter().map(row_to_repo_summary).collect()
+    }
+
+    async fn count_repos(&self, filter: &RepoListFilter) -> Result<i64, StoreError> {
+        let q_norm = filter.q.as_deref().map(str::trim).filter(|s| !s.is_empty());
+        let (count,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*)::bigint
+             FROM dp_repos r
+             JOIN dp_orgs o ON o.id = r.org_id
+             WHERE ($1::uuid IS NULL OR r.org_id = $1)
+               AND ($2::text IS NULL
+                    OR r.name ILIKE '%' || $2 || '%'
+                    OR o.login ILIKE '%' || $2 || '%')",
+        )
+        .bind(filter.org_id)
+        .bind(q_norm)
+        .fetch_one(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        Ok(count)
+    }
+
+    async fn list_issues(&self, filter: &IssueListFilter) -> Result<Vec<Issue>, StoreError> {
+        let q_norm = filter.q.as_deref().map(str::trim).filter(|s| !s.is_empty());
+        let state_text = filter.state.map(|s| s.as_str().to_string());
+        let rows = sqlx::query(
+            "SELECT id, org_id, repo_id, github_id, number, title, body, state,
+                    labels, assignees, milestone, version, updated_at
+             FROM dp_issues
+             WHERE ($1::uuid IS NULL OR repo_id = $1)
+               AND ($2::uuid IS NULL OR org_id  = $2)
+               AND ($3::text IS NULL OR state   = $3)
+               AND ($4::text IS NULL OR assignees @> to_jsonb(ARRAY[$4::text]))
+               AND ($5::text IS NULL OR title ILIKE '%' || $5 || '%')
+             ORDER BY updated_at DESC
+             LIMIT $6 OFFSET $7",
+        )
+        .bind(filter.repo_id)
+        .bind(filter.org_id)
+        .bind(state_text)
+        .bind(filter.assignee.as_deref())
+        .bind(q_norm)
+        .bind(filter.limit)
+        .bind(filter.offset)
+        .fetch_all(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        rows.iter().map(row_to_issue).collect()
+    }
+
+    async fn count_issues(&self, filter: &IssueListFilter) -> Result<i64, StoreError> {
+        let q_norm = filter.q.as_deref().map(str::trim).filter(|s| !s.is_empty());
+        let state_text = filter.state.map(|s| s.as_str().to_string());
+        let (count,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*)::bigint
+             FROM dp_issues
+             WHERE ($1::uuid IS NULL OR repo_id = $1)
+               AND ($2::uuid IS NULL OR org_id  = $2)
+               AND ($3::text IS NULL OR state   = $3)
+               AND ($4::text IS NULL OR assignees @> to_jsonb(ARRAY[$4::text]))
+               AND ($5::text IS NULL OR title ILIKE '%' || $5 || '%')",
+        )
+        .bind(filter.repo_id)
+        .bind(filter.org_id)
+        .bind(state_text)
+        .bind(filter.assignee.as_deref())
+        .bind(q_norm)
+        .fetch_one(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        Ok(count)
+    }
+
+    async fn get_issue(&self, id: Uuid) -> Result<Option<Issue>, StoreError> {
+        let row = sqlx::query(
+            "SELECT id, org_id, repo_id, github_id, number, title, body, state,
+                    labels, assignees, milestone, version, updated_at
+             FROM dp_issues WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        row.as_ref().map(row_to_issue).transpose()
+    }
+
+    async fn get_issue_by_repo_and_number(
+        &self,
+        repo_id: Uuid,
+        number: i64,
+    ) -> Result<Option<Issue>, StoreError> {
+        let row = sqlx::query(
+            "SELECT id, org_id, repo_id, github_id, number, title, body, state,
+                    labels, assignees, milestone, version, updated_at
+             FROM dp_issues WHERE repo_id = $1 AND number = $2",
+        )
+        .bind(repo_id)
+        .bind(number)
+        .fetch_optional(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        row.as_ref().map(row_to_issue).transpose()
     }
 
     async fn record_audit_log(&self, entry: &AuditEntry) -> Result<(), StoreError> {

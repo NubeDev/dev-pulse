@@ -23,6 +23,7 @@ use crate::audit::AuditEntry;
 use crate::event::{ActivityEvent, ActorRole, EventActor, EventKind};
 use crate::fetch::{FetchCursor, FetchRun, FetchRunKind, ResourceKind};
 use crate::freshness::DataAsOf;
+use crate::issue::{Issue, IssueState, RepoSummary};
 use crate::issue_mutation::{IssueMutation, IssueMutationResult};
 use crate::membership::Membership;
 use crate::org::Org;
@@ -245,6 +246,62 @@ pub trait Store: Send + Sync {
         _org_id: Uuid,
     ) -> Result<Vec<crate::user::User>, StoreError> {
         Ok(vec![])
+    }
+
+    // ---- repos / issues read surface (workflow drill-down) -------
+
+    /// Paginated listing for the workflow's "Repos" pane. Backs
+    /// `GET /repos` (dp-rest). Filters are conjunctive; defaults
+    /// (no filter) return every repo across every org the store
+    /// knows about.
+    ///
+    /// Implementations should return rows ordered by
+    /// `last_activity_at DESC NULLS LAST, name ASC` so the UI gets
+    /// "hottest first" for free.
+    async fn list_repos(
+        &self,
+        _filter: &RepoListFilter,
+    ) -> Result<Vec<RepoSummary>, StoreError> {
+        Ok(vec![])
+    }
+
+    /// Total count matching the same `filter` (ignoring `limit` /
+    /// `offset`). Pairs with [`Store::list_repos`] so the UI can
+    /// render an "X of Y" pager.
+    async fn count_repos(&self, _filter: &RepoListFilter) -> Result<i64, StoreError> {
+        Ok(0)
+    }
+
+    /// Paginated listing for the workflow's "Issues" pane. Backs
+    /// `GET /issues`. Sort: `updated_at DESC` to match GitHub's
+    /// default "recently updated" view.
+    async fn list_issues(
+        &self,
+        _filter: &IssueListFilter,
+    ) -> Result<Vec<Issue>, StoreError> {
+        Ok(vec![])
+    }
+
+    /// Total count for the issue filter.
+    async fn count_issues(&self, _filter: &IssueListFilter) -> Result<i64, StoreError> {
+        Ok(0)
+    }
+
+    /// Fetch a single issue by primary key. The §8 detail pane
+    /// uses this to re-read after a successful CAS write.
+    async fn get_issue(&self, _id: Uuid) -> Result<Option<Issue>, StoreError> {
+        Ok(None)
+    }
+
+    /// Fetch a single issue by `(repo_id, number)`. Backs
+    /// `GET /repos/{repo_id}/issues/{number}` — the canonical
+    /// deep-link shape the audit log already records.
+    async fn get_issue_by_repo_and_number(
+        &self,
+        _repo_id: Uuid,
+        _number: i64,
+    ) -> Result<Option<Issue>, StoreError> {
+        Ok(None)
     }
 
     // ---- events + actors -----------------------------------------
@@ -817,6 +874,50 @@ pub struct PendingRemoteIssue {
     /// this is older than `now() - pending_remote_timeout_secs`.
     pub pending_remote_at: DateTime<Utc>,
 }
+
+/// Filter for [`Store::list_repos`] / [`Store::count_repos`].
+///
+/// All fields are conjunctive. `limit` is capped at
+/// [`MAX_LIST_LIMIT`] by the dp-rest layer before it reaches the
+/// store; the store treats it as a hard upper bound.
+#[derive(Debug, Clone, Default)]
+pub struct RepoListFilter {
+    /// Restrict to one org. `None` ⇒ every org.
+    pub org_id: Option<Uuid>,
+    /// Case-insensitive substring search on `dp_repos.name` and
+    /// `dp_orgs.login`. `None` or empty ⇒ no search.
+    pub q: Option<String>,
+    /// Page size. 1..=[`MAX_LIST_LIMIT`].
+    pub limit: i64,
+    /// Page offset.
+    pub offset: i64,
+}
+
+/// Filter for [`Store::list_issues`] / [`Store::count_issues`].
+#[derive(Debug, Clone, Default)]
+pub struct IssueListFilter {
+    /// Restrict to one repo.
+    pub repo_id: Option<Uuid>,
+    /// Restrict to one org.
+    pub org_id: Option<Uuid>,
+    /// Filter by state. `None` ⇒ open + closed.
+    pub state: Option<IssueState>,
+    /// Match an assignee login (exact, case-sensitive — GitHub
+    /// logins are unique and case-folded server-side).
+    pub assignee: Option<String>,
+    /// Case-insensitive substring search on `dp_issues.title`.
+    pub q: Option<String>,
+    /// Page size. 1..=[`MAX_LIST_LIMIT`].
+    pub limit: i64,
+    /// Page offset.
+    pub offset: i64,
+}
+
+/// Hard upper bound on `limit` across the workflow read surface.
+pub const MAX_LIST_LIMIT: i64 = 200;
+
+/// Default `limit` when the caller omits one.
+pub const DEFAULT_LIST_LIMIT: i64 = 50;
 
 #[cfg(test)]
 mod tests {

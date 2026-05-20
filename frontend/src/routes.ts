@@ -27,23 +27,52 @@ import { useSyncExternalStore } from "react";
 
 export type Section = "reports" | "directory" | "admin" | "workflow" | "login";
 
-/** Sub-route under the workflow section (SCOPE-PROJECTS §6 / §7 / §8). */
-export type WorkflowTab = "pins" | "tags" | "issues";
+/** §14.1 deep-link selection — `#/workflow?issue=<uuid>` carries the
+ *  detail-pane focus across copy-paste / back-forward. `null` ⇒ no
+ *  selection (detail pane shows the empty state). */
+export function workflowSelectedIssue(route: string): string | null {
+  const q = route.indexOf("?");
+  if (q < 0) return null;
+  const params = new URLSearchParams(route.slice(q + 1));
+  const id = params.get("issue");
+  return id && id.length > 0 ? id : null;
+}
 
-/** Parse `#/workflow/...` → the active sub-tab. Defaults to `pins`. */
+/** Repo drill-down filter for `#/workflow/issues?repo_id=<uuid>`. */
+export function workflowSelectedRepoId(route: string): string | null {
+  const q = route.indexOf("?");
+  if (q < 0) return null;
+  const params = new URLSearchParams(route.slice(q + 1));
+  const id = params.get("repo_id");
+  return id && id.length > 0 ? id : null;
+}
+
+/** Build the `#/workflow/issues` route with optional repo / issue
+ *  selection. Both round-trip through copy-paste so the workflow
+ *  surface is fully shareable. */
+export function workflowIssuesRoute(opts: { repoId?: string | null; issueId?: string | null } = {}): string {
+  const params = new URLSearchParams();
+  if (opts.repoId) params.set("repo_id", opts.repoId);
+  if (opts.issueId) params.set("issue", opts.issueId);
+  const qs = params.toString();
+  return qs ? `#/workflow/issues?${qs}` : "#/workflow/issues";
+}
+
+/** Sub-route under the workflow section — Repos master, Issues drill-down. */
+export type WorkflowTab = "repos" | "issues";
+
+/** Parse `#/workflow/...` → the active sub-tab. Defaults to `repos`. */
 export function workflowTabOf(route: string): WorkflowTab {
   const path = route.replace(/^#/, "").replace(/^\/+/, "").split("/");
-  if (path[0] !== "workflow") return "pins";
+  if (path[0] !== "workflow") return "repos";
   switch (path[1]) {
-    case "tags":
-      return "tags";
     case "issues":
       return "issues";
-    case "pins":
+    case "repos":
     case undefined:
     case "":
     default:
-      return "pins";
+      return "repos";
   }
 }
 

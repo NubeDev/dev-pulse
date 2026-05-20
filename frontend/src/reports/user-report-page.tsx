@@ -18,6 +18,7 @@ import { api } from "../api/client.js";
 import type {
   CountRow,
   DataAsOf,
+  OrgDto,
   ReportResponse,
   ScopeMode,
   UserDto,
@@ -69,6 +70,15 @@ function mockUsers(): UserDto[] {
   ];
 }
 
+function mockOrgs(): OrgDto[] {
+  return [
+    { id: "00000000-0000-0000-0000-0000000000a1", github_id: 101, login: "acme", name: "Acme" },
+    { id: "00000000-0000-0000-0000-0000000000b2", github_id: 102, login: "globex", name: "Globex" },
+  ];
+}
+
+const ALL_ORGS = "__all__";
+
 function userIdFromRoute(route: string): string | null {
   const path = route.replace(/^#/, "").replace(/^\/+/, "").split("/");
   if (path[0] === "reports" && path[1] === "user" && path[2]) return path[2];
@@ -78,6 +88,14 @@ function userIdFromRoute(route: string): string | null {
 export function UserReportPage(): JSX.Element {
   const route = useRoute();
   const routeUserId = userIdFromRoute(route);
+
+  const orgsQuery = useQuery({
+    queryKey: ["orgs"],
+    queryFn: () => (USE_MOCK ? Promise.resolve(mockOrgs()) : api.listOrgs()),
+  });
+  const orgs: ReadonlyArray<OrgDto> = orgsQuery.data ?? [];
+
+  const [orgId, setOrgId] = useState<string | null>(null);
 
   const usersQuery = useQuery({
     queryKey: ["users"],
@@ -97,8 +115,9 @@ export function UserReportPage(): JSX.Element {
       ...windowStateToParams(windowState),
       scope_mode: lens,
       group_by: "day" as const,
+      ...(orgId ? { orgs: [orgId] } : {}),
     }),
-    [windowState, lens],
+    [windowState, lens, orgId],
   );
 
   const queries = useQueries({
@@ -138,6 +157,7 @@ export function UserReportPage(): JSX.Element {
   }
 
   const dropdownId = useId();
+  const orgDropdownId = useId();
   const subjectLabel = activeUser?.name ?? activeUser?.login ?? null;
 
   return (
@@ -159,6 +179,27 @@ export function UserReportPage(): JSX.Element {
       subjectLabel={subjectLabel}
       filters={
         <div className={FILTER_GRID_CLASS}>
+          <div className="grid gap-1.5">
+            <Label htmlFor={orgDropdownId}>Org</Label>
+            <Select
+              value={orgId ?? ALL_ORGS}
+              onValueChange={(v) => setOrgId(v === ALL_ORGS ? null : v)}
+              disabled={orgsQuery.isPending}
+            >
+              <SelectTrigger id={orgDropdownId} data-testid="org-select">
+                <SelectValue placeholder={orgsQuery.isPending ? "Loading orgs…" : "All orgs"} />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ALL_ORGS}>All orgs</SelectItem>
+                {orgs.map((o) => (
+                  <SelectItem key={o.id} value={o.id}>
+                    {o.name ?? o.login}
+                    {o.name ? <span className="text-muted-foreground"> · {o.login}</span> : null}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
           <div className="grid gap-1.5">
             <Label htmlFor={dropdownId}>User</Label>
             <Select

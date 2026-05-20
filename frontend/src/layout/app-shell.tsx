@@ -49,7 +49,6 @@ import {
   workflowTabOf,
   type Section,
 } from "../routes.js"
-
 const NAV_MAIN: NavMainItem[] = [
   {
     title: "Reports",
@@ -73,9 +72,8 @@ const NAV_MAIN: NavMainItem[] = [
     accent: "var(--accent-reports)",
     subTestId: "workflow-subnav",
     items: [
-      { title: "Pins", url: "#/workflow/pins", icon: IconPinned },
-      { title: "Tags", url: "#/workflow/tags", icon: IconTags },
-      { title: "Issues", url: "#/workflow/issues", icon: IconBug },
+      { title: "Repos", url: "#/workflow/repos", icon: IconBuilding },
+      { title: "Issues", url: "#/workflow/issues", icon: IconBriefcase },
     ],
   },
   {
@@ -114,8 +112,7 @@ const SECTION_TITLE: Record<Section, string> = {
 }
 
 const WORKFLOW_TITLE: Record<string, string> = {
-  pins: "Pins",
-  tags: "Tags",
+  repos: "Repos",
   issues: "Issues",
 }
 

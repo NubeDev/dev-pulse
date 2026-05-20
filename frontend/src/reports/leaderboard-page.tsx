@@ -1,49 +1,53 @@
 /**
  * `GET /reports/org/:org_id?group_by=user&activity_types=…` rendered
- * as a ranked-user table — pragmatic leaderboard view built on the
- * existing per-org count endpoint. The full `dp-reports::leaderboard`
- * SQL machinery (PR #9) ships the library but doesn't expose a REST
- * route yet; this page uses the count-by-user reducer that already
- * runs server-side.
+ * as a dashboard-style leaderboard built on the existing per-org
+ * count endpoint. The full `dp-reports::leaderboard` SQL machinery
+ * (PR #9) ships the library but doesn't expose a REST route yet;
+ * this page fans the count-by-user reducer across multiple
+ * `(org × kind)` slices client-side and folds the results in
+ * `useLeaderboardData`.
+ *
+ * Features that lift this above the v1 single-org list:
+ *
+ *   - Multi-org selection (one user can belong to many orgs).
+ *   - Multi-user filter (focus on a custom cohort).
+ *   - Multi-activity-type selection (default: all kinds).
+ *   - KPI strip · stacked bar chart · activity-mix donut · daily
+ *     trend area · ranked table with per-org chips and share bar.
+ *
+ * The visual + component vocabulary mirrors the existing
+ * user/team/org pages (PageHeading + filter Card + DataAsOfBanner +
+ * SectionCards + recharts) so the page slots into the app shell
+ * without introducing a new look-and-feel.
  */
 
-import { useId, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+import { Card, CardContent } from "@/components/ui/card";
 
 import { api } from "../api/client.js";
 import type { OrgDto, UserDto } from "../api/client.js";
+import { PageHeading } from "../components/page-heading.jsx";
 
-import { ACTIVITY_KINDS } from "./activity-types.js";
 import { DataAsOfBanner } from "./data-as-of.jsx";
 import {
-  WindowPicker,
-  FILTER_GRID_CLASS,
   defaultWindowState,
   windowStateToParams,
+  type WindowState,
 } from "./window-picker.jsx";
+import {
+  ActivityMixChart,
+  ContributorBarChart,
+  LeaderboardFilters,
+  LeaderboardKpis,
+  LeaderboardTable,
+  LeaderboardTrendChart,
+  useLeaderboardData,
+  type DirectoryMaps,
+} from "./leaderboard/index.js";
 
 export function LeaderboardPage(): JSX.Element {
-  const orgSelectId = useId();
-  const kindSelectId = useId();
-
   const orgsQuery = useQuery({
     queryKey: ["orgs"],
     queryFn: () => api.listOrgs(),
@@ -54,179 +58,147 @@ export function LeaderboardPage(): JSX.Element {
     queryKey: ["users"],
     queryFn: () => api.listUsers(),
   });
-  const usersById = useMemo(() => {
-    const m = new Map<string, UserDto>();
-    (usersQuery.data ?? []).forEach((u) => m.set(u.id, u));
-    return m;
-  }, [usersQuery.data]);
+  const users: ReadonlyArray<UserDto> = usersQuery.data ?? [];
 
-  const [orgId, setOrgId] = useState<string | null>(null);
-  const activeOrgId = orgId ?? orgs[0]?.id ?? null;
-  const activeOrg = orgs.find((o) => o.id === activeOrgId);
-
-  const [windowState, setWindowState] = useState(defaultWindowState());
-  const [kind, setKind] = useState<string>("commit");
-
-  const params = useMemo(
+  const directory = useMemo<DirectoryMaps>(
     () => ({
-      ...windowStateToParams(windowState),
-      scope_mode: "single_org" as const,
-      group_by: "user" as const,
-      activity_types: [kind],
+      orgsById: new Map(orgs.map((o) => [o.id, o])),
+      usersById: new Map(users.map((u) => [u.id, u])),
     }),
-    [windowState, kind],
+    [orgs, users],
   );
 
-  const reportQuery = useQuery({
-    queryKey: ["leaderboard", activeOrgId, kind, params],
-    enabled: !!activeOrgId,
-    queryFn: () => {
-      if (!activeOrgId) return Promise.reject(new Error("no org"));
-      return api.getReportOrg(activeOrgId, params);
+  const [selectedOrgIds, setSelectedOrgIds] = useState<ReadonlyArray<string>>([]);
+  const [selectedUserIds, setSelectedUserIds] = useState<ReadonlyArray<string>>([]);
+  const [selectedKinds, setSelectedKinds] = useState<ReadonlyArray<string>>([
+    "commit",
+    "pull_request_merged",
+    "review",
+  ]);
+  const [windowState, setWindowState] = useState<WindowState>(
+    defaultWindowState(),
+  );
+
+  // Default to the first org once the directory call resolves; the
+  // user can then add more from the multi-select.
+  useEffect(() => {
+    if (selectedOrgIds.length === 0 && orgs.length > 0) {
+      setSelectedOrgIds([orgs[0]!.id]);
+    }
+  }, [orgs, selectedOrgIds.length]);
+
+  // Drop user filters that no longer correspond to a known user (e.g.
+  // org selection narrowed and a stale id is in state).
+  useEffect(() => {
+    if (selectedUserIds.length === 0) return;
+    const known = new Set(users.map((u) => u.id));
+    const filtered = selectedUserIds.filter((id) => known.has(id));
+    if (filtered.length !== selectedUserIds.length) {
+      setSelectedUserIds(filtered);
+    }
+  }, [users, selectedUserIds]);
+
+  const windowParams = useMemo(
+    () => windowStateToParams(windowState),
+    [windowState],
+  );
+
+  const { data, loading, error, dataAsOf } = useLeaderboardData({
+    selection: {
+      orgIds: selectedOrgIds,
+      userIds: selectedUserIds,
+      kinds: selectedKinds,
     },
+    windowParams,
+    directory,
   });
 
-  const rankedRows = useMemo(() => {
-    const rows = reportQuery.data?.rows ?? [];
-    return [...rows]
-      .filter((r) => r.count > 0)
-      .sort((a, b) => b.count - a.count);
-  }, [reportQuery.data]);
-
-  const kindLabel =
-    ACTIVITY_KINDS.find((k) => k.key === kind)?.label ?? kind;
+  const ready = selectedOrgIds.length > 0;
 
   return (
-    <div className="flex flex-1 flex-col gap-4 p-4 md:p-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Leaderboard</h1>
-        <p className="text-sm text-muted-foreground">
-          <code className="font-mono text-xs">
-            GET /reports/org/:org_id?group_by=user
-          </code>{" "}
-          · ranked contributors for one org / window / activity kind.
-        </p>
+    <div
+      data-testid="report-shell"
+      className="flex flex-col gap-4 md:gap-6"
+    >
+      <div className="px-4 lg:px-6">
+        <PageHeading
+          title="Contributor dashboard"
+          description={
+            <>
+              <code className="font-mono text-xs">
+                GET /reports/org/:org_id?group_by=user
+              </code>
+              {" "}· multi-org · multi-user · multi-activity ranked view.
+            </>
+          }
+        />
       </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Filters</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className={FILTER_GRID_CLASS}>
-            <div className="grid gap-1.5">
-              <Label htmlFor={orgSelectId}>Org</Label>
-              <Select
-                value={activeOrgId ?? ""}
-                onValueChange={(v) => setOrgId(v)}
-                disabled={orgsQuery.isPending || orgs.length === 0}
-              >
-                <SelectTrigger id={orgSelectId} data-testid="leaderboard-org-select">
-                  <SelectValue
-                    placeholder={orgsQuery.isPending ? "Loading orgs…" : "Select an org"}
-                  />
-                </SelectTrigger>
-                <SelectContent>
-                  {orgs.map((o) => (
-                    <SelectItem key={o.id} value={o.id}>
-                      {o.name ?? o.login}
-                      {o.name ? (
-                        <span className="text-muted-foreground"> · {o.login}</span>
-                      ) : null}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+      <div className="px-4 lg:px-6">
+        <Card>
+          <CardContent className="pt-6">
+            <LeaderboardFilters
+              orgs={orgs}
+              users={users}
+              selectedOrgIds={selectedOrgIds}
+              selectedUserIds={selectedUserIds}
+              selectedKinds={selectedKinds}
+              onOrgsChange={setSelectedOrgIds}
+              onUsersChange={setSelectedUserIds}
+              onKindsChange={setSelectedKinds}
+              windowState={windowState}
+              onWindowChange={setWindowState}
+              orgsLoading={orgsQuery.isPending}
+              usersLoading={usersQuery.isPending}
+            />
+          </CardContent>
+        </Card>
+      </div>
 
-            <div className="grid gap-1.5">
-              <Label htmlFor={kindSelectId}>Activity type</Label>
-              <Select value={kind} onValueChange={setKind}>
-                <SelectTrigger id={kindSelectId} data-testid="leaderboard-kind-select">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {ACTIVITY_KINDS.map((k) => (
-                    <SelectItem key={k.key} value={k.key}>
-                      {k.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+      <div className="px-4 lg:px-6">
+        <DataAsOfBanner data={dataAsOf} loading={loading && !dataAsOf} />
+      </div>
 
-            <WindowPicker value={windowState} onChange={setWindowState} />
+      {!ready ? (
+        <div className="px-4 lg:px-6">
+          <Card>
+            <CardContent className="py-12 text-center text-sm text-muted-foreground">
+              Pick at least one org to load the dashboard.
+            </CardContent>
+          </Card>
+        </div>
+      ) : error ? (
+        <div className="px-4 lg:px-6">
+          <Card>
+            <CardContent className="py-6 text-sm text-destructive">
+              Failed to load dashboard: {error.message}
+            </CardContent>
+          </Card>
+        </div>
+      ) : (
+        <>
+          <LeaderboardKpis data={data} orgCount={selectedOrgIds.length} />
+
+          <div className="grid gap-4 px-4 @5xl/main:grid-cols-3 lg:px-6">
+            <div className="@5xl/main:col-span-2">
+              <ContributorBarChart rows={data.rows} />
+            </div>
+            <ActivityMixChart mix={data.mix} grandTotal={data.grandTotal} />
           </div>
-        </CardContent>
-      </Card>
 
-      <DataAsOfBanner
-        data={reportQuery.data?.data_as_of ?? null}
-        loading={reportQuery.isPending}
-      />
+          <div className="px-4 lg:px-6">
+            <LeaderboardTrendChart trend={data.trend} />
+          </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>
-            Top contributors · {kindLabel}
-            {activeOrg ? (
-              <span className="text-muted-foreground">
-                {" "}
-                · {activeOrg.name ?? activeOrg.login}
-              </span>
-            ) : null}
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          {!activeOrgId ? (
-            <p className="text-sm text-muted-foreground">
-              Pick an org above to load the leaderboard.
-            </p>
-          ) : reportQuery.isPending ? (
-            <p className="text-sm text-muted-foreground">Loading…</p>
-          ) : reportQuery.isError ? (
-            <p className="text-sm text-destructive">
-              Failed to load leaderboard: {String(reportQuery.error)}
-            </p>
-          ) : rankedRows.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              No {kindLabel.toLowerCase()} recorded for this org in the selected
-              window.
-            </p>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="w-12">#</TableHead>
-                  <TableHead>User</TableHead>
-                  <TableHead className="text-right">{kindLabel}</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {rankedRows.map((r, i) => {
-                  const u = usersById.get(r.key);
-                  const display = u
-                    ? u.name
-                      ? `${u.name} (${u.login})`
-                      : u.login
-                    : r.key;
-                  return (
-                    <TableRow key={r.key}>
-                      <TableCell className="text-muted-foreground">
-                        {i + 1}
-                      </TableCell>
-                      <TableCell>{display}</TableCell>
-                      <TableCell className="text-right font-mono">
-                        {r.count}
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
-          )}
-        </CardContent>
-      </Card>
+          <div className="px-4 lg:px-6">
+            <LeaderboardTable
+              rows={data.rows}
+              grandTotal={data.grandTotal}
+              directory={directory}
+            />
+          </div>
+        </>
+      )}
     </div>
   );
 }

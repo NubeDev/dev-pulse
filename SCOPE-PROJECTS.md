@@ -14,6 +14,11 @@
 > [SCOPE.md](SCOPE.md); this file is updated only when its rationale
 > drifts from what was actually built.
 >
+> **§15 (Workflow UX surface) is the exception:** it post-dates the
+> initial SCOPE.md promotion and is currently the normative source
+> for the workbench shape until it gets promoted. Decisions
+> §13.8–§13.10 lock its load-bearing pieces.
+>
 > SCOPE.md §20 carries the §13.x → §15.x decision mapping.
 >
 > ---
@@ -665,6 +670,19 @@ This surface is successful when:
   feeds a tag? (Side-table is the safer answer; defer.)
 - **Mobile** — is any of this expected to work on a phone? Pins
   and quick-comment yes; create-issue form probably no.
+- **Saved-view sharing model** (§15.6) — reuse the `tags.scope_*`
+  columns verbatim, or a parallel `saved_views` table with its
+  own scope triple? Leaning parallel table (views and tags have
+  different lifecycles) but not locked.
+- **Command palette command registry** — static union vs.
+  per-pane registration. Static is simpler; per-pane scales to
+  context-sensitive commands ("close selected" only when the
+  list pane has a selection). Defer until the second batch of
+  commands lands.
+- **Inline stale-field strip vs. modal reload** (§15.4) — the
+  per-field strip is the §13.10 default, but if users routinely
+  edit many fields at once we may need a single page-level
+  strip too. Validate after first deployment.
 
 ---
 
@@ -815,7 +833,286 @@ open (§12).
 
 ---
 
-## 14. Cross-references to SCOPE.md
+### 13.8 Workflow UI is a three-pane workbench, not a page-per-action
+
+- **Decision:** the workflow surface is a single route hosting a
+  three-pane layout — **Navigator / Issue list / Issue detail**
+  (§15.1). Issue create / edit / comment / close happen in the
+  detail pane; route changes are reserved for switching between
+  workflow / reports / admin top-level surfaces. The current
+  per-action pages (`/workflow/pins`, `/workflow/tags`,
+  `/workflow/issues`) collapse into navigator entries and
+  in-pane drawers.
+- **Why:** the v0 surface optimised for *implementing* the §8
+  write path (one issue, one form, one page) and shipped without
+  a way to *find* an issue. Triage needs a list before it needs a
+  form; the list and the form need to coexist without losing
+  scroll position; cross-org grouping (§7.3) only pays off when
+  the list and the grouping primitive are on screen together.
+  The three-pane shape is the boring default that mail clients,
+  Linear, and the GitHub inbox all converged on for the same
+  reason.
+- **Revisit if:** a target deployment is overwhelmingly
+  mobile-first (§12 open question) — three panes do not survive
+  a phone viewport and the surface would need a stack-of-routes
+  fallback. Desktop-first deployments keep the three panes.
+
+### 13.9 Saved views are the project board; no kanban, no Gantt in v1
+
+- **Decision:** "a project view" in dev-pulse means a **saved
+  query** (filter + group_by + sort), scoped per-user / team /
+  org with the same model as §7.2 tags. The grouped issue-list
+  pane (§15.3) renders it. There is no separate kanban / board /
+  Gantt surface in v1.
+- **Why:** every kanban-shaped feature users ask for here is
+  satisfied by *group_by + sort + saved view*, without taking on
+  drag-between-columns (which implies bulk mutations §4 forbids),
+  WIP-limit semantics, or swimlane state. Saved views compose
+  naturally with the §7.7 tag-as-filter contract — no new
+  storage axis. Gantt stays deferred per §3 secondary and §10.
+- **Revisit if:** a target deployment has an existing kanban
+  workflow that genuinely cannot be expressed as group_by +
+  saved view (e.g. column-as-state-machine with custom
+  transitions). Treat it as a new feature with its own scope
+  doc; do not bolt a board onto the workbench shell.
+
+### 13.10 Bulk operations are dev-pulse-side only (tagging, pinning, view-saving)
+
+- **Decision:** the issue list (§15.3) supports multi-select,
+  but the *only* bulk actions are operations that mutate
+  dev-pulse state — **bulk-tag**, **bulk-pin**, **save current
+  selection as a view's seed filter**. No bulk GitHub mutation
+  (no bulk close, bulk relabel, bulk reassign, bulk comment).
+- **Why:** preserves §4 ("no bulk issue mutations in v1") and
+  the §8.5 "one audit row per user-initiated GitHub write"
+  invariant, while still giving triage workflows the obvious
+  ergonomic win (tag 30 issues into the *Phoenix* project in
+  one action). The §7.5 batch link endpoint is already
+  transactional, so the audit story stays clean.
+- **Revisit if:** §4's no-bulk rule itself is revisited. Bulk
+  GitHub mutations are a scope change, not a UX change — they
+  land in their own decision against §4 first.
+
+---
+
+## 14. Workflow UX surface
+
+Normative for the frontend shape of the workflow surface until
+promoted into [SCOPE.md](SCOPE.md). Section numbering is
+intentionally one ahead of §13 so future promotions can take a
+contiguous §14.x range in SCOPE.md.
+
+### 14.1 Three-pane workbench (the shell)
+
+One route, three resizable panes:
+
+```
+┌──────────────┬──────────────────────────┬───────────────────────┐
+│  NAVIGATOR   │  ISSUE LIST              │  ISSUE DETAIL         │
+│  (§14.2)     │  (§14.3)                 │  (§14.4)              │
+│              │                          │                       │
+│  Pinned      │  filter chips + search   │  title / body         │
+│  My tags     │  ───────────────────     │  meta sidebar         │
+│  Team tags   │  grouped rows            │  timeline + composer  │
+│  Org tags    │  multi-select            │  state controls       │
+│  Repos       │                          │                       │
+│  Smart views │                          │                       │
+│  Saved views │                          │                       │
+└──────────────┴──────────────────────────┴───────────────────────┘
+```
+
+Load-bearing properties:
+
+- **Single route** (`/workflow`). Selecting an issue updates the
+  detail pane without a route change — no scroll loss, no
+  refetch of the navigator or list. Deep links carry the
+  selection as a query parameter (`?issue=…`) so they survive
+  copy-paste.
+- **Panes are independently scrollable.** Navigator and list do
+  not unmount when the detail pane changes selection; the detail
+  pane remounts per-issue (its form-local state is per-issue by
+  design — see §8.3).
+- **Pane widths persist per-user** in `localStorage`. Not a
+  server concern.
+- The current `pins-page` / `tags-page` / `issues-page`
+  collapse into navigator entries and detail-pane drawers; the
+  three top-level routes are deprecated in the same change that
+  ships the shell. Redirects: `/workflow/pins` and
+  `/workflow/tags` → `/workflow` with the navigator focused on
+  the matching section; `/workflow/issues` → `/workflow` with
+  no selection.
+
+### 14.2 Navigator pane
+
+The navigator is a **query builder, not a state machine.** Each
+entry, when clicked, sets the list pane's query. Sections, in
+order:
+
+1. **Pinned** — drag-reorderable; binds to the existing §6.4
+   `PUT /me/pins/order`. A pinned **tag** expands inline (up to
+   the §13.5 render cap) — same expansion semantics as the
+   sidebar quick-list.
+2. **My tags** (`scope=user`), **Team tags**, **Org tags** —
+   from `GET /me/tags` and `GET /tags`, grouped by scope kind.
+   Archived tags hidden by default with a "show archived"
+   toggle.
+3. **Repos** — collapsed by org. Lazy-loaded per org on expand.
+4. **Smart views** — hard-coded, server-resolved queries:
+   - *Assigned to me*
+   - *I opened*
+   - *Mentioned me* (deferred until the mention index lands)
+   - *Stale > 30d* (open, no activity in 30d)
+   - *No assignee, label = bug*
+5. **Saved views** (§14.6) — user / team / org sections, same
+   visibility model as tags.
+
+The navigator never holds query state of its own; it emits a
+query object that the list pane consumes. This keeps the
+back/forward URL semantics honest — the URL is the source of
+truth for the list query.
+
+### 14.3 Issue list pane
+
+- **Virtualised list** of dense rows: `state · #num · title ·
+  repo · assignees · labels · age`. Default sort: `updated desc`.
+- **Filter chips** above the list represent the active query —
+  each chip is removable and editable. The chip set is the
+  human-readable rendering of the URL query parameters; they
+  stay in sync.
+- **Group by** dropdown: `none / repo / milestone / assignee /
+  tag / label`. Grouping by `tag` is the §7.3 polymorphism
+  payoff (cross-org grouping); it requires the same
+  `tags`-filter-present rule §7.7 imposes on reports.
+- **Sort**: updated / created / comments / age.
+- **Multi-select** with checkboxes. Selection drives only the
+  §13.10 bulk actions (tag, pin, save-as-view). No bulk GitHub
+  mutation controls render, ever.
+- **Backing endpoint:** `GET /issues` with the filter/group/sort
+  contract — shape TBD as a follow-up; must accept the §7.7
+  `tags` and `repos` axes verbatim so reports and the issue
+  list share one query language.
+
+### 14.4 Issue detail pane
+
+Replaces the v0 `issues-page` edit form in-pane. Same §8 write
+path, same §8.3 CAS semantics, different presentation:
+
+- **Header**: state badge, inline-editable title, `#num · repo ·
+  v{version}`. Title edit is its own §8.2 submit (`title` only).
+- **Meta sidebar**: assignees / labels / milestone, each a
+  popover picker. Each popover commit is an independent §8.2
+  partial update (so a failed labels edit does not block an
+  assignee edit).
+- **Timeline**: comments interleaved with state changes drawn
+  from the §8.5 audit log (locally-recorded mutations are
+  immediately visible without a fetcher tick).
+- **Composer** docked at the bottom: `Comment` / `Close &
+  Comment` / `Reopen`.
+- **§8.3 stale-version UX is per-field, not per-form.** When
+  the CAS misses, the response carries `current_version` and
+  the new field values; the pane shows an inline yellow strip
+  *above the affected field* with `[reload]` / `[overwrite]`
+  actions. A page-level reload modal is reserved for the case
+  where every editable field has drifted (rare; revisit per
+  §12).
+- **§8.4 writes-disabled state** scopes to the detail pane —
+  banner at the top of the pane, controls greyed with hover
+  reason. The navigator and list keep working.
+
+### 14.5 Command palette (`⌘K`)
+
+One registry, two command kinds:
+
+- **Navigation**: jump to pin, open issue by `#num`, switch to
+  reports / admin, open saved view.
+- **Actions**: pin / unpin current, tag selection, create issue
+  in current repo, save current query as view.
+
+The palette is the cheapest single addition with the highest
+perceived-quality lift; it is also how power-user keyboard
+shortcuts are discovered (every shortcut shows its binding in
+the palette row). Command registration is static for v1; per-
+pane contextual commands are a §12 open question.
+
+### 14.6 Saved views
+
+A saved view is a `{filter, group_by, sort}` triple with a
+name, colour, and scope (`user` / `team` / `org`) — same
+visibility / mutation rules as §7.4 tags. Whether it shares the
+`tags` table or gets its own is a §12 open question; the
+surface contract is independent of storage.
+
+- `GET    /views`            — list visible views.
+- `POST   /views`            — `{name, scope, query}`.
+- `PATCH  /views/{id}`       — rename / recolour / re-query.
+- `DELETE /views/{id}`       — owner / scope-member only.
+- Audit verbs: `view.create`, `view.update`, `view.delete`.
+
+Saved views are **not** a report dimension; they are personal
+or team UI state, like pins (§6.2). Reports stay parameterised
+by the §15.6 envelope.
+
+### 14.7 Keyboard model
+
+Linear-style bindings, because users already know them:
+
+- `j` / `k` — move list selection.
+- `enter` — open in detail pane.
+- `e` — focus title edit.
+- `c` — focus composer.
+- `x` — close / reopen current.
+- `t` — open tag drawer for selection.
+- `/` — focus search.
+- `g i` / `g r` / `g a` — go to issues / reports / admin.
+- `⌘K` — command palette.
+
+Bindings are listed in the §14.5 palette next to each command
+so they are discoverable, not memorised.
+
+### 14.8 Deferred UX (explicit)
+
+These are non-goals for the workbench, mirroring §4 in UX terms:
+
+- **Kanban / board view** — see §13.9. Saved views + group_by
+  satisfy the underlying ask without taking on drag-between-
+  columns or WIP-limit semantics.
+- **Gantt** — already deferred per §3 secondary and §10.
+- **Drag-and-drop between groups** in the list — implies bulk
+  GitHub mutations (§4, §13.10). Use popover pickers on the
+  detail pane, one issue at a time, optimistic CAS.
+- **Inline row editing** in the list pane — same reason; the
+  detail pane is the only editor.
+- **Real-time push** of remote changes into the detail pane —
+  the §8.3 CAS-on-submit path is the correctness boundary; a
+  push channel would be a UX nicety, not a correctness need.
+
+### 14.9 Minimum first slice (one PR)
+
+Smallest change that obsoletes the v0 issues page:
+
+1. New `WorkbenchPage` at `/workflow` with a 3-pane shell
+   (`react-resizable-panels`), pane widths persisted to
+   `localStorage`.
+2. Pane 2 backed by a minimal `GET /issues` taking
+   `repos`, `tags`, `state`, `assignee` — group_by deferred to
+   slice 2.
+3. Move the v0 `IssueEditForm` into Pane 3 verbatim — same §8.3
+   logic, relocated. Per-field stale strip lands in slice 2.
+4. Pane 1 reuses the existing `pin-sidebar` for the "Pinned"
+   section; the Smart views section ships with the five hard-
+   coded queries from §14.2.
+5. `⌘K` palette with three commands: *go to pin*, *open issue
+   by number*, *create issue*.
+6. Redirect the three deprecated routes (§14.1) to the new
+   workbench.
+
+Everything else — group_by, multi-select tagging, saved views,
+full keyboard map, per-field stale strip, palette command
+expansion — lands incrementally on the same shell.
+
+---
+
+## 15. Cross-references to SCOPE.md
 
 For convenience:
 
@@ -839,4 +1136,5 @@ For convenience:
   authority delegates through the App, not the user token.
 - §15.11 — access gate; the single authorisation check for
   visibility in this surface too.
-- §15.13 — audit vocabulary; §6.5, §7.6, §8.5 extend it.
+- §15.13 — audit vocabulary; §6.5, §7.6, §8.5, and §14.6
+  extend it (the §14.6 `view.*` verbs are additive).

@@ -10,7 +10,13 @@
 import type {
   AppInstallBannerResponse,
   IssueDto,
+  IssueListItem,
+  IssueListResponse,
+  ListIssuesQuery,
+  ListReposQuery,
   PinDto,
+  RepoListResponse,
+  RepoSummaryDto,
   TagDto,
   TagDetailResponse,
 } from "../api/client.js";
@@ -128,3 +134,86 @@ export const mockAppInstallBanner: AppInstallBannerResponse = {
     },
   ],
 };
+
+// ---------------------------------------------------------------------------
+// Workbench (§14.9) — issue list fixtures.
+//
+// One row only: the existing `mockIssue`, projected into the list shape.
+// Keeps the §8.3 stale-version UX exercisable without fabricating
+// product data the smoke harness does not need.
+// ---------------------------------------------------------------------------
+
+export const mockIssueList: IssueListItem[] = [
+  {
+    id: mockIssue.id,
+    repo_id: mockIssue.repo_id,
+    org_id: mockIssue.org_id,
+    repo_slug: null,
+    number: mockIssue.number,
+    title: mockIssue.title,
+    body: mockIssue.body,
+    milestone: mockIssue.milestone,
+    version: mockIssue.version,
+    state: mockIssue.state,
+    labels: mockIssue.labels,
+    assignees: mockIssue.assignees,
+    updated_at: mockIssue.updated_at,
+  },
+];
+
+/** Mock-side filter mirroring the real `GET /issues` axes. Returns
+ *  the same paginated envelope shape the server emits. */
+export function mockListIssues(q: ListIssuesQuery): IssueListResponse {
+  const state = q.state ?? "open";
+  const filtered = mockIssueList.filter((row) => {
+    if (state !== "all" && row.state !== state) return false;
+    if (q.repo_id && row.repo_id !== q.repo_id) return false;
+    if (q.org_id && row.org_id !== q.org_id) return false;
+    if (q.assignee && !row.assignees.includes(q.assignee)) return false;
+    if (q.q && !row.title.toLowerCase().includes(q.q.toLowerCase())) return false;
+    return true;
+  });
+  const offset = Math.max(0, q.offset ?? 0);
+  const limit = Math.min(Math.max(1, q.limit ?? 50), 200);
+  return {
+    rows: filtered.slice(offset, offset + limit),
+    total: filtered.length,
+    limit,
+    offset,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Repos mock list (workflow drill-down master).
+// ---------------------------------------------------------------------------
+
+export const mockRepoList: RepoSummaryDto[] = [
+  {
+    id: MOCK_REPO_API,
+    org_id: MOCK_ORG_NUBE,
+    org_login: "nube",
+    name: "api",
+    slug: "nube/api",
+    open_issue_count: 1,
+    last_activity_at: mockIssue.updated_at,
+  },
+];
+
+export function mockListRepos(q: ListReposQuery): RepoListResponse {
+  const filtered = mockRepoList.filter((r) => {
+    if (q.org_id && r.org_id !== q.org_id) return false;
+    if (q.q) {
+      const needle = q.q.toLowerCase();
+      if (!r.slug.toLowerCase().includes(needle)) return false;
+    }
+    return true;
+  });
+  const offset = Math.max(0, q.offset ?? 0);
+  const limit = Math.min(Math.max(1, q.limit ?? 50), 200);
+  return {
+    rows: filtered.slice(offset, offset + limit),
+    total: filtered.length,
+    limit,
+    offset,
+  };
+}

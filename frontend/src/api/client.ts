@@ -452,6 +452,82 @@ export const CreateCommentRequestSchema = z.object({
 });
 export type CreateCommentRequest = z.infer<typeof CreateCommentRequestSchema>;
 
+// --- Issues list (SCOPE-PROJECTS §14.3 / §14.9) ----------------------------
+//
+// Dense row shape rendered by the workbench list pane. Backed by a
+// minimal `GET /issues` taking `repos`, `tags`, `state`, `assignee`
+// per §14.9 (group_by / sort axes are deferred to a follow-up slice).
+
+export const IssueListItemSchema = z.object({
+  id: uuid,
+  repo_id: uuid,
+  org_id: uuid,
+  /** Short `owner/repo` label rendered in the row. The server can
+   *  cheaply join through `repos`; we keep it nullable so the row
+   *  still renders if the join is unavailable. */
+  repo_slug: z.string().nullable().optional(),
+  number: z.number().int(),
+  title: z.string(),
+  body: z.string().nullable().optional(),
+  milestone: z.string().nullable().optional(),
+  version: z.number().int(),
+  state: z.enum(["open", "closed"]),
+  labels: z.array(z.string()),
+  assignees: z.array(z.string()),
+  updated_at: isoDateTime,
+});
+export type IssueListItem = z.infer<typeof IssueListItemSchema>;
+
+/** Paginated envelope returned by `GET /issues` and `GET /repos`. */
+export const IssueListResponseSchema = z.object({
+  rows: z.array(IssueListItemSchema),
+  total: z.number().int(),
+  limit: z.number().int(),
+  offset: z.number().int(),
+});
+export type IssueListResponse = z.infer<typeof IssueListResponseSchema>;
+
+/** Repo summary row returned by `GET /repos`. */
+export const RepoSummaryDtoSchema = z.object({
+  id: uuid,
+  org_id: uuid,
+  org_login: z.string(),
+  name: z.string(),
+  slug: z.string(),
+  open_issue_count: z.number().int(),
+  last_activity_at: isoDateTime.nullable().optional(),
+});
+export type RepoSummaryDto = z.infer<typeof RepoSummaryDtoSchema>;
+
+export const RepoListResponseSchema = z.object({
+  rows: z.array(RepoSummaryDtoSchema),
+  total: z.number().int(),
+  limit: z.number().int(),
+  offset: z.number().int(),
+});
+export type RepoListResponse = z.infer<typeof RepoListResponseSchema>;
+
+/** Query params for `GET /issues`. All optional; the server clamps
+ *  `limit` into `1..=200` (default 50) and treats negative `offset`
+ *  as zero. `state` defaults to `"open"` server-side. */
+export interface ListIssuesQuery {
+  repo_id?: string;
+  org_id?: string;
+  state?: "open" | "closed" | "all";
+  assignee?: string;
+  q?: string;
+  limit?: number;
+  offset?: number;
+}
+
+/** Query params for `GET /repos`. */
+export interface ListReposQuery {
+  org_id?: string;
+  q?: string;
+  limit?: number;
+  offset?: number;
+}
+
 // ---------------------------------------------------------------------------
 // API wrapper
 // ---------------------------------------------------------------------------
@@ -797,12 +873,44 @@ export class DevPulseApi {
   // surfaces as `DpRestError` with `body.current_version` so the UI
   // can reload and re-prompt (§8.3).
 
-  /** `GET /repos/{repo_id}/issues/{number}`. */
+  /** `GET /repos/{repo_id}/issues/{number}` — deep-link form. */
   async getIssue(repoId: string, number: number): Promise<IssueDto> {
     return this.getJson(
       `/repos/${encodeURIComponent(repoId)}/issues/${number}`,
       IssueDtoSchema,
     );
+  }
+
+  /** `GET /issues/{id}` — id-form, used by the drill-down detail drawer. */
+  async getIssueById(id: string): Promise<IssueDto> {
+    return this.getJson(`/issues/${encodeURIComponent(id)}`, IssueDtoSchema);
+  }
+
+  /** `GET /issues` — paginated drill-down list. The server returns a
+   *  `{rows, total, limit, offset}` envelope so the UI can render
+   *  `Showing X–Y of Z` without a second round-trip. */
+  async listIssues(q: ListIssuesQuery = {}): Promise<IssueListResponse> {
+    const params = new URLSearchParams();
+    if (q.repo_id) params.set("repo_id", q.repo_id);
+    if (q.org_id) params.set("org_id", q.org_id);
+    if (q.state) params.set("state", q.state);
+    if (q.assignee) params.set("assignee", q.assignee);
+    if (q.q) params.set("q", q.q);
+    if (q.limit !== undefined) params.set("limit", String(q.limit));
+    if (q.offset !== undefined) params.set("offset", String(q.offset));
+    const qs = params.toString();
+    return this.getJson(`/issues${qs ? `?${qs}` : ""}`, IssueListResponseSchema);
+  }
+
+  /** `GET /repos` — paginated repo list with open-issue counts. */
+  async listRepos(q: ListReposQuery = {}): Promise<RepoListResponse> {
+    const params = new URLSearchParams();
+    if (q.org_id) params.set("org_id", q.org_id);
+    if (q.q) params.set("q", q.q);
+    if (q.limit !== undefined) params.set("limit", String(q.limit));
+    if (q.offset !== undefined) params.set("offset", String(q.offset));
+    const qs = params.toString();
+    return this.getJson(`/repos${qs ? `?${qs}` : ""}`, RepoListResponseSchema);
   }
 
   /** `POST /issues` — create. May throw `DpRestError` with
