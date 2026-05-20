@@ -17,6 +17,7 @@ pub mod envelope;
 pub mod freshness;
 pub mod leaderboard;
 pub mod lenses;
+pub mod my_standing;
 
 pub use aggregate::{
     compute_percentiles, count_by_bucket, count_by_org, count_by_repo, count_by_team,
@@ -43,6 +44,14 @@ pub use leaderboard::{
     LEADERBOARD_BIND_ORDER_SUBJECT_IDS, LEADERBOARD_PAGE_SIZE_DEFAULT, LEADERBOARD_PAGE_SIZE_MAX,
     LEADERBOARD_SUBJECT_IDS_CAP, LEADERBOARD_TIE_BREAK_ORDER_BY_CLAUSE,
     USER_SINGLE_ORG_BIND_ORDER,
+};
+pub use my_standing::{
+    anonymise_neighbour_row, build_my_standing_sql, compute_visible_headline,
+    effective_neighbor_radius, resolve_my_standing_envelope, validate_my_standing_permission,
+    MyStandingEnvelope, MyStandingError, MyStandingResponse, ResolvedMyStandingEnvelope,
+    MY_STANDING_BIND_ORDER, MY_STANDING_NEIGHBOUR_ANONYMISED_LABEL,
+    MY_STANDING_NEIGHBOUR_ANONYMISED_SUBJECT_ID, MY_STANDING_NEIGHBOR_RADIUS_DEFAULT,
+    MY_STANDING_NEIGHBOR_RADIUS_MAX,
 };
 
 // Re-export the resolved Window type from dp-domain so callers only
