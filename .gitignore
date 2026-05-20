@@ -8,3 +8,9 @@ Cargo.lock.bak
 # build time, not from version control.
 frontend/node_modules
 node_modules
+
+# Frontend build + Playwright e2e artefacts (stage 11).
+frontend/dist
+frontend/test-results
+frontend/playwright-report
+frontend/.playwright

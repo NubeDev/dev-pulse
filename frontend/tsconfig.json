@@ -16,5 +16,6 @@
       "@/*": ["../../starter/packages/starter-ui-kit/src/*"]
     }
   },
-  "include": ["src", "vite.config.ts"]
+  "include": ["src", "vite.config.ts"],
+  "exclude": ["tests", "dist", "node_modules", "playwright.config.ts"]
 }
