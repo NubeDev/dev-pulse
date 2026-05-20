@@ -199,34 +199,21 @@ export function TeamReportPage(): JSX.Element {
   return (
     <Card>
       <CardHeader>
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "flex-start",
-            gap: "1rem",
-            flexWrap: "wrap",
-          }}
-        >
-          <div>
-            <CardTitle>Team activity report</CardTitle>
-            <CardDescription>
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="grid gap-1">
+            <CardTitle className="text-2xl font-semibold tracking-tight">
+              Team activity report
+            </CardTitle>
+            <CardDescription className="text-muted-foreground">
               <code>GET /reports/team/:team_id</code> · SCOPE §11.5 headline + table + trend.
             </CardDescription>
           </div>
           <DataAsOfBanner data={dataAsOf} loading={anyLoading && !dataAsOf} />
         </div>
       </CardHeader>
-      <CardContent style={{ display: "grid", gap: "1rem" }}>
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(14rem, 1fr))",
-            gap: "0.75rem",
-            maxWidth: "40rem",
-          }}
-        >
-          <div style={{ display: "grid", gap: "0.375rem" }}>
+      <CardContent className="grid gap-4">
+        <div className="grid max-w-2xl grid-cols-[repeat(auto-fit,minmax(14rem,1fr))] gap-3">
+          <div className="grid gap-1.5">
             <Label htmlFor={orgDropdownId}>Org</Label>
             <Select
               value={activeOrgId ?? ""}
@@ -245,7 +232,7 @@ export function TeamReportPage(): JSX.Element {
               </SelectContent>
             </Select>
           </div>
-          <div style={{ display: "grid", gap: "0.375rem" }}>
+          <div className="grid gap-1.5">
             <Label htmlFor={teamDropdownId}>Team</Label>
             <Select
               value={activeTeamId ?? ""}
@@ -259,7 +246,7 @@ export function TeamReportPage(): JSX.Element {
                 {teams.map((t) => (
                   <SelectItem key={t.id} value={t.id}>
                     {t.name}
-                    <span style={{ color: "var(--muted-foreground)" }}> · {t.slug}</span>
+                    <span className="text-muted-foreground"> · {t.slug}</span>
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -271,18 +258,14 @@ export function TeamReportPage(): JSX.Element {
 
         <LensTabs value={lens} onChange={setLens}>
           {!activeTeamId ? (
-            <p style={{ color: "var(--muted-foreground)" }}>
+            <p className="text-muted-foreground">
               Pick an org and team above to load the report.
             </p>
           ) : (
             <>
               <p
                 data-testid="headline"
-                style={{
-                  fontSize: "1rem",
-                  margin: "0 0 1rem",
-                  color: "var(--foreground)",
-                }}
+                className="mb-2 text-base text-foreground"
               >
                 {anyLoading && !dataAsOf ? "Loading report…" : headline}
               </p>

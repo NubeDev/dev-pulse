@@ -10,12 +10,25 @@
  * The form lives behind `useAuth().login`, so the AuthProvider owns
  * the state transition (status -> "authenticated") and the
  * `ProtectedRoute` gate flips automatically once login resolves.
+ *
+ * Stage 2 (phase-7-frontend-polish): rebuilt on shadcn `Card` +
+ * Tailwind utilities. No inline `style={{}}` remain.
  */
 
 import { useState, type FormEvent } from "react";
 import { useAuth } from "@nube/starter-ui-core/auth";
+import {
+  Alert,
+  AlertDescription,
+} from "@nube/starter-ui-kit/components/alert";
 import { Button } from "@nube/starter-ui-kit/components/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@nube/starter-ui-kit/components/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@nube/starter-ui-kit/components/card";
 import { Input } from "@nube/starter-ui-kit/components/input";
 import { Label } from "@nube/starter-ui-kit/components/label";
 import { Separator } from "@nube/starter-ui-kit/components/separator";
@@ -47,23 +60,17 @@ export function LoginPage(): JSX.Element {
   }
 
   return (
-    <main
-      style={{
-        minHeight: "100dvh",
-        display: "grid",
-        placeItems: "center",
-        padding: "2rem",
-        background: "var(--background)",
-      }}
-    >
-      <Card style={{ width: "100%", maxWidth: "24rem" }}>
+    <main className="grid min-h-dvh place-items-center bg-background p-8">
+      <Card className="w-full max-w-sm">
         <CardHeader>
           <CardTitle>dev-pulse</CardTitle>
-          <CardDescription>Sign in with your operator credentials.</CardDescription>
+          <CardDescription>
+            Sign in with your operator credentials.
+          </CardDescription>
         </CardHeader>
         <CardContent>
-          <form onSubmit={onSubmit} style={{ display: "grid", gap: "1rem" }}>
-            <div style={{ display: "grid", gap: "0.5rem" }}>
+          <form onSubmit={onSubmit} className="grid gap-4">
+            <div className="grid gap-2">
               <Label htmlFor="login-email">Email</Label>
               <Input
                 id="login-email"
@@ -75,7 +82,7 @@ export function LoginPage(): JSX.Element {
                 disabled={submitting}
               />
             </div>
-            <div style={{ display: "grid", gap: "0.5rem" }}>
+            <div className="grid gap-2">
               <Label htmlFor="login-password">Password</Label>
               <Input
                 id="login-password"
@@ -88,9 +95,9 @@ export function LoginPage(): JSX.Element {
               />
             </div>
             {error && (
-              <p role="alert" style={{ color: "var(--destructive)", fontSize: "0.875rem" }}>
-                {error}
-              </p>
+              <Alert variant="destructive" role="alert">
+                <AlertDescription>{error}</AlertDescription>
+              </Alert>
             )}
             <Separator />
             <Button type="submit" disabled={submitting || !email || !password}>

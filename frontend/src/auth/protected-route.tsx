@@ -32,14 +32,7 @@ export function ProtectedRoute({ children }: ProtectedRouteProps): JSX.Element {
 
   if (auth.status === "loading") {
     return (
-      <main
-        style={{
-          minHeight: "100dvh",
-          display: "grid",
-          placeItems: "center",
-          color: "var(--muted-foreground)",
-        }}
-      >
+      <main className="grid min-h-[100dvh] place-items-center text-muted-foreground">
         <p>Checking session…</p>
       </main>
     );

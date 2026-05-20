@@ -5,10 +5,16 @@
  * The page upstream fires one `getReportUser` query per activity
  * type with `group_by=day`; this component receives the resulting
  * `CountRow[]` per type and renders the rolled-up table.
+ *
+ * The kit doesn't ship a `Table` primitive, so the markup stays
+ * semantic `<table>` / `<thead>` / `<tbody>` with Tailwind utility
+ * classes applied via shared per-cell constants. shadcn `Button`
+ * (ghost variant) drives the column-header sort affordances.
  */
 
 import { useState } from "react";
 import { Button } from "@nube/starter-ui-kit/components/button";
+import { cn } from "@nube/starter-ui-kit/lib/utils";
 import { Skeleton } from "../components/skeleton.jsx";
 
 import type { CountRow } from "../api/client.js";
@@ -34,6 +40,15 @@ export interface ActivityTableProps {
 
 type SortKey = "label" | "total";
 type SortDir = "asc" | "desc";
+
+/** Shared column-header / body-cell class constants — keep the table
+ *  consistent without dragging in a wrapper component for every
+ *  `<th>` / `<td>`. */
+const HEADER_CLASS =
+  "border-b border-border px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground";
+const CELL_CLASS = "border-b border-border px-3 py-2 align-middle text-sm";
+const NUM_CLASS = cn(CELL_CLASS, "text-right tabular-nums");
+const HEADER_RIGHT_CLASS = cn(HEADER_CLASS, "text-right");
 
 export function buildActivityRows(
   perKind: ReadonlyMap<string, { rows: ReadonlyArray<CountRow>; loading: boolean }>,
@@ -79,97 +94,53 @@ export function ActivityTable({ rows }: ActivityTableProps): JSX.Element {
   const sortIndicator = (key: SortKey): string =>
     sortKey === key ? (sortDir === "asc" ? "▲" : "▼") : "";
 
-  const headerStyle: React.CSSProperties = {
-    textAlign: "left",
-    fontWeight: 600,
-    fontSize: "0.75rem",
-    color: "var(--muted-foreground)",
-    textTransform: "uppercase",
-    letterSpacing: "0.04em",
-    padding: "0.5rem 0.75rem",
-    borderBottom: "1px solid var(--border)",
-  };
-  const cellStyle: React.CSSProperties = {
-    padding: "0.5rem 0.75rem",
-    borderBottom: "1px solid var(--border)",
-    fontSize: "0.875rem",
-    verticalAlign: "middle",
-  };
-  const numStyle: React.CSSProperties = {
-    ...cellStyle,
-    textAlign: "right",
-    fontVariantNumeric: "tabular-nums",
-  };
-
   return (
-    <div
-      style={{
-        border: "1px solid var(--border)",
-        borderRadius: "var(--radius-md, 0.5rem)",
-        background: "var(--card)",
-        overflow: "hidden",
-      }}
-    >
-      <table
-        style={{
-          width: "100%",
-          borderCollapse: "collapse",
-        }}
-        data-testid="activity-table"
-      >
-        <thead style={{ background: "var(--muted)" }}>
+    <div className="overflow-hidden rounded-md border border-border bg-card">
+      <table className="w-full border-collapse" data-testid="activity-table">
+        <thead className="bg-muted">
           <tr>
-            <th style={headerStyle}>
+            <th className={HEADER_CLASS}>
               <Button
                 variant="ghost"
                 size="sm"
                 onClick={() => toggleSort("label")}
-                style={{ padding: 0, height: "auto", color: "inherit", fontSize: "inherit", textTransform: "inherit", letterSpacing: "inherit", fontWeight: "inherit" }}
+                className="h-auto p-0 text-inherit font-inherit uppercase tracking-wider"
               >
                 Activity {sortIndicator("label")}
               </Button>
             </th>
-            <th style={{ ...headerStyle, textAlign: "right" }}>
+            <th className={HEADER_RIGHT_CLASS}>
               <Button
                 variant="ghost"
                 size="sm"
                 onClick={() => toggleSort("total")}
-                style={{ padding: 0, height: "auto", color: "inherit", fontSize: "inherit", textTransform: "inherit", letterSpacing: "inherit", fontWeight: "inherit" }}
+                className="h-auto p-0 text-inherit font-inherit uppercase tracking-wider"
               >
                 Total {sortIndicator("total")}
               </Button>
             </th>
-            <th style={{ ...headerStyle, textAlign: "right" }}>Trend</th>
+            <th className={HEADER_RIGHT_CLASS}>Trend</th>
           </tr>
         </thead>
         <tbody>
           {sorted.map((row) => (
             <tr key={row.kind}>
-              <td style={cellStyle}>{row.label}</td>
-              <td style={numStyle}>
+              <td className={CELL_CLASS}>{row.label}</td>
+              <td className={NUM_CLASS}>
                 {row.loading ? (
                   <Skeleton
                     data-testid="activity-skel-total"
-                    style={{
-                      height: "0.875rem",
-                      width: "2.5rem",
-                      borderRadius: "0.25rem",
-                      marginLeft: "auto",
-                    }}
+                    className="ml-auto h-3.5 w-10 rounded-sm"
                   />
                 ) : (
                   row.total
                 )}
               </td>
-              <td style={{ ...numStyle, width: "10rem" }}>
+              <td className={cn(NUM_CLASS, "w-40")}>
                 {row.loading ? (
                   <Skeleton
                     data-testid="activity-skel-trend"
-                    style={{
-                      height: "1.25rem",
-                      width: "100%",
-                      borderRadius: "0.25rem",
-                    }}
+                    className="h-5 w-full rounded-sm"
                   />
                 ) : (
                   <Sparkline
@@ -184,13 +155,7 @@ export function ActivityTable({ rows }: ActivityTableProps): JSX.Element {
             <tr data-testid="activity-table-empty">
               <td
                 colSpan={3}
-                style={{
-                  ...cellStyle,
-                  textAlign: "center",
-                  color: "var(--muted-foreground)",
-                  padding: "1.5rem 0.75rem",
-                  borderBottom: "none",
-                }}
+                className={cn(CELL_CLASS, "border-b-0 py-6 text-center text-muted-foreground")}
               >
                 No activity recorded in the selected window.
               </td>

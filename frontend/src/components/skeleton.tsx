@@ -7,24 +7,26 @@
  * frontend (React 18). To keep dev-pulse's typecheck clean
  * without forking the upstream package we ship a thin local
  * Skeleton that mirrors the same shape (a pulsing rounded
- * `<div>`) and reads the same design tokens (`var(--muted)`).
+ * `<div>`) and reads the same design tokens (`bg-muted`).
  *
- * No animation class is used — instead we inline a keyframe via
- * the `globals.css` `@keyframes dp-pulse` so this primitive has
- * no Tailwind dependency beyond the design tokens.
+ * Implementation matches shadcn's: a `bg-muted` rounded div with
+ * Tailwind's built-in `animate-pulse` keyframe. Callers pass
+ * `className` to size each shimmer (`h-3.5 w-10` for a numeric
+ * cell, `h-5 w-full` for a sparkline strip, etc.) so loading
+ * placeholders match the real content shape, not just a square.
  */
 
-import type { CSSProperties, HTMLAttributes } from "react";
+import type { HTMLAttributes } from "react";
+import { cn } from "@nube/starter-ui-kit/lib/utils";
 
 export interface SkeletonProps extends HTMLAttributes<HTMLDivElement> {}
 
-export function Skeleton({ style, ...props }: SkeletonProps): JSX.Element {
-  const merged: CSSProperties = {
-    display: "inline-block",
-    background: "var(--muted)",
-    borderRadius: "0.5rem",
-    animation: "dp-pulse 1.6s ease-in-out infinite",
-    ...style,
-  };
-  return <div data-slot="skeleton" style={merged} {...props} />;
+export function Skeleton({ className, ...props }: SkeletonProps): JSX.Element {
+  return (
+    <div
+      data-slot="skeleton"
+      className={cn("animate-pulse rounded-md bg-muted", className)}
+      {...props}
+    />
+  );
 }

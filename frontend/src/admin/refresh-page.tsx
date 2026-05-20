@@ -12,10 +12,15 @@
  * button so the operator gets immediate confirmation; if the
  * reconciler short-circuited (already running, debounced) the
  * response is `{ ran: false }` and we say so.
+ *
+ * Surfaces use shadcn `Alert` — the error path is `variant="destructive"`,
+ * the result panel is the default variant. The `data-testid` lands on
+ * the Alert root so the smoke tests still see `refresh-result`.
  */
 
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Alert, AlertDescription, AlertTitle } from "@nube/starter-ui-kit/components/alert";
 import { Badge } from "@nube/starter-ui-kit/components/badge";
 import { Button } from "@nube/starter-ui-kit/components/button";
 import {
@@ -25,6 +30,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@nube/starter-ui-kit/components/card";
+import { cn } from "@nube/starter-ui-kit/lib/utils";
 import { Label } from "@nube/starter-ui-kit/components/label";
 import {
   Select,
@@ -95,8 +101,8 @@ export function RefreshPage(): JSX.Element {
           a full sweep.
         </CardDescription>
       </CardHeader>
-      <CardContent style={{ display: "grid", gap: "1rem" }}>
-        <div style={{ display: "grid", gap: "0.25rem", maxWidth: "24rem" }}>
+      <CardContent className="grid gap-4">
+        <div className="grid max-w-md gap-1">
           <Label htmlFor="refresh-org">Org scope</Label>
           <Select value={orgId} onValueChange={setOrgId}>
             <SelectTrigger id="refresh-org" data-testid="refresh-org">
@@ -113,7 +119,7 @@ export function RefreshPage(): JSX.Element {
           </Select>
         </div>
 
-        <div style={{ display: "flex", gap: "0.75rem", alignItems: "center", flexWrap: "wrap" }}>
+        <div className="flex flex-wrap items-center gap-3">
           <Button
             data-testid="refresh-trigger"
             disabled={refresh.isPending}
@@ -121,7 +127,7 @@ export function RefreshPage(): JSX.Element {
           >
             {refresh.isPending ? "Refreshing…" : "Trigger refresh"}
           </Button>
-          <span style={{ fontSize: "0.875rem", color: "var(--muted-foreground)" }}>
+          <span className="text-sm text-muted-foreground">
             Scope:{" "}
             <code data-testid="refresh-scope">
               {orgId === ALL_ORGS ? "all orgs" : selectedOrg?.login ?? orgId.slice(0, 8)}
@@ -130,72 +136,58 @@ export function RefreshPage(): JSX.Element {
         </div>
 
         {error ? (
-          <p
-            data-testid="refresh-error"
-            role="alert"
-            style={{ color: "oklch(0.5 0.2 25)" }}
-          >
-            Refresh failed: {error}
-          </p>
+          <Alert variant="destructive" data-testid="refresh-error">
+            <AlertTitle>Refresh failed</AlertTitle>
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
         ) : null}
 
         {lastResult ? (
-          <div
+          <Alert
             data-testid="refresh-result"
             data-ran={lastResult.ran}
-            role="status"
             aria-live="polite"
-            style={{
-              display: "grid",
-              gap: "0.5rem",
-              padding: "0.875rem 1rem",
-              borderRadius: "var(--radius-md, 0.5rem)",
-              border: "1px solid var(--border)",
-              background: "var(--muted)",
-              fontSize: "0.9rem",
-            }}
           >
             {lastResult.ran ? (
               <>
-                <strong>Refresh complete.</strong>
-                <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
-                  <Badge variant="outline" data-testid="refresh-items">
-                    {lastResult.items} items
-                  </Badge>
-                  <Badge
-                    variant="outline"
-                    data-testid="refresh-errors"
-                    style={{
-                      color: lastResult.errors > 0 ? "oklch(0.5 0.2 25)" : undefined,
-                      borderColor:
-                        lastResult.errors > 0 ? "oklch(0.5 0.2 25)" : undefined,
-                    }}
-                  >
-                    {lastResult.errors} errors
-                  </Badge>
-                  {lastResult.partial ? (
+                <AlertTitle>Refresh complete.</AlertTitle>
+                <AlertDescription>
+                  <div className="flex flex-wrap gap-2 pt-1">
+                    <Badge variant="outline" data-testid="refresh-items">
+                      {lastResult.items} items
+                    </Badge>
                     <Badge
                       variant="outline"
-                      data-testid="refresh-partial"
-                      style={{
-                        color: "oklch(0.62 0.16 80)",
-                        borderColor: "oklch(0.62 0.16 80)",
-                      }}
+                      data-testid="refresh-errors"
+                      className={cn(
+                        "border",
+                        lastResult.errors > 0 &&
+                          "border-red-500 text-red-600 dark:text-red-400",
+                      )}
                     >
-                      Partial
+                      {lastResult.errors} errors
                     </Badge>
-                  ) : null}
-                </div>
+                    {lastResult.partial ? (
+                      <Badge
+                        variant="outline"
+                        data-testid="refresh-partial"
+                        className="border-amber-500 text-amber-600 dark:text-amber-400"
+                      >
+                        Partial
+                      </Badge>
+                    ) : null}
+                  </div>
+                </AlertDescription>
               </>
             ) : (
-              <span>
-                <strong>No-op.</strong>{" "}
-                <span style={{ color: "var(--muted-foreground)" }}>
+              <>
+                <AlertTitle>No-op.</AlertTitle>
+                <AlertDescription>
                   The reconciler was already running or recently completed; nothing to do.
-                </span>
-              </span>
+                </AlertDescription>
+              </>
             )}
-          </div>
+          </Alert>
         ) : null}
       </CardContent>
     </Card>

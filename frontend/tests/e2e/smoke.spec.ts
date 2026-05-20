@@ -113,6 +113,44 @@ test.describe("dev-pulse smoke", () => {
     await expect(page.locator('[data-testid="freshness-card"][data-band="stale"]')).toHaveCount(1);
   });
 
+  // Stage 7 visual-regression smoke. Every report page must render
+  // through the shadcn primitives that the polish refactor introduced
+  // — at least one `<Card>` (data-slot="card") and at least one
+  // shadcn `<Tabs>` (data-slot="tabs-list"). If a future regression
+  // strips a CardHeader or hand-rolls the lens toggle again, this
+  // test trips immediately.
+  //
+  // Freshness is a single-view status dashboard (no lens toggle), so
+  // it's checked for Card only — the Tabs requirement applies to the
+  // four lens-bearing report pages (user, team, org, home-org-split).
+  test("every report page renders with shadcn Card + Tabs primitives", async ({ page }) => {
+    await signIn(page);
+
+    const reportsWithTabs = [
+      { href: "#/reports/user", label: "user" },
+      { href: "#/reports/team", label: "team" },
+      { href: "#/reports/org", label: "org" },
+      { href: "#/reports/home-org-split", label: "home-org-split" },
+    ] as const;
+
+    for (const r of reportsWithTabs) {
+      await page.locator(`a[href="${r.href}"]`).first().click();
+      await expect(page.getByTestId("reports-subnav")).toBeVisible();
+      const cards = page.locator('[data-slot="card"]');
+      const tabsLists = page.locator('[data-slot="tabs-list"]');
+      expect(await cards.count(), `${r.label}: <Card> count`).toBeGreaterThanOrEqual(1);
+      expect(await tabsLists.count(), `${r.label}: <Tabs> count`).toBeGreaterThanOrEqual(1);
+    }
+
+    // Freshness — single-view dashboard, Card only.
+    await page.locator('a[href="#/reports/freshness"]').click();
+    await expect(page.getByTestId("freshness-headline")).toBeVisible();
+    expect(
+      await page.locator('[data-slot="card"]').count(),
+      "freshness: <Card> count",
+    ).toBeGreaterThanOrEqual(1);
+  });
+
   test("directory pages render via the sub-nav", async ({ page }) => {
     await signIn(page);
     await page.locator('a[href="#/directory"]').first().click();

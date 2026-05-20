@@ -7,6 +7,12 @@
  *
  * The user-report page renders the selected lens; the toggle owns
  * the `ScopeMode` value the page maps onto `ReportParams.scope_mode`.
+ *
+ * Implementation: shadcn `Tabs` in the kit's default horizontal
+ * orientation (TabsList sits *above* TabsContent — i.e. tabs read
+ * left-to-right). The kit's Tabs root carries `flex` + `data-horizontal:flex-col`,
+ * so wrap it in a `grid gap-3` block to give the list and its hint
+ * paragraph room to breathe without the triggers wrapping vertically.
  */
 
 import {
@@ -36,23 +42,20 @@ export interface LensTabsProps {
 
 export function LensTabs({ value, onChange, children }: LensTabsProps): JSX.Element {
   return (
-    <Tabs value={value} onValueChange={(v) => onChange(v as ScopeMode)}>
-      <TabsList>
+    <Tabs
+      value={value}
+      onValueChange={(v) => onChange(v as ScopeMode)}
+      orientation="horizontal"
+      className="gap-3"
+    >
+      <TabsList className="self-start">
         {LENSES.map((l) => (
           <TabsTrigger key={l.value} value={l.value}>{l.label}</TabsTrigger>
         ))}
       </TabsList>
       {LENSES.map((l) => (
-        <TabsContent key={l.value} value={l.value}>
-          <p
-            style={{
-              color: "var(--muted-foreground)",
-              fontSize: "0.8125rem",
-              margin: "0.5rem 0 1rem",
-            }}
-          >
-            {l.hint}
-          </p>
+        <TabsContent key={l.value} value={l.value} className="grid gap-3">
+          <p className="text-[0.8125rem] text-muted-foreground">{l.hint}</p>
           {children}
         </TabsContent>
       ))}

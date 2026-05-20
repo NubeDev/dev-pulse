@@ -41,6 +41,9 @@ import {
   CardHeader,
   CardTitle,
 } from "@nube/starter-ui-kit/components/card";
+import { Alert, AlertDescription } from "@nube/starter-ui-kit/components/alert";
+import { Badge } from "@nube/starter-ui-kit/components/badge";
+import { cn } from "@nube/starter-ui-kit/lib/utils";
 
 import { api } from "../api/client.js";
 import type { DataAsOf, OrgDto, ReportResponse } from "../api/client.js";
@@ -59,44 +62,36 @@ function bandOf(ageMs: number | null): Band {
   return "stale";
 }
 
-const BAND_STYLE: Record<Band, {
-  border: string;
-  background: string;
-  dot: string;
-  label: string;
-  textColor: string;
-}> = {
-  // green
+/** Band → className groups. Each band has a card/banner surface
+ *  class, a dot class, and a human label. The colour cues stay the
+ *  same semantic family (green/amber/red/neutral), just expressed via
+ *  Tailwind utilities so the page picks up dark-mode tokens. */
+const BAND_CLASSES: Record<
+  Band,
+  { surface: string; dot: string; label: string }
+> = {
   fresh: {
-    border: "oklch(0.78 0.16 145)",
-    background: "oklch(0.96 0.04 145)",
-    dot: "oklch(0.7 0.18 145)",
+    surface:
+      "border-emerald-500/40 bg-emerald-50 text-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-100",
+    dot: "bg-emerald-500",
     label: "Fresh",
-    textColor: "oklch(0.35 0.12 145)",
   },
-  // amber
   warning: {
-    border: "oklch(0.82 0.14 80)",
-    background: "oklch(0.97 0.05 80)",
-    dot: "oklch(0.72 0.16 80)",
+    surface:
+      "border-amber-500/40 bg-amber-50 text-amber-900 dark:bg-amber-950/30 dark:text-amber-100",
+    dot: "bg-amber-500",
     label: "Lagging",
-    textColor: "oklch(0.4 0.12 80)",
   },
-  // red
   stale: {
-    border: "oklch(0.78 0.18 25)",
-    background: "oklch(0.96 0.05 25)",
-    dot: "oklch(0.62 0.2 25)",
+    surface:
+      "border-red-500/40 bg-red-50 text-red-900 dark:bg-red-950/30 dark:text-red-100",
+    dot: "bg-red-500",
     label: "Stale",
-    textColor: "oklch(0.4 0.16 25)",
   },
-  // neutral
   pending: {
-    border: "var(--border)",
-    background: "var(--muted)",
-    dot: "var(--muted-foreground)",
+    surface: "border-border bg-muted text-muted-foreground",
+    dot: "bg-muted-foreground",
     label: "Pending",
-    textColor: "var(--muted-foreground)",
   },
 };
 
@@ -261,82 +256,60 @@ export function FreshnessPage(): JSX.Element {
 
   const overall = data ? overallBand(cards) : "pending";
   const headline = data ? overallHeadline(cards, data) : "Loading freshness…";
-  const overallStyle = BAND_STYLE[overall];
+  const overallBand_ = BAND_CLASSES[overall];
 
   return (
     <Card>
       <CardHeader>
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "flex-start",
-            gap: "1rem",
-            flexWrap: "wrap",
-          }}
-        >
-          <div>
-            <CardTitle>Data freshness</CardTitle>
-            <CardDescription>
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="grid gap-1">
+            <CardTitle className="text-2xl font-semibold tracking-tight">
+              Data freshness
+            </CardTitle>
+            <CardDescription className="text-muted-foreground">
               <code>GET /reports/freshness</code> · per-org reconciler health, webhook lag.
             </CardDescription>
           </div>
         </div>
       </CardHeader>
-      <CardContent style={{ display: "grid", gap: "1.25rem" }}>
-        <div
+      <CardContent className="grid gap-5">
+        <Alert
           data-testid="freshness-headline"
           data-band={overall}
-          role="status"
           aria-live="polite"
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: "0.625rem",
-            padding: "0.75rem 1rem",
-            borderRadius: "var(--radius-md, 0.5rem)",
-            border: `1px solid ${overallStyle.border}`,
-            background: overallStyle.background,
-            color: overallStyle.textColor,
-            fontSize: "0.9375rem",
-          }}
+          className={cn(overallBand_.surface)}
         >
-          <span
-            aria-hidden
-            style={{
-              width: "0.625rem",
-              height: "0.625rem",
-              borderRadius: "50%",
-              background: overallStyle.dot,
-              flexShrink: 0,
-            }}
-          />
-          <span>
-            <strong style={{ marginRight: "0.375rem" }}>{overallStyle.label}.</strong>
-            {headline}
-          </span>
-        </div>
+          <AlertDescription className="flex items-center gap-2 text-current">
+            <span
+              aria-hidden
+              className={cn(
+                "inline-block size-2.5 shrink-0 rounded-full",
+                overallBand_.dot,
+              )}
+            />
+            <span>
+              <strong className="mr-1.5">{overallBand_.label}.</strong>
+              {headline}
+            </span>
+          </AlertDescription>
+        </Alert>
 
         {error ? (
-          <p data-testid="freshness-error" style={{ color: "oklch(0.5 0.2 25)" }}>
-            Failed to load freshness: {error}
-          </p>
+          <Alert variant="destructive" data-testid="freshness-error">
+            <AlertDescription>Failed to load freshness: {error}</AlertDescription>
+          </Alert>
         ) : null}
 
         {loading && cards.length === 0 ? (
-          <p style={{ color: "var(--muted-foreground)" }}>Loading orgs…</p>
+          <p className="text-muted-foreground">Loading orgs…</p>
         ) : cards.length === 0 ? (
-          <p style={{ color: "var(--muted-foreground)" }}>
+          <p className="text-muted-foreground">
             No orgs tracked yet. Run a fetch or webhook to seed the first one.
           </p>
         ) : (
           <div
             data-testid="freshness-grid"
-            style={{
-              display: "grid",
-              gap: "0.875rem",
-              gridTemplateColumns: "repeat(auto-fill, minmax(16rem, 1fr))",
-            }}
+            className="grid grid-cols-[repeat(auto-fill,minmax(16rem,1fr))] gap-3.5"
           >
             {cards.map((card) => (
               <OrgFreshnessCard key={card.org.id} card={card} />
@@ -349,107 +322,49 @@ export function FreshnessPage(): JSX.Element {
 }
 
 function OrgFreshnessCard({ card }: { card: OrgFreshness }): JSX.Element {
-  const style = BAND_STYLE[card.band];
+  const band = BAND_CLASSES[card.band];
   return (
     <div
       data-testid="freshness-card"
       data-org-id={card.org.id}
       data-band={card.band}
-      style={{
-        display: "grid",
-        gap: "0.5rem",
-        padding: "0.875rem 1rem",
-        borderRadius: "var(--radius-md, 0.5rem)",
-        border: `1px solid ${style.border}`,
-        background: style.background,
-        color: style.textColor,
-      }}
+      className={cn(
+        "grid gap-2 rounded-md border p-3.5",
+        band.surface,
+      )}
     >
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: "0.5rem",
-        }}
-      >
+      <div className="flex items-center justify-between gap-2">
         <strong
-          style={{
-            fontSize: "0.9375rem",
-            color: "var(--foreground)",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
+          className="truncate text-sm font-semibold"
           title={card.org.login}
         >
           {card.org.name ?? card.org.login}
         </strong>
-        <span
-          aria-label={`${style.label} (${card.band})`}
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: "0.3125rem",
-            padding: "0.125rem 0.5rem",
-            borderRadius: "999px",
-            background: "color-mix(in oklch, var(--background) 60%, transparent)",
-            fontSize: "0.6875rem",
-            textTransform: "uppercase",
-            letterSpacing: "0.04em",
-            color: style.textColor,
-          }}
+        <Badge
+          variant="outline"
+          aria-label={`${band.label} (${card.band})`}
+          className="gap-1.5 border-current/30 bg-background/60 text-[0.6875rem] uppercase tracking-wider text-current"
         >
           <span
             aria-hidden
-            style={{
-              width: "0.5rem",
-              height: "0.5rem",
-              borderRadius: "50%",
-              background: style.dot,
-            }}
+            className={cn("size-2 rounded-full", band.dot)}
           />
-          {style.label}
-        </span>
+          {band.label}
+        </Badge>
       </div>
       {card.org.name ? (
-        <code
-          style={{
-            fontSize: "0.75rem",
-            color: "var(--muted-foreground)",
-          }}
-        >
-          {card.org.login}
-        </code>
+        <code className="text-xs text-muted-foreground">{card.org.login}</code>
       ) : null}
-      <div
-        style={{
-          display: "grid",
-          gap: "0.125rem",
-          fontVariantNumeric: "tabular-nums",
-        }}
-      >
-        <span
-          style={{
-            fontSize: "1.125rem",
-            fontWeight: 600,
-            color: "var(--foreground)",
-          }}
-        >
+      <div className="grid gap-0.5 tabular-nums">
+        <span className="text-lg font-semibold">
           {card.ts === null ? "—" : `last updated ${formatRelative(card.ageMs)}`}
         </span>
         {card.ts ? (
-          <span
-            title={card.ts}
-            style={{
-              fontSize: "0.75rem",
-              color: "var(--muted-foreground)",
-            }}
-          >
+          <span title={card.ts} className="text-xs text-muted-foreground">
             {formatAbsolute(card.ts)}
           </span>
         ) : (
-          <span style={{ fontSize: "0.75rem", color: "var(--muted-foreground)" }}>
+          <span className="text-xs text-muted-foreground">
             pending first reconciler run
           </span>
         )}

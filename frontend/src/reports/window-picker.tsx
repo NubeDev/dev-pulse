@@ -131,18 +131,8 @@ export function WindowPicker({ value, onChange }: WindowPickerProps): JSX.Elemen
   }
 
   return (
-    <div
-      style={{
-        display: "grid",
-        gridTemplateColumns: "repeat(auto-fit, minmax(10rem, 1fr))",
-        gap: "0.75rem",
-        padding: "0.75rem",
-        border: "1px solid var(--border)",
-        borderRadius: "var(--radius-md, 0.5rem)",
-        background: "var(--card)",
-      }}
-    >
-      <div style={{ display: "grid", gap: "0.375rem" }}>
+    <div className="grid grid-cols-[repeat(auto-fit,minmax(10rem,1fr))] gap-3 rounded-md border border-border bg-card p-3">
+      <div className="grid gap-1.5">
         <Label htmlFor={presetId}>Window</Label>
         <Select
           value={value.preset}
@@ -159,7 +149,7 @@ export function WindowPicker({ value, onChange }: WindowPickerProps): JSX.Elemen
         </Select>
       </div>
 
-      <div style={{ display: "grid", gap: "0.375rem" }}>
+      <div className="grid gap-1.5">
         <Label htmlFor={tzId}>Time zone</Label>
         <Select value={value.tz} onValueChange={(v) => patch({ tz: v })}>
           <SelectTrigger id={tzId}>
@@ -173,7 +163,7 @@ export function WindowPicker({ value, onChange }: WindowPickerProps): JSX.Elemen
         </Select>
       </div>
 
-      <div style={{ display: "grid", gap: "0.375rem" }}>
+      <div className="grid gap-1.5">
         <Label htmlFor={anchorId}>Anchor</Label>
         <Select
           value={value.anchor}
@@ -192,7 +182,7 @@ export function WindowPicker({ value, onChange }: WindowPickerProps): JSX.Elemen
 
       {value.preset === "custom" && (
         <>
-          <div style={{ display: "grid", gap: "0.375rem" }}>
+          <div className="grid gap-1.5">
             <Label htmlFor={startId}>Start</Label>
             <Input
               id={startId}
@@ -201,7 +191,7 @@ export function WindowPicker({ value, onChange }: WindowPickerProps): JSX.Elemen
               onChange={(e) => patch({ custom_start: fromLocalInput(e.target.value) })}
             />
           </div>
-          <div style={{ display: "grid", gap: "0.375rem" }}>
+          <div className="grid gap-1.5">
             <Label htmlFor={endId}>End</Label>
             <Input
               id={endId}

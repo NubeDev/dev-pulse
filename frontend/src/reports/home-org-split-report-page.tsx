@@ -30,6 +30,8 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@nube/starter-ui-kit/components/card";
+import { Progress } from "@nube/starter-ui-kit/components/progress";
+import { cn } from "@nube/starter-ui-kit/lib/utils";
 
 import { api } from "../api/client.js";
 import type {
@@ -223,43 +225,21 @@ export function HomeOrgSplitReportPage(): JSX.Element {
     return `Across ${rolled.length} home-orgs, contribution split: ${joined} (${lensLabel}).`;
   }, [rolled, grandTotal, lens]);
 
-  const headerStyle: React.CSSProperties = {
-    textAlign: "left",
-    fontWeight: 600,
-    fontSize: "0.75rem",
-    color: "var(--muted-foreground)",
-    textTransform: "uppercase",
-    letterSpacing: "0.04em",
-    padding: "0.5rem 0.75rem",
-    borderBottom: "1px solid var(--border)",
-  };
-  const cellStyle: React.CSSProperties = {
-    padding: "0.5rem 0.75rem",
-    borderBottom: "1px solid var(--border)",
-    fontSize: "0.875rem",
-    verticalAlign: "middle",
-  };
-  const numStyle: React.CSSProperties = {
-    ...cellStyle,
-    textAlign: "right",
-    fontVariantNumeric: "tabular-nums",
-  };
+  const HEADER_CLASS =
+    "border-b border-border px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground";
+  const CELL_CLASS = "border-b border-border px-3 py-2 align-middle text-sm";
+  const NUM_CLASS = cn(CELL_CLASS, "text-right tabular-nums");
+  const HEADER_RIGHT_CLASS = cn(HEADER_CLASS, "text-right");
 
   return (
     <Card>
       <CardHeader>
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "flex-start",
-            gap: "1rem",
-            flexWrap: "wrap",
-          }}
-        >
-          <div>
-            <CardTitle>Home-org split (cross-company)</CardTitle>
-            <CardDescription>
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="grid gap-1">
+            <CardTitle className="text-2xl font-semibold tracking-tight">
+              Home-org split (cross-company)
+            </CardTitle>
+            <CardDescription className="text-muted-foreground">
               <code>GET /reports/home-org-split</code> · contribution proportions per company.
               No leaderboard — totals + share only (§4 design constraint).
             </CardDescription>
@@ -267,44 +247,33 @@ export function HomeOrgSplitReportPage(): JSX.Element {
           <DataAsOfBanner data={dataAsOf} loading={anyLoading && !dataAsOf} />
         </div>
       </CardHeader>
-      <CardContent style={{ display: "grid", gap: "1rem" }}>
+      <CardContent className="grid gap-4">
         <WindowPicker value={windowState} onChange={setWindowState} />
 
         <LensTabs value={lens} onChange={setLens}>
           <p
             data-testid="headline"
-            style={{
-              fontSize: "1rem",
-              margin: "0 0 1rem",
-              color: "var(--foreground)",
-            }}
+            className="mb-2 text-base text-foreground"
           >
             {anyLoading && !dataAsOf ? "Loading cross-company split…" : headline}
           </p>
-          <div
-            style={{
-              border: "1px solid var(--border)",
-              borderRadius: "var(--radius-md, 0.5rem)",
-              background: "var(--card)",
-              overflow: "hidden",
-            }}
-          >
+          <div className="overflow-hidden rounded-md border border-border bg-card">
             <table
-              style={{ width: "100%", borderCollapse: "collapse" }}
+              className="w-full border-collapse"
               data-testid="home-org-split-table"
             >
-              <thead style={{ background: "var(--muted)" }}>
+              <thead className="bg-muted">
                 <tr>
-                  <th style={headerStyle}>Home org</th>
-                  <th style={{ ...headerStyle, textAlign: "right" }}>Total</th>
-                  <th style={{ ...headerStyle, textAlign: "right" }}>Share</th>
-                  <th style={{ ...headerStyle, textAlign: "right" }}>Trend</th>
+                  <th className={HEADER_CLASS}>Home org</th>
+                  <th className={HEADER_RIGHT_CLASS}>Total</th>
+                  <th className={HEADER_RIGHT_CLASS}>Share</th>
+                  <th className={HEADER_RIGHT_CLASS}>Trend</th>
                 </tr>
               </thead>
               <tbody>
                 {rolled.length === 0 ? (
                   <tr>
-                    <td colSpan={4} style={{ ...cellStyle, color: "var(--muted-foreground)" }}>
+                    <td colSpan={4} className={cn(CELL_CLASS, "text-muted-foreground")}>
                       {anyLoading ? "Loading…" : "No data in window."}
                     </td>
                   </tr>
@@ -313,41 +282,19 @@ export function HomeOrgSplitReportPage(): JSX.Element {
                     const pct = grandTotal > 0 ? (row.total / grandTotal) * 100 : 0;
                     return (
                       <tr key={row.orgId}>
-                        <td style={cellStyle}>{row.orgLabel}</td>
-                        <td style={numStyle}>{row.total}</td>
-                        <td style={numStyle}>
-                          <div
-                            style={{
-                              display: "inline-flex",
-                              alignItems: "center",
-                              gap: "0.5rem",
-                              justifyContent: "flex-end",
-                            }}
-                          >
-                            <span
+                        <td className={CELL_CLASS}>{row.orgLabel}</td>
+                        <td className={NUM_CLASS}>{row.total}</td>
+                        <td className={NUM_CLASS}>
+                          <div className="inline-flex items-center justify-end gap-2">
+                            <Progress
+                              value={pct}
                               aria-hidden
-                              style={{
-                                width: "4rem",
-                                height: "0.5rem",
-                                background: "var(--muted)",
-                                borderRadius: "999px",
-                                overflow: "hidden",
-                                display: "inline-block",
-                              }}
-                            >
-                              <span
-                                style={{
-                                  display: "block",
-                                  height: "100%",
-                                  width: `${pct.toFixed(1)}%`,
-                                  background: "var(--primary)",
-                                }}
-                              />
-                            </span>
+                              className="h-2 w-16"
+                            />
                             <span>{pct.toFixed(1)}%</span>
                           </div>
                         </td>
-                        <td style={{ ...numStyle, width: "10rem" }}>
+                        <td className={cn(NUM_CLASS, "w-40")}>
                           <Sparkline
                             points={row.trend.map((r) => ({ key: r.key, value: r.count }))}
                             ariaLabel={`${row.orgLabel} trend, ${row.trend.length} buckets, total ${row.total}`}
