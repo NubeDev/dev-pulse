@@ -30,11 +30,22 @@ ENV_FILE   := $(ROOT)/.env
 
 BACK_PORT  := 8731
 FRONT_PORT := 8732
+COMPOSE    := $(ROOT)/crates/dp-store-pg/docker-compose.yml
 
-.PHONY: build start kill stop restart status logs config help
+.PHONY: build start kill stop restart status logs config seed-admin db migrate help
 
 help:
 	@echo "Targets: build | start | kill | restart | status | logs | config"
+
+# ---------------------------------------------------------------- db
+
+db:
+	@docker compose -f $(COMPOSE) up -d
+	@echo "waiting for postgres to be ready..."
+	@until docker exec dev-pulse-postgres pg_isready -U dev-pulse -d dev_pulse >/dev/null 2>&1; do \
+	  sleep 1; \
+	done
+	@echo "postgres ready on :5432"
 
 # ---------------------------------------------------------------- build
 
@@ -55,7 +66,7 @@ $(CONFIG): $(CONFIG_SRC)
 
 # ---------------------------------------------------------------- start
 
-start: config $(RUN_DIR) $(LOG_DIR)
+start: config migrate $(RUN_DIR) $(LOG_DIR)
 	@if [ ! -f $(ENV_FILE) ]; then \
 	  echo "no .env — copy .env.example to .env and fill in GITHUB_PAT first"; \
 	  exit 1; \
@@ -109,6 +120,19 @@ kill stop:
 	@echo "stopped."
 
 restart: kill start
+
+# ---------------------------------------------------------------- migrate
+
+migrate: db
+	cargo run -p dev-pulse -- migrate --config $(CONFIG)
+
+# ---------------------------------------------------------------- seed-admin
+
+seed-admin: config
+	cargo run -p dev-pulse -- create-admin \
+	  --config $(CONFIG) \
+	  --email "dev@dev.com" \
+	  --password "dev123456789"
 
 # ---------------------------------------------------------------- introspection
 

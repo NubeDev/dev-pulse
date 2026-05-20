@@ -1390,7 +1390,7 @@ async fn run_create_admin(matches: &ArgMatches) -> Result<()> {
     apply_auth_sqlite_migrations(&sqlite_pool).await?;
 
     let users = starter_auth_users::store::SqliteUserStore::new(sqlite_pool);
-    match starter_auth_users::admin::create_admin(
+    let user_id = match starter_auth_users::admin::create_admin(
         &users,
         email,
         password,
@@ -1402,14 +1402,57 @@ async fn run_create_admin(matches: &ArgMatches) -> Result<()> {
             println!("created admin user: {email}");
             println!("  id   : {id}");
             println!("  role : admin");
-            Ok(())
+            id
         }
         Err(starter_auth_users::admin::AdminError::Conflict) => {
             println!("user already exists: {email} (no change)");
-            Ok(())
+            // Look up the existing id so we can still mirror it into
+            // dp_users below if needed.
+            match starter_auth_users::store::UserStore::find_by_email(&users, email).await {
+                Ok(Some(u)) => u.id,
+                Ok(None) => return Err(anyhow!("create_admin: conflict but no row found for {email}")),
+                Err(e) => return Err(anyhow!("create_admin: lookup after conflict: {e}")),
+            }
         }
-        Err(e) => Err(anyhow!("create_admin: {e}")),
-    }
+        Err(e) => return Err(anyhow!("create_admin: {e}")),
+    };
+
+    // Mirror the local admin into dp_users so the audit-log FK
+    // (`dp_audit_log.actor_user_id REFERENCES dp_users(id)`) is
+    // satisfied for break-glass / dev sessions. GitHub-OAuth users
+    // get their dp_users row from the OAuth callback; local CLI
+    // admins have no GitHub id, so we synthesise a negative one
+    // derived from the UUID to keep the NOT NULL UNIQUE constraint
+    // happy while staying clearly out of the positive (real GitHub)
+    // id space.
+    let user_uuid = Uuid::parse_str(&user_id)
+        .with_context(|| format!("parse user id as UUID: {user_id}"))?;
+    let (_cfg, pool) = load_cfg_and_pool(cfg_path).await?;
+    let synth_github_id: i64 = {
+        let bytes = user_uuid.as_bytes();
+        let mut acc: i64 = 0;
+        for &b in bytes {
+            acc = acc.wrapping_mul(131).wrapping_add(b as i64);
+        }
+        // Force negative so it cannot collide with a real GitHub id.
+        if acc > 0 { -acc } else if acc == 0 { -1 } else { acc }
+    };
+    let login = format!("local:{email}");
+    sqlx::query(
+        "INSERT INTO dp_users (id, github_id, login, email, name) \
+         VALUES ($1, $2, $3, $4, $5) \
+         ON CONFLICT (id) DO NOTHING",
+    )
+    .bind(user_uuid)
+    .bind(synth_github_id)
+    .bind(&login)
+    .bind(email)
+    .bind::<Option<&str>>(None)
+    .execute(pool.sqlx())
+    .await
+    .context("mirror admin into dp_users")?;
+    println!("  mirrored into dp_users (login={login}, synthetic github_id={synth_github_id})");
+    Ok(())
 }
 
 async fn run_fetch_now(matches: &ArgMatches) -> Result<()> {

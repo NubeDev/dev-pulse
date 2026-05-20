@@ -24,6 +24,7 @@ import {
   IconRefresh,
   IconShieldLock,
   IconTags,
+  IconTrophy,
   IconUser,
   IconUserCog,
   IconUsers,
@@ -60,6 +61,7 @@ const NAV_MAIN: NavMainItem[] = [
       { title: "User", url: "#/reports/user", icon: IconUser },
       { title: "Team", url: "#/reports/team", icon: IconUsers },
       { title: "Org", url: "#/reports/org", icon: IconBuilding },
+      { title: "Leaderboard", url: "#/reports/leaderboard", icon: IconTrophy },
       { title: "Home-org split", url: "#/reports/home-org-split", icon: IconColumns },
       { title: "Freshness", url: "#/reports/freshness", icon: IconClockHour4 },
     ],
@@ -122,6 +124,7 @@ const REPORT_TITLE: Record<string, string> = {
   team: "Team activity",
   org: "Org activity",
   "home-org-split": "Home-org split",
+  leaderboard: "Leaderboard",
   freshness: "Freshness",
 }
 

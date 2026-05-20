@@ -447,7 +447,18 @@ async fn fetch_rows(
             &request.actor_roles,
         )
         .await?;
-    Ok(apply_lens(rows, request.scope_mode, &request.orgs))
+    // The store API does not (yet) take a `kinds` filter, so the
+    // `activity_types` query-string filter has to be applied here.
+    // Empty slice means "no filter on this dimension" per the
+    // `list_event_actor_rows_in_window` contract.
+    let filtered: Vec<EventActorRow> = if request.activity_types.is_empty() {
+        rows
+    } else {
+        rows.into_iter()
+            .filter(|r| request.activity_types.contains(&r.kind))
+            .collect()
+    };
+    Ok(apply_lens(filtered, request.scope_mode, &request.orgs))
 }
 
 /// Pick the count-by reducer matching the request's `group_by`.

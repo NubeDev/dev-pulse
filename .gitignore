@@ -29,3 +29,4 @@ frontend/.playwright
 auth.db-shm
 auth.db-wal
 tty sane
+.env 

@@ -76,12 +76,21 @@ behaviour between REST, MCP, and the frontend.
 
 ## Open questions
 
-1. Are §15.7 metric aggregates already composable (so
+1. ~~Are §15.7 metric aggregates already composable (so
    `also_compute` is a projection-list field add) or do they
-   need to be lifted out of the per-user query path? Stage 1.
-2. Is SCOPE.md §15.9's percentile aggregator already a reusable
+   need to be lifted out of the per-user query path? Stage 1.~~
+   **Resolved (Stage 1, see `STAGE-1-COMPOSABILITY.md`):** yes,
+   already composable; `also_compute` is a field add — no
+   refactor stage required ahead of stage 3.
+2. ~~Is SCOPE.md §15.9's percentile aggregator already a reusable
    function callable from the `home_org_label` aggregation path
-   (§6.8), or is it inlined? Stage 1.
+   (§6.8), or is it inlined? Stage 1.~~
+   **Resolved (Stage 1, see `STAGE-1-COMPOSABILITY.md`):** yes,
+   `compute_percentiles(&[i64])` is a free function with the
+   `n < 5` floor internalised; directly callable from per-team,
+   per-org, and per-`home_org_label` paths (incl.
+   `__unlabeled__`). `percentile_cont_sql(column)` is the
+   matching SQL fragment helper.
 3. Where does `my_standing`'s permission gate live —
    `require_permission` on the same `with_principal` middleware
    used by the leaderboard, or a new permission constant? Stage 9.

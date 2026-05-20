@@ -15,7 +15,9 @@
 pub mod aggregate;
 pub mod envelope;
 pub mod freshness;
+pub mod leaderboard;
 pub mod lenses;
+pub mod my_standing;
 pub mod tag_filter;
 
 pub use aggregate::{
@@ -33,6 +35,29 @@ pub use tag_filter::{
     EMPTY_REASON_TAG_KIND_MISMATCH,
 };
 pub use freshness::{pick_headline as pick_freshness_headline, DataAsOf, DataAsOfExt};
+pub use leaderboard::{
+    build_leaderboard_sql, build_next_cursor, build_paginated_leaderboard_sql,
+    build_subject_ids_leaderboard_sql, build_user_single_org_sql,
+    check_reconciliation_identity, debug_assert_reconciliation_identity, effective_page_size,
+    resolve_leaderboard_envelope, validate_also_compute, validate_page_request,
+    validate_subject_ids, validate_subject_scope_combo, LeaderboardContext, LeaderboardEnvelope,
+    LeaderboardError, LeaderboardFooter, LeaderboardHeadline, LeaderboardPage, LeaderboardPrimary,
+    LeaderboardResponse, LeaderboardRow, MetricId, PageCursor, PageRequest,
+    ResolvedLeaderboardEnvelope, SubjectKind, HOME_ORG_LABEL_UNLABELED_BUCKET,
+    HOME_ORG_LABEL_UNLABELED_LABEL, LEADERBOARD_ALSO_COMPUTE_CAP, LEADERBOARD_BIND_ORDER,
+    LEADERBOARD_BIND_ORDER_PAGED, LEADERBOARD_BIND_ORDER_PAGED_WITH_CURSOR,
+    LEADERBOARD_BIND_ORDER_SUBJECT_IDS, LEADERBOARD_PAGE_SIZE_DEFAULT, LEADERBOARD_PAGE_SIZE_MAX,
+    LEADERBOARD_SUBJECT_IDS_CAP, LEADERBOARD_TIE_BREAK_ORDER_BY_CLAUSE,
+    USER_SINGLE_ORG_BIND_ORDER,
+};
+pub use my_standing::{
+    anonymise_neighbour_row, build_my_standing_sql, compute_visible_headline,
+    effective_neighbor_radius, resolve_my_standing_envelope, validate_my_standing_permission,
+    MyStandingEnvelope, MyStandingError, MyStandingResponse, ResolvedMyStandingEnvelope,
+    MY_STANDING_BIND_ORDER, MY_STANDING_NEIGHBOUR_ANONYMISED_LABEL,
+    MY_STANDING_NEIGHBOUR_ANONYMISED_SUBJECT_ID, MY_STANDING_NEIGHBOR_RADIUS_DEFAULT,
+    MY_STANDING_NEIGHBOR_RADIUS_MAX,
+};
 
 // Re-export the resolved Window type from dp-domain so callers only
 // need to depend on dp-reports for the request/response shapes.
