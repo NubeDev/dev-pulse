@@ -22,9 +22,13 @@ use crate::audit::AuditEntry;
 use crate::event::{ActivityEvent, ActorRole, EventActor, EventKind};
 use crate::fetch::{FetchCursor, FetchRun, FetchRunKind, ResourceKind};
 use crate::freshness::DataAsOf;
+use crate::issue_mutation::{IssueMutation, IssueMutationResult};
 use crate::membership::Membership;
 use crate::org::Org;
+use crate::pin::Pin;
 use crate::repo::Repo;
+use crate::tag::Tag;
+use crate::tag_link::{TagLink, TagLinkKind};
 use crate::team::Team;
 use crate::user::User;
 use crate::webhook::WebhookDelivery;
@@ -387,6 +391,196 @@ pub trait Store: Send + Sync {
     /// about the audit trail stay green.
     async fn record_audit_log(&self, _entry: &AuditEntry) -> Result<(), StoreError> {
         Ok(())
+    }
+
+    // ---- pins (SCOPE-PROJECTS §6) -------------------------------
+    //
+    // Default impls return empty / no-op so the existing in-memory
+    // fakes used by `dp-reports`, `dp-rest`, `dp-mcp`, and the
+    // fetcher integration tests do not have to grow new code to
+    // keep compiling. The Postgres backend overrides each one.
+
+    /// List a user's pins, ordered by `position` ascending. Returns
+    /// an empty vec if the user has no pins. Default: empty.
+    async fn list_pins_for_user(&self, _user_id: Uuid) -> Result<Vec<Pin>, StoreError> {
+        Ok(Vec::new())
+    }
+
+    /// Append a pin to the end of a user's list. Implementations
+    /// must reject the insert (return [`StoreError::Invalid`]) if it
+    /// would exceed the configured per-user pin cap (working
+    /// assumption 20; §6.1 + §13.5). The composite PK
+    /// `(user_id, kind, target_id)` makes re-pinning idempotent at
+    /// the schema level — a duplicate is a [`StoreError::Conflict`].
+    async fn add_pin(&self, _pin: &Pin) -> Result<Pin, StoreError> {
+        Err(StoreError::Invalid("pins not supported by this store".into()))
+    }
+
+    /// Remove a pin by its composite key. Returns
+    /// [`StoreError::NotFound`] if the pin does not exist.
+    async fn remove_pin(
+        &self,
+        _user_id: Uuid,
+        _kind: crate::pin::PinKind,
+        _target_id: Uuid,
+    ) -> Result<(), StoreError> {
+        Err(StoreError::Invalid("pins not supported by this store".into()))
+    }
+
+    /// Atomically rewrite the ordering of a user's pins. The slice
+    /// is the new `(kind, target_id)` order — entry `i` becomes
+    /// `position = i`. Implementations apply the rewrite in one
+    /// transaction; partial reorders are not visible to readers.
+    /// Returns [`StoreError::Invalid`] if `order` does not exactly
+    /// cover the user's current pins.
+    async fn reorder_pins(
+        &self,
+        _user_id: Uuid,
+        _order: &[(crate::pin::PinKind, Uuid)],
+    ) -> Result<(), StoreError> {
+        Err(StoreError::Invalid("pins not supported by this store".into()))
+    }
+
+    // ---- tags + tag links (SCOPE-PROJECTS §7) -------------------
+
+    /// Fetch a tag by primary key. Returns [`StoreError::NotFound`]
+    /// if the row does not exist.
+    async fn get_tag(&self, _id: Uuid) -> Result<Tag, StoreError> {
+        Err(StoreError::NotFound {
+            entity: "tag",
+            id: _id.to_string(),
+        })
+    }
+
+    /// Create a tag. The per-scope case-insensitive uniqueness on
+    /// `(scope_kind, scope_id, lower(name))` is enforced by the
+    /// migration-0005 expression index; the Postgres backend
+    /// translates the unique-constraint violation into
+    /// [`StoreError::Conflict`].
+    async fn create_tag(&self, _tag: &Tag) -> Result<Tag, StoreError> {
+        Err(StoreError::Invalid("tags not supported by this store".into()))
+    }
+
+    /// Patch a tag's `name` / `color` / `description` / `archived_at`
+    /// in place. The `scope_*` columns and `created_by` are
+    /// immutable from this method — promotion across scopes is a §12
+    /// open question and out of scope for v1. Passing `None` for a
+    /// field leaves it unchanged; passing `Some(None)` for
+    /// `description` / `archived_at` clears it.
+    async fn update_tag(
+        &self,
+        _id: Uuid,
+        _name: Option<&str>,
+        _color: Option<&str>,
+        _description: Option<Option<&str>>,
+        _archived_at: Option<Option<chrono::DateTime<chrono::Utc>>>,
+    ) -> Result<Tag, StoreError> {
+        Err(StoreError::Invalid("tags not supported by this store".into()))
+    }
+
+    /// List every tag visible to a viewer. Visibility filtering
+    /// (§7.4) is the *caller's* responsibility — pass the set of
+    /// scope ids the viewer can see for each scope kind.
+    /// Implementations return rows whose `scope_kind` matches one of
+    /// the provided scope id slices. An empty slice for a scope
+    /// kind means "no tags of that kind". Archived tags are
+    /// excluded unless `include_archived` is true.
+    async fn list_tags_visible_to(
+        &self,
+        _viewer_user_id: Uuid,
+        _visible_team_ids: &[Uuid],
+        _visible_org_ids: &[Uuid],
+        _include_archived: bool,
+    ) -> Result<Vec<Tag>, StoreError> {
+        Ok(Vec::new())
+    }
+
+    /// List the links attached to a tag, optionally filtered to a
+    /// subset of link kinds (empty slice = all kinds). The
+    /// viewer-visibility filter in §7.4 is the caller's job; this
+    /// method returns every link the tag carries.
+    async fn list_tag_links(
+        &self,
+        _tag_id: Uuid,
+        _kinds: &[TagLinkKind],
+    ) -> Result<Vec<TagLink>, StoreError> {
+        Ok(Vec::new())
+    }
+
+    /// Attach a batch of links to a tag, **transactionally
+    /// all-or-nothing** (§7.5). If any link fails validation
+    /// (duplicate, target not visible, wrong kind, missing target
+    /// row), the whole batch is rejected. The unique index
+    /// `dp_tag_links_tag_target_uniq` provides the duplicate check
+    /// at the schema level.
+    async fn add_tag_links(&self, _links: &[TagLink]) -> Result<Vec<TagLink>, StoreError> {
+        Err(StoreError::Invalid("tags not supported by this store".into()))
+    }
+
+    /// Detach a batch of links by id, transactionally all-or-nothing
+    /// (§7.5). Returns [`StoreError::NotFound`] if any id is
+    /// missing — no partial unlinks.
+    async fn remove_tag_links(&self, _link_ids: &[Uuid]) -> Result<(), StoreError> {
+        Err(StoreError::Invalid("tags not supported by this store".into()))
+    }
+
+    /// Resolve a set of tag ids to the `(repo_id, issue_id,
+    /// user_id, team_id)` targets they currently link, for the
+    /// §15.6 report-filter path (SCOPE-PROJECTS §7.7). Implementations
+    /// apply the viewer-visibility filter using the supplied
+    /// allow-lists.
+    async fn resolve_tag_targets(
+        &self,
+        _tag_ids: &[Uuid],
+        _visible_repo_ids: &[Uuid],
+        _visible_user_ids: &[Uuid],
+        _visible_team_ids: &[Uuid],
+    ) -> Result<Vec<TagLink>, StoreError> {
+        Ok(Vec::new())
+    }
+
+    // ---- issue mutations (SCOPE-PROJECTS §8.5) ------------------
+    //
+    // Storage for these lands in `0007_issues_optimistic_cas.sql`
+    // (later stage of this same job). The trait signatures live
+    // here so the dp-rest write-path scaffold can compile against
+    // the Postgres backend incrementally.
+
+    /// Record a new [`IssueMutation`] row in `Pending` state. Called
+    /// from §8.2 step 5, after the local CAS on `dp_issues.version`
+    /// has succeeded. Returns the persisted row.
+    async fn record_issue_mutation(
+        &self,
+        _mutation: &IssueMutation,
+    ) -> Result<IssueMutation, StoreError> {
+        Err(StoreError::Invalid(
+            "issue mutations not supported by this store".into(),
+        ))
+    }
+
+    /// Transition an [`IssueMutation`] out of `Pending` (§8.2 step 7
+    /// or step 8). Sets `result`, optionally `github_delivery_id`
+    /// / `error`, and stamps `finished_at = now()`.
+    async fn update_issue_mutation_result(
+        &self,
+        _id: Uuid,
+        _result: IssueMutationResult,
+        _github_delivery_id: Option<&str>,
+        _error: Option<&str>,
+    ) -> Result<(), StoreError> {
+        Err(StoreError::Invalid(
+            "issue mutations not supported by this store".into(),
+        ))
+    }
+
+    /// Find mutations stuck in `Pending` past the
+    /// `issues.pending_remote_timeout_secs` window. Drives the §8.5
+    /// `pending_remote_timeout` sweeper.
+    async fn list_pending_issue_mutations_older_than(
+        &self,
+        _cutoff: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<IssueMutation>, StoreError> {
+        Ok(Vec::new())
     }
 }
 
