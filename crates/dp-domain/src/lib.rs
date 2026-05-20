@@ -29,6 +29,7 @@ pub mod fetch;
 pub mod freshness;
 pub mod inbox;
 pub mod issue;
+pub mod issue_dates;
 pub mod issue_mutation;
 pub mod membership;
 pub mod org;
@@ -49,6 +50,9 @@ pub use fetch::{FetchCursor, FetchRun, FetchRunKind, ResourceKind};
 pub use freshness::DataAsOf;
 pub use inbox::{InboxIssueRow, InboxStatus, UserIssueState};
 pub use issue::{Issue, IssueState, RepoSummary};
+pub use issue_dates::{
+    IssueDates, ProjectV2MirrorTask, ProjectV2MirrorTaskKind, RepoProjectLink,
+};
 pub use issue_mutation::{IssueMutation, IssueMutationOp, IssueMutationResult};
 pub use membership::{Membership, MembershipRole};
 pub use org::Org;

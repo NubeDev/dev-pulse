@@ -110,6 +110,8 @@ async fn webhook_github_stub() {}
         crate::issues_write::create_issue,
         crate::issues_write::patch_issue,
         crate::issues_write::create_comment,
+        // Issue dates surface (§3.10).
+        crate::issue_dates::patch_issue_dates,
         // Issue read surface — present since slice 1, registered
         // here in slice 2 so the OpenAPI document covers every
         // mounted handler.
@@ -176,6 +178,9 @@ async fn webhook_github_stub() {}
         crate::issues_write::PatchIssueRequest,
         crate::issues_write::CreateCommentRequest,
         crate::issues_write::IssuePatch,
+        // Issue dates DTOs (§3.10).
+        crate::issue_dates::PatchIssueDatesRequest,
+        crate::issue_dates::IssueDatesDto,
         crate::issues_read::IssueDto,
         crate::issues_read::IssueStateDto,
         crate::issues_read::IssueListResponse,

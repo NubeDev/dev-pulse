@@ -37,10 +37,13 @@ use dp_domain::repo::Repo;
 use dp_domain::issue::{Issue, IssueState, RepoSummary};
 use dp_domain::issue_mutation::{IssueMutation, IssueMutationOp, IssueMutationResult};
 use dp_domain::event::EventKind;
+use dp_domain::issue_dates::{
+    IssueDates, ProjectV2MirrorTask, ProjectV2MirrorTaskKind, RepoProjectLink,
+};
 use dp_domain::store::{
-    EventActorRow, IssueListFilter, IssueMetric, IssueMetricGroupBy, IssueMetricRow,
-    IssueMetricsFilter, IssueTimelineRow, PendingRemoteIssue, RepoListFilter, RepoSyncStatus,
-    Store, StoreError,
+    EventActorRow, IssueDatesMirrorOutcome, IssueListFilter, IssueMetric, IssueMetricGroupBy,
+    IssueMetricRow, IssueMetricsFilter, IssueTimelineRow, PendingRemoteIssue, RepoListFilter,
+    RepoSyncStatus, Store, StoreError,
 };
 use dp_domain::team::Team;
 use dp_domain::user::User;
@@ -2123,6 +2126,199 @@ impl Store for PgStore {
         out.sort_by_key(|d| d.received_at);
         Ok(out)
     }
+
+    // ---- issue dates (triage slice 2 — §3.10) --------------------
+
+    async fn get_issue_dates(
+        &self,
+        issue_id: Uuid,
+    ) -> Result<Option<IssueDates>, StoreError> {
+        let row = sqlx::query(
+            r#"SELECT issue_id, start_at, due_at, mirror_node_id,
+                      mirror_synced_at, mirror_error, updated_at
+                 FROM dp_issue_dates WHERE issue_id = $1"#,
+        )
+        .bind(issue_id)
+        .fetch_optional(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        Ok(row.map(|r| row_to_issue_dates(&r)).transpose()?)
+    }
+
+    async fn upsert_issue_dates(
+        &self,
+        issue_id: Uuid,
+        start_at: Option<DateTime<Utc>>,
+        due_at: Option<DateTime<Utc>>,
+    ) -> Result<IssueDates, StoreError> {
+        // The CHECK on the table guards start <= due; surface a
+        // violation as Invalid so the handler can return 400
+        // rather than a generic backend error.
+        let row = sqlx::query(
+            r#"
+            INSERT INTO dp_issue_dates (issue_id, start_at, due_at, updated_at)
+            VALUES ($1, $2, $3, now())
+            ON CONFLICT (issue_id) DO UPDATE
+              SET start_at  = EXCLUDED.start_at,
+                  due_at    = EXCLUDED.due_at,
+                  updated_at = now()
+            RETURNING issue_id, start_at, due_at, mirror_node_id,
+                      mirror_synced_at, mirror_error, updated_at
+            "#,
+        )
+        .bind(issue_id)
+        .bind(start_at)
+        .bind(due_at)
+        .fetch_one(self.pool.sqlx())
+        .await
+        .map_err(|e| match &e {
+            sqlx::Error::Database(db)
+                if db.constraint().is_some()
+                    && db.message().contains("dp_issue_dates_check") =>
+            {
+                invalid("start_at must be <= due_at")
+            }
+            _ => map_sqlx(e),
+        })?;
+        row_to_issue_dates(&row)
+    }
+
+    async fn record_issue_dates_mirror_result(
+        &self,
+        issue_id: Uuid,
+        outcome: IssueDatesMirrorOutcome<'_>,
+    ) -> Result<(), StoreError> {
+        match outcome {
+            IssueDatesMirrorOutcome::Success { node_id } => {
+                sqlx::query(
+                    r#"UPDATE dp_issue_dates
+                          SET mirror_node_id   = COALESCE($2, mirror_node_id),
+                              mirror_synced_at = now(),
+                              mirror_error     = NULL
+                        WHERE issue_id = $1"#,
+                )
+                .bind(issue_id)
+                .bind(node_id)
+                .execute(self.pool.sqlx())
+                .await
+                .map_err(map_sqlx)?;
+            }
+            IssueDatesMirrorOutcome::Failure { error } => {
+                sqlx::query(
+                    r#"UPDATE dp_issue_dates
+                          SET mirror_error = $2
+                        WHERE issue_id = $1"#,
+                )
+                .bind(issue_id)
+                .bind(error)
+                .execute(self.pool.sqlx())
+                .await
+                .map_err(map_sqlx)?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn get_repo_project_link(
+        &self,
+        repo_id: Uuid,
+    ) -> Result<Option<RepoProjectLink>, StoreError> {
+        let row = sqlx::query(
+            r#"SELECT repo_id, project_node_id, start_field_node_id, due_field_node_id
+                 FROM dp_repo_project_link WHERE repo_id = $1"#,
+        )
+        .bind(repo_id)
+        .fetch_optional(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        Ok(row.map(|r| {
+            Ok::<_, StoreError>(RepoProjectLink {
+                repo_id: r.try_get("repo_id").map_err(map_sqlx)?,
+                project_node_id: r.try_get("project_node_id").map_err(map_sqlx)?,
+                start_field_node_id: r
+                    .try_get("start_field_node_id")
+                    .map_err(map_sqlx)?,
+                due_field_node_id: r.try_get("due_field_node_id").map_err(map_sqlx)?,
+            })
+        })
+        .transpose()?)
+    }
+
+    async fn enqueue_projectv2_mirror_task(
+        &self,
+        issue_id: Uuid,
+        repo_id: Uuid,
+        kind: ProjectV2MirrorTaskKind,
+        payload: serde_json::Value,
+    ) -> Result<(), StoreError> {
+        sqlx::query(
+            r#"INSERT INTO dp_projectv2_mirror_tasks
+                   (issue_id, repo_id, kind, payload)
+               VALUES ($1, $2, $3, $4)"#,
+        )
+        .bind(issue_id)
+        .bind(repo_id)
+        .bind(kind.as_str())
+        .bind(payload)
+        .execute(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        Ok(())
+    }
+
+    async fn claim_projectv2_mirror_tasks(
+        &self,
+        max: i64,
+    ) -> Result<Vec<ProjectV2MirrorTask>, StoreError> {
+        let rows = sqlx::query(
+            r#"SELECT id, issue_id, repo_id, kind, payload, attempts,
+                      last_error, enqueued_at, processed_at
+                 FROM dp_projectv2_mirror_tasks
+                WHERE processed_at IS NULL
+             ORDER BY enqueued_at ASC
+                LIMIT $1
+                FOR UPDATE SKIP LOCKED"#,
+        )
+        .bind(max)
+        .fetch_all(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        rows.iter().map(row_to_projectv2_mirror_task).collect()
+    }
+}
+
+fn row_to_issue_dates(r: &sqlx::postgres::PgRow) -> Result<IssueDates, StoreError> {
+    Ok(IssueDates {
+        issue_id: r.try_get("issue_id").map_err(map_sqlx)?,
+        start_at: r.try_get("start_at").map_err(map_sqlx)?,
+        due_at: r.try_get("due_at").map_err(map_sqlx)?,
+        mirror_node_id: r.try_get("mirror_node_id").map_err(map_sqlx)?,
+        mirror_synced_at: r.try_get("mirror_synced_at").map_err(map_sqlx)?,
+        mirror_error: r.try_get("mirror_error").map_err(map_sqlx)?,
+        updated_at: r.try_get("updated_at").map_err(map_sqlx)?,
+    })
+}
+
+fn row_to_projectv2_mirror_task(
+    r: &sqlx::postgres::PgRow,
+) -> Result<ProjectV2MirrorTask, StoreError> {
+    let kind_s: String = r.try_get("kind").map_err(map_sqlx)?;
+    let kind = match kind_s.as_str() {
+        "mirror_dates" => ProjectV2MirrorTaskKind::MirrorDates,
+        "pull_back" => ProjectV2MirrorTaskKind::PullBack,
+        other => return Err(invalid(format!("unknown mirror task kind: {other}"))),
+    };
+    Ok(ProjectV2MirrorTask {
+        id: r.try_get("id").map_err(map_sqlx)?,
+        issue_id: r.try_get("issue_id").map_err(map_sqlx)?,
+        repo_id: r.try_get("repo_id").map_err(map_sqlx)?,
+        kind,
+        payload: r.try_get::<JsonValue, _>("payload").map_err(map_sqlx)?,
+        attempts: r.try_get("attempts").map_err(map_sqlx)?,
+        last_error: r.try_get("last_error").map_err(map_sqlx)?,
+        enqueued_at: r.try_get("enqueued_at").map_err(map_sqlx)?,
+        processed_at: r.try_get("processed_at").map_err(map_sqlx)?,
+    })
 }
 
 fn issue_mutation_op_to_text(op: IssueMutationOp) -> &'static str {

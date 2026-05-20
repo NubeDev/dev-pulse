@@ -25,6 +25,9 @@ use crate::fetch::{FetchCursor, FetchRun, FetchRunKind, ResourceKind};
 use crate::freshness::DataAsOf;
 use crate::inbox::{InboxIssueRow, InboxStatus, UserIssueState};
 use crate::issue::{Issue, IssueState, RepoSummary};
+use crate::issue_dates::{
+    IssueDates, ProjectV2MirrorTask, ProjectV2MirrorTaskKind, RepoProjectLink,
+};
 use crate::issue_mutation::{IssueMutation, IssueMutationResult};
 use crate::membership::Membership;
 use crate::org::Org;
@@ -1021,6 +1024,102 @@ pub trait Store: Send + Sync {
     ) -> Result<Vec<WebhookDelivery>, StoreError> {
         Ok(Vec::new())
     }
+
+    // ---- issue dates (triage slice 2 — §3.10) --------------------
+
+    /// Read the `dp_issue_dates` sidecar row for an issue, or
+    /// `None` when none exists yet (the issue has never had dates
+    /// set). Default impl returns `None` so in-memory fakes don't
+    /// need to model dates.
+    async fn get_issue_dates(
+        &self,
+        _issue_id: Uuid,
+    ) -> Result<Option<IssueDates>, StoreError> {
+        Ok(None)
+    }
+
+    /// Synchronous upsert of `(start_at, due_at)` on
+    /// `dp_issue_dates`. Returns the post-upsert row so the
+    /// handler can echo the canonical timestamps back to the UI.
+    /// The schema CHECK guards `start_at <= due_at`; violations
+    /// surface as [`StoreError::Invalid`] in the postgres backend.
+    /// Default impl rejects the call so misuse from fakes is loud.
+    async fn upsert_issue_dates(
+        &self,
+        _issue_id: Uuid,
+        _start_at: Option<DateTime<Utc>>,
+        _due_at: Option<DateTime<Utc>>,
+    ) -> Result<IssueDates, StoreError> {
+        Err(StoreError::Invalid(
+            "issue dates not supported by this store".into(),
+        ))
+    }
+
+    /// Write the mirror outcome back to `dp_issue_dates`. On
+    /// success: clears `mirror_error`, stamps `mirror_synced_at`,
+    /// and persists the Projects v2 *item* node id (so the next
+    /// mirror reuses it). On failure: stamps `mirror_error` only.
+    /// Default impl is a no-op so the date upsert always succeeds
+    /// even when the store lacks the table.
+    async fn record_issue_dates_mirror_result(
+        &self,
+        _issue_id: Uuid,
+        _outcome: IssueDatesMirrorOutcome<'_>,
+    ) -> Result<(), StoreError> {
+        Ok(())
+    }
+
+    /// Read the `dp_repo_project_link` row for a repo, or `None`
+    /// when the repo is not linked to a Projects v2 project.
+    async fn get_repo_project_link(
+        &self,
+        _repo_id: Uuid,
+    ) -> Result<Option<RepoProjectLink>, StoreError> {
+        Ok(None)
+    }
+
+    /// Enqueue a `dp_projectv2_mirror_tasks` row. Best-effort by
+    /// contract — the handler ignores errors from this call so
+    /// the local upsert is never blocked. Default impl is a no-op.
+    async fn enqueue_projectv2_mirror_task(
+        &self,
+        _issue_id: Uuid,
+        _repo_id: Uuid,
+        _kind: ProjectV2MirrorTaskKind,
+        _payload: serde_json::Value,
+    ) -> Result<(), StoreError> {
+        Ok(())
+    }
+
+    /// Drain up to `max` pending `mirror_dates` / `pull_back` rows
+    /// ordered by `enqueued_at ASC`. Slice-3 worker entry point;
+    /// returns the empty vec here so existing fakes stay green.
+    async fn claim_projectv2_mirror_tasks(
+        &self,
+        _max: i64,
+    ) -> Result<Vec<ProjectV2MirrorTask>, StoreError> {
+        Ok(Vec::new())
+    }
+}
+
+/// Outcome of a single Projects v2 mirror attempt, fed back into
+/// [`Store::record_issue_dates_mirror_result`]. Borrowed strings
+/// so the worker can pass GraphQL error text straight from its
+/// transport buffer without an intermediate allocation.
+#[derive(Debug, Clone, Copy)]
+pub enum IssueDatesMirrorOutcome<'a> {
+    /// Mirror succeeded; `node_id` is the Projects v2 *item* node
+    /// id GitHub returned (persist so the next edit updates the
+    /// same item instead of creating a duplicate card).
+    Success {
+        /// The Projects v2 item node id to persist.
+        node_id: &'a str,
+    },
+    /// Mirror failed; `error` is the verbatim GraphQL error text.
+    Failure {
+        /// Error text to persist to `mirror_error`.
+        error: &'a str,
+    },
 }
 
 /// Compact projection of `dp_issues` rows the §8.5 sweeper needs:

@@ -17,6 +17,7 @@ use dp_domain::store::Store;
 use dp_fetcher::reconciler::Scheduler;
 
 use crate::app_permissions::GitHubAppConfig;
+use crate::issue_dates::{ProjectV2MirrorBackend, UnconfiguredProjectV2Mirror};
 use crate::issues_write::{IssueWriteBackend, UnconfiguredIssueWriter};
 
 /// Application state shared across every dp-rest handler.
@@ -48,6 +49,13 @@ pub struct AppState {
     /// builds and the §5.9 handler degrades to "queued: false" /
     /// 503 in that case.
     pub scheduler: Option<Arc<Scheduler>>,
+    /// Projects v2 GraphQL mirror backend used by
+    /// `PATCH /issues/{id}/dates` (§3.10). The default —
+    /// [`UnconfiguredProjectV2Mirror`] — declines every call so
+    /// deployments that have not wired a real mirror simply skip
+    /// the best-effort enqueue / spawn entirely; the local
+    /// upsert remains authoritative.
+    pub projectv2_mirror: Arc<dyn ProjectV2MirrorBackend>,
 }
 
 impl AppState {
@@ -60,7 +68,18 @@ impl AppState {
             github_app: Arc::new(GitHubAppConfig::default()),
             issue_writer: Arc::new(UnconfiguredIssueWriter),
             scheduler: None,
+            projectv2_mirror: Arc::new(UnconfiguredProjectV2Mirror),
         }
+    }
+
+    /// Override the Projects v2 mirror backend. Bin layer wires
+    /// this from the GraphQL transport; tests pass a fake.
+    pub fn with_projectv2_mirror(
+        mut self,
+        mirror: Arc<dyn ProjectV2MirrorBackend>,
+    ) -> Self {
+        self.projectv2_mirror = mirror;
+        self
     }
 
     /// Wire a reconciler scheduler so `POST /repos/{id}/sync` can

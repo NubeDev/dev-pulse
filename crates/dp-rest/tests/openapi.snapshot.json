@@ -470,6 +470,58 @@
         }
       }
     },
+    "/issues/{id}/dates": {
+      "patch": {
+        "tags": [
+          "issues"
+        ],
+        "summary": "`PATCH /issues/{id}/dates` — see module docs for the four-step\nshape. Authorisation: `(issues, write)`.",
+        "operationId": "patch_issue_dates",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Issue id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchIssueDatesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Local upsert committed; mirror best-effort",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssueDatesDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "start_at must be <= due_at"
+          },
+          "403": {
+            "description": "Writes not available for the target org"
+          },
+          "404": {
+            "description": "No such issue"
+          }
+        }
+      }
+    },
     "/issues/{id}/timeline": {
       "get": {
         "tags": [
@@ -2230,6 +2282,64 @@
           "done"
         ]
       },
+      "IssueDatesDto": {
+        "type": "object",
+        "description": "Response body — the canonical post-upsert row. Mirrors\n[`IssueDates`] one-for-one so the UI can render the freshly\nstamped `updated_at` plus the most recent mirror outcome\n(`mirror_synced_at` / `mirror_error`) without a second read.",
+        "required": [
+          "issue_id",
+          "updated_at"
+        ],
+        "properties": {
+          "due_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Due instant, or `null`."
+          },
+          "issue_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Echoed `dp_issues.id`."
+          },
+          "mirror_error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Verbatim error from the most recent failed mirror attempt;\n`null` when the latest attempt succeeded or no attempt has\nrun yet (e.g. the repo has no project link)."
+          },
+          "mirror_node_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Projects v2 item node id, when mirroring has ever\nsucceeded for this row."
+          },
+          "mirror_synced_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Wall-clock the most recent mirror attempt succeeded;\n`null` until the first success."
+          },
+          "start_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Start instant, or `null`."
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "`updated_at` on the local row."
+          }
+        }
+      },
       "IssueDto": {
         "type": "object",
         "description": "Full issue projection. Matches the shape the frontend's\n`IssueDto` already declared (`api/client.ts`) so the existing\n§8.3 detail pane wires up without DTO shape changes.",
@@ -2597,6 +2707,28 @@
               "null"
             ],
             "description": "Display name, if set."
+          }
+        }
+      },
+      "PatchIssueDatesRequest": {
+        "type": "object",
+        "description": "Body for `PATCH /issues/{id}/dates`. Both fields are optional —\n`null` (or omitted) clears that side. The schema CHECK guards\n`start_at <= due_at`; the handler surfaces violations as\n`400 invalid_date_window`.",
+        "properties": {
+          "due_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "New due instant (inclusive). Omit / `null` to clear."
+          },
+          "start_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "New start instant (inclusive). Omit / `null` to clear."
           }
         }
       },

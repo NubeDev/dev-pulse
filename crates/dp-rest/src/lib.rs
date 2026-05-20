@@ -38,6 +38,7 @@ pub mod audit;
 pub mod directory;
 pub mod error;
 pub mod inbox;
+pub mod issue_dates;
 pub mod issues;
 pub mod issues_read;
 pub mod issues_write;
@@ -71,6 +72,10 @@ pub use inbox::{
 pub use issues::{
     acquire_issue_mutation_slot, commit_issue_mutation, rollback_issue_mutation,
     sweep_pending_remote_timeouts, AcquireOutcome, AcquiredSlot, SweepReport,
+};
+pub use issue_dates::{
+    issue_dates_router, patch_issue_dates, IssueDatesDto, MirrorDatesOk, MirrorError,
+    PatchIssueDatesRequest, ProjectV2MirrorBackend, UnconfiguredProjectV2Mirror,
 };
 pub use issues_write::{
     create_comment, create_issue, issues_write_router, patch_issue, CreateCommentRequest,

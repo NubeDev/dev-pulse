@@ -90,6 +90,10 @@ pub const ISSUE_CLOSE: &str = "issue.close";
 pub const ISSUE_REOPEN: &str = "issue.reopen";
 /// `issue.comment` — `POST /repos/{owner}/{repo}/issues/{n}/comments`.
 pub const ISSUE_COMMENT: &str = "issue.comment";
+/// `issue.dates_update` — `PATCH /issues/{id}/dates` (§3.10).
+/// Local-first; the optional GraphQL mirror is best-effort and
+/// emits no separate audit verb.
+pub const ISSUE_DATES_UPDATE: &str = "issue.dates_update";
 /// `issue.pending_remote_timeout` — emitted by the §8.5 sweeper
 /// when a `dp_issues.pending_remote` flag has lingered past
 /// `issues.pending_remote_timeout_secs`. The audit target carries
