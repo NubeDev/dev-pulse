@@ -101,6 +101,22 @@ pub fn register_dev_pulse_resources(registry: &StaticRegistry) {
         "Admin",
         "Admin surface: reconciler runs, refresh trigger, GDPR anonymise/export.",
     ));
+    registry.register_spec(ResourceSpec::from_static(
+        "pins",
+        &["read", "write"],
+        Ownership::None,
+        "Pins",
+        "Per-user pinned repos / tags (SCOPE-PROJECTS §6). `write` covers add / remove / reorder.",
+    ));
+    registry.register_spec(ResourceSpec::from_static(
+        "github_app",
+        &["read"],
+        Ownership::None,
+        "GitHub App",
+        "Per-viewer GitHub App install permission surface (SCOPE-PROJECTS §8.4, §13.6). \
+         `read` covers `GET /me/app-install-banner`; the §8.4 write-gate runs inside \
+         issue-mutation handlers (gated under their own resource).",
+    ));
 }
 
 /// Load + compile the policy file, wrap it in

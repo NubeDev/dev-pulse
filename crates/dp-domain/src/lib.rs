@@ -22,27 +22,37 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod app_install;
 pub mod audit;
 pub mod event;
 pub mod fetch;
 pub mod freshness;
+pub mod issue_mutation;
 pub mod membership;
 pub mod org;
+pub mod pin;
 pub mod repo;
 pub mod store;
+pub mod tag;
+pub mod tag_link;
 pub mod team;
 pub mod user;
 pub mod webhook;
 pub mod window;
 
+pub use app_install::{AppInstallPermissions, OrgAppInstall};
 pub use audit::AuditEntry;
 pub use event::{ActivityEvent, ActorRole, EventActor, EventKind};
 pub use fetch::{FetchCursor, FetchRun, FetchRunKind, ResourceKind};
 pub use freshness::DataAsOf;
+pub use issue_mutation::{IssueMutation, IssueMutationOp, IssueMutationResult};
 pub use membership::{Membership, MembershipRole};
 pub use org::Org;
+pub use pin::{Pin, PinKind, PIN_CAP};
 pub use repo::Repo;
-pub use store::{Store, StoreError};
+pub use store::{PendingRemoteIssue, Store, StoreError};
+pub use tag::{Tag, TagScopeKind, TAG_LINK_WARN_THRESHOLD};
+pub use tag_link::{TagLink, TagLinkKind};
 pub use team::Team;
 pub use user::User;
 pub use webhook::WebhookDelivery;

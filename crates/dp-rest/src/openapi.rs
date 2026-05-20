@@ -91,6 +91,21 @@ async fn webhook_github_stub() {}
         crate::admin::list_runs,
         crate::admin::anonymise_user,
         crate::admin::export_user,
+        // Pins (SCOPE-PROJECTS §6).
+        crate::pins::list_pins,
+        crate::pins::add_pin,
+        crate::pins::remove_pin,
+        crate::pins::reorder_pins,
+        // Tags (SCOPE-PROJECTS §7).
+        crate::tags::list_tags,
+        crate::tags::list_my_tags,
+        crate::tags::create_tag,
+        crate::tags::get_tag,
+        crate::tags::update_tag,
+        crate::tags::link_targets,
+        crate::tags::unlink_targets,
+        // GitHub App permission banner (SCOPE-PROJECTS §13.6).
+        crate::app_permissions::list_app_install_banner,
         // Webhooks (Phase 2 — docs-only stub, real handler in dp-fetcher).
         webhook_github_stub,
     ),
@@ -112,11 +127,36 @@ async fn webhook_github_stub() {}
         crate::admin::UserExport,
         crate::admin::ExportEvent,
         crate::admin::MembershipDto,
+        // Pins.
+        crate::pins::PinDto,
+        crate::pins::PinKindDto,
+        crate::pins::AddPinRequest,
+        crate::pins::PinKeyDto,
+        crate::pins::ReorderRequest,
+        // Tags.
+        crate::tags::TagDto,
+        crate::tags::TagScopeKindDto,
+        crate::tags::TagLinkKindDto,
+        crate::tags::CreateTagRequest,
+        crate::tags::UpdateTagRequest,
+        crate::tags::LinkRequestItem,
+        crate::tags::LinkBatchRequest,
+        crate::tags::LinkBatchResponse,
+        crate::tags::UnlinkBatchRequest,
+        crate::tags::TagDetailResponse,
+        crate::tags::TagLinkDto,
+        // GitHub App permission banner (SCOPE-PROJECTS §13.6).
+        crate::app_permissions::AppInstallBannerOrgDto,
+        crate::app_permissions::AppInstallBannerResponse,
+        crate::app_permissions::AppManifest,
     )),
     tags(
         (name = "reports",   description = "Per-user / team / org activity reports + freshness probe."),
         (name = "directory", description = "Operator-facing user / org / team listings + home-org flip."),
         (name = "admin",     description = "Operator-only surface: refresh, run-log, GDPR cascade + export."),
+        (name = "pins",      description = "Per-user pinned repos / tags (SCOPE-PROJECTS §6)."),
+        (name = "tags",      description = "Cross-org home-grown tags (SCOPE-PROJECTS §7)."),
+        (name = "github_app", description = "GitHub App install permission surface (SCOPE-PROJECTS §8.4, §13.6)."),
         (name = "webhooks",  description = "GitHub webhook receiver. HMAC-authenticated, not principal-wrapped."),
     ),
 )]

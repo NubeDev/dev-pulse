@@ -1,0 +1,24 @@
+name: projects-issues
+goal: |
+  Implement the workflow surface defined in SCOPE-PROJECTS.md:
+  per-user pinned repos and tags, a home-grown cross-org tag system
+  (with tags-as-a-reports-dimension), and synchronous user-initiated
+  GitHub Issues CRUD on an optimistic-CAS write path with a
+  reconciler guard. Lock the §13.1–§13.7 decisions, extend the
+  §15.6 envelope additively, and promote SCOPE-PROJECTS.md into
+  SCOPE.md as new sections + decisions.
+
+stages:
+  - investigate envelope-additivity coordination with the in-flight `org-leaderboard` worktree — produces a one-page note in the job dir naming which branch lands first, the exact §15.6 fields each adds, the migration-numbering convention, and which dashboard-01 shell files both jobs may touch
+  - REVIEW — confirm the coordination plan and the SCOPE-PROJECTS.md §12 open questions (pin cap, tag name charset, cross-scope promotion, webhook-vs-fetcher race, Projects v2 import) are either answered or explicitly deferred before any code
+  - migrations + domain types — `user_pins`, `tags`, `tag_links` per §6.3 / §7.2 (incl. the per-scope case-insensitive unique index and the polymorphic CHECK constraints); domain types for Pin, Tag, TagLink, IssueMutation; store traits
+  - pins surface — REST `/me/pins` (GET, POST, DELETE, PUT order) per §6.4, audit verbs `pin.add` / `pin.remove` / `pin.reorder` per §6.5, atomic reorder, pin cap from `dp-config` per §13.5
+  - tags surface — REST `/tags` and `/me/tags` per §7.5 incl. batch transactional link/unlink with per-item error array, viewer-filtered link counts per §7.4, audit verbs per §7.6, archive (no hard delete), 500-link warning per §13.5
+  - tags as a reports dimension — additively extend `ReportEnvelope` (§15.6) with the `tags` field (Vec of TagId) and the `repos` field (Vec of RepoId) per §7.7, add `GroupBy::Tag` (filter required, capped at 50), implement the metric × link-kind mapping table, return the `empty_reason` value `tag links do not match metric attribution` for the issue-only-tag-on-commit-metric case
+  - REVIEW — before any GitHub writes; full §15.6 envelope review with the leaderboard branch owner if it has landed; confirm §15.11 access gate is the only visibility check and §15.12 boundary is intact
+  - App permission bump (§13.6) — declare the `issues=write` scope in the default permission set behind `dp-config` flag `github.app.request_issues_write`, ship the §8.4 "writes not available" 403 path and UI affordances, ship the §13.6 migration banner with copy-able admin text
+  - issue write path (§8.2) — add `issues.version`, `pending_remote`, `pending_remote_at`, `pending_remote_actor` columns + migration; CAS-on-version handler (no row-lock across the GitHub round-trip); rollback-on-failure with version bump; audit verbs `issue.create` / `update` / `close` / `reopen` / `comment` per §8.5; timeout sweeper that emits `pending_remote_timeout` audit rows
+  - reconciler guard (§13.7) — fetcher / webhook reconciler must not overwrite a row with `pending_remote = true` younger than `issues.pending_remote_timeout_secs`; buffer webhook payloads for such rows and replay them after the flag clears; tests for the three race cases in §8.3
+  - frontend wiring — Pin sidebar with §6.1 render-cap "…and N more" overflow, Tag manager respecting §7.4 default scope and viewer-filtered link counts, Issue CRUD forms wired to the optimistic-CAS path with the §8.3 stale-version reload UX, writes-not-available banner per §8.4 / §13.6
+  - REVIEW — surface review against §11 success criteria (Phoenix pin scenario, one-click-create from a report row, read-only-org clean UI, audit-log "who closed #1234", cross-org tag filter, no fetcher-originated writes)
+  - promote SCOPE-PROJECTS.md into SCOPE.md — new sections mirroring §6 / §7 / §8 / §9, and a §15.x Decisions block carrying §13.1–§13.7 in the existing Decision format; either delete SCOPE-PROJECTS.md or retain as design rationale per its own promotion intent

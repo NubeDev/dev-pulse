@@ -82,9 +82,14 @@ use dp_domain::store::Store;
 use dp_fetcher::reconciler::Scheduler;
 use dp_fetcher::webhook::{self, WebhookMetrics, WebhookSecretSource, WebhookState};
 use dp_rest::{
-    admin_router, directory_router, reports_router, AdminState, AppState as RestAppState,
-    DevPulseApi,
+    admin_router, app_permissions_router, directory_router, pins_router, reports_router,
+    tags_router, AdminState, AppState as RestAppState, DevPulseApi,
 };
+
+// Re-export so the bin layer (which doesn't depend on dp-rest
+// directly) can name the GitHub App config type for
+// SCOPE-PROJECTS §13.6 `[github.app]`.
+pub use dp_rest::GitHubAppConfig;
 use utoipa::OpenApi;
 use uuid::Uuid;
 
@@ -147,6 +152,16 @@ pub struct AppState {
     /// metrics. Required by `ServerBuilder::with_metrics` to drive
     /// the latency middleware.
     pub metrics: Arc<StandardMetrics>,
+    /// GitHub App-side configuration carrying the SCOPE-PROJECTS
+    /// §13.6 `request_issues_write` `dp-config` flag (and the App
+    /// slug used to render the §13.6 migration banner's
+    /// admin-copyable text + per-install deep-link). The §8.4
+    /// write-gate (`dp_rest::require_issues_write`) and the
+    /// `GET /me/app-install-banner` handler both read through it.
+    /// Held as `Arc` so cloning [`AppState`] (the bin layer
+    /// constructs it once and the build path moves it in) stays
+    /// cheap.
+    pub github_app: Arc<GitHubAppConfig>,
 }
 
 /// All the inputs [`build`] needs. Bundles [`AppState`] with the
@@ -208,6 +223,7 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
         webhook_secret,
         registry,
         metrics,
+        github_app,
     } = state;
 
     // -----------------------------------------------------------------
@@ -217,16 +233,29 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
     // dp-rest constructor; the resulting `Router` is `Router<()>` and
     // composes into the `ServerBuilder<()>` accumulator below.
     // -----------------------------------------------------------------
-    let rest_state = Arc::new(RestAppState::new(store.clone()));
+    let rest_state = Arc::new(
+        RestAppState::new(store.clone()).with_github_app(github_app.clone()),
+    );
     let admin_state = Arc::new(AdminState::new(scheduler.clone(), store.clone()));
 
     let reports = reports_router(rest_state.clone());
-    let directory = directory_router(rest_state);
+    let directory = directory_router(rest_state.clone());
+    let pins = pins_router(rest_state.clone());
+    let tags = tags_router(rest_state.clone());
+    // SCOPE-PROJECTS §13.6 — banner + write-gate live in the same
+    // dp-rest module; the router fragment registers
+    // `(github_app, read)` so the §15.11 access gate is the only
+    // visibility check (out-of-org users get the empty `orgs`
+    // list, not a 403).
+    let github_app_routes = app_permissions_router(rest_state);
     let admin = admin_router(admin_state);
 
     let protected = Router::new()
         .merge(reports)
         .merge(directory)
+        .merge(pins)
+        .merge(tags)
+        .merge(github_app_routes)
         .merge(admin);
 
     // Hand the policy engine down via Extension. The per-route

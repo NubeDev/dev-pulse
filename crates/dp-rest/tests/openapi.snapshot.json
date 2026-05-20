@@ -213,6 +213,209 @@
         }
       }
     },
+    "/me/app-install-banner": {
+      "get": {
+        "tags": [
+          "github_app"
+        ],
+        "summary": "`GET /me/app-install-banner` — the §13.6 one-shot migration\nbanner data for the caller.",
+        "description": "* Reads memberships through `Store::list_memberships_for_user`\n  so the §15.11 access gate is the only visibility check\n  (out-of-org users get an empty `orgs` list — same as the\n  `/orgs` directory surface).\n* Per-org `writes_available` is the *same* verdict\n  [`require_issues_write`] would return — no separate code\n  path, no risk of the banner saying \"you can write\" while the\n  write-gate disagrees.\n* Not audited (read-only, no mutation).",
+        "operationId": "list_app_install_banner",
+        "responses": {
+          "200": {
+            "description": "Per-org App install status + §13.6 admin copy text",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppInstallBannerResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/me/pins": {
+      "get": {
+        "tags": [
+          "pins"
+        ],
+        "summary": "`GET /me/pins` — caller's pins, ordered by `position` ascending.",
+        "description": "Audit: not audited. Pins are personal UI state and `GET` traffic\nwould swamp the audit log without operational value (§6.5 only\npins the three mutation verbs).",
+        "operationId": "list_pins",
+        "responses": {
+          "200": {
+            "description": "Caller's pins, ordered by position",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PinDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "pins"
+        ],
+        "summary": "`POST /me/pins` — append a pin to the caller's list.",
+        "description": "* Position is server-assigned (`len(existing)`).\n* Returns `400 pin_cap_exceeded` if the caller already has\n  [`PIN_CAP`] pins (§13.5).\n* Returns `409 pin_exists` if the `(kind, target_id)` row is\n  already in the caller's pins (idempotent re-pinning, §6.4 /\n  the composite-PK note in [`dp_domain::store::Store::add_pin`]).\n* Audit: writes [`audit::PIN_ADD`] with target\n  `\"<kind>:<target_id>\"` after the row lands.",
+        "operationId": "add_pin",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddPinRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Pin appended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PinDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Pin cap exceeded"
+          },
+          "409": {
+            "description": "Pin already exists for this caller"
+          }
+        }
+      }
+    },
+    "/me/pins/order": {
+      "put": {
+        "tags": [
+          "pins"
+        ],
+        "summary": "`PUT /me/pins/order` — atomically rewrite the caller's pin order.",
+        "description": "The request body's `order` must exactly cover the caller's\ncurrent pin set; missing or extra `(kind, target_id)` entries\nsurface as `400 reorder_set_mismatch`. The store applies the\nrewrite in one transaction so a concurrent reader cannot observe\na partial reorder (§6.3 row-by-row comment, §13 atomicity rules).\n\nAudit: writes one [`audit::PIN_REORDER`] row with target\n`\"count:<n>\"` (n = number of pins reordered). We do **not** dump\nthe full key list into the audit target — that would balloon the\n`dp_audit_log.target` column past the small-text comfort zone\nand the audit verb is meaningful at row granularity (one row =\none reorder operation).",
+        "operationId": "reorder_pins",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReorderRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Pins reordered atomically",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ack"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`order` does not exactly cover the caller's pins"
+          }
+        }
+      }
+    },
+    "/me/pins/{kind}/{target_id}": {
+      "delete": {
+        "tags": [
+          "pins"
+        ],
+        "summary": "`DELETE /me/pins/{kind}/{id}` — remove one pin.",
+        "description": "Returns `404 pin_not_found` when the row is not in the caller's\npin set. Audit: writes [`audit::PIN_REMOVE`] after the row is\ngone.\n\nNote on positions: the §6.3 schema does not auto-compact `position`\nvalues on delete (the store does not renumber). The next\n[`reorder_pins`](crate::pins::reorder_pins) call is what compacts\nthe gap.",
+        "operationId": "remove_pin",
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "path",
+            "description": "`repo` or `tag`",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/PinKindDto"
+            }
+          },
+          {
+            "name": "target_id",
+            "in": "path",
+            "description": "Pin target id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Pin removed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ack"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such pin for caller"
+          }
+        }
+      }
+    },
+    "/me/tags": {
+      "get": {
+        "tags": [
+          "tags"
+        ],
+        "summary": "`GET /me/tags` — caller-owned or caller-is-scope-member tags.",
+        "description": "Convenience over `GET /tags` for the new-tag picker and the\n\"my tags\" sidebar group. Returns the same row shape; the\nfilter is \"the viewer is a scope member\" (which for user-scope\n= owner, for team/org-scope = membership).",
+        "operationId": "list_my_tags",
+        "parameters": [
+          {
+            "name": "include_archived",
+            "in": "query",
+            "description": "Include archived tags in the response. Default `false`.",
+            "required": false,
+            "schema": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Tags caller owns or is a scope member of",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TagDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/orgs": {
       "get": {
         "tags": [
@@ -394,6 +597,284 @@
         }
       }
     },
+    "/tags": {
+      "get": {
+        "tags": [
+          "tags"
+        ],
+        "operationId": "list_tags",
+        "parameters": [
+          {
+            "name": "include_archived",
+            "in": "query",
+            "description": "Include archived tags in the response. Default `false`.",
+            "required": false,
+            "schema": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Visible tags with viewer-filtered link counts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TagDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "tags"
+        ],
+        "summary": "`POST /tags` — create a tag.",
+        "description": "* Caller must be a scope member of the requested scope, else\n  `403 tag_scope_member_required`.\n* Case-insensitive name uniqueness per scope is a DB-level\n  expression index — a clash surfaces as\n  `409 tag_name_conflict`.\n* Audit: writes [`audit::TAG_CREATE`] with target\n  `\"<scope_kind>:<scope_id>:<tag_id>\"`.",
+        "operationId": "create_tag",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateTagRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Tag created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TagDto"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not a member of the requested scope"
+          },
+          "409": {
+            "description": "Tag name already in use for this scope"
+          }
+        }
+      }
+    },
+    "/tags/{id}": {
+      "get": {
+        "tags": [
+          "tags"
+        ],
+        "summary": "`GET /tags/{id}` — single tag, plus a page of its visible links.",
+        "operationId": "get_tag",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Tag id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "links_page",
+            "in": "query",
+            "description": "Zero-based page index. Defaults to 0.",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Tag + paginated visible link slice",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TagDetailResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Tag does not exist or is invisible to caller"
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "tags"
+        ],
+        "summary": "`PATCH /tags/{id}` — rename / recolour / set description /\narchive. Mutually-exclusive verb mapping:",
+        "description": "* If `archived` is set: emits [`audit::TAG_ARCHIVE`] (regardless\n  of whether other fields are also patched in the same request).\n* Otherwise emits [`audit::TAG_UPDATE`].\n\nThe two-verb split lets the audit log answer \"when did this\ntag retire?\" with one query (`WHERE action = 'tag.archive'\nAND target LIKE '<tag_id>'`) without scanning every\n`tag.update` row.",
+        "operationId": "update_tag",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Tag id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateTagRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Patched tag",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TagDto"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not a scope member"
+          },
+          "404": {
+            "description": "Tag does not exist or is invisible"
+          },
+          "409": {
+            "description": "Tag name not unique within scope"
+          }
+        }
+      }
+    },
+    "/tags/{id}/links": {
+      "post": {
+        "tags": [
+          "tags"
+        ],
+        "summary": "`POST /tags/{id}/links` — batch link, transactional all-or-\nnothing per §7.5.",
+        "description": "Per-item validation (pre-commit):\n* `target_id` must not duplicate an existing link of the same\n  `kind` on this tag (`duplicate`).\n* `target_id` must not duplicate another row in the same\n  batch (`duplicate_in_batch`).\n\nOn any per-item failure the response is `422 batch_rejected`\nwith an `items: [{index, code, message}, ...]` array and\n**nothing is committed**. On success, one audit row per link\nis written per §7.6, and `LinkBatchResponse.warning` is set\nwhen the post-commit link count exceeds\n[`TAG_LINK_WARN_THRESHOLD`] (§13.5).",
+        "operationId": "link_targets",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Tag id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinkBatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Links attached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinkBatchResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not a scope member"
+          },
+          "404": {
+            "description": "Tag does not exist or is invisible"
+          },
+          "422": {
+            "description": "Batch rejected — per-item errors in `items[]`"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "tags"
+        ],
+        "summary": "`DELETE /tags/{id}/links` — batch unlink, transactional\nall-or-nothing per §7.5.",
+        "description": "Same per-item error surface as link: items that do not match\na live `(kind, target_id)` on the tag come back as\n`code = \"not_linked\"` and the whole batch is rejected (no\npartial unlinks). One `tag.unlink` audit row per detached\nlink.",
+        "operationId": "unlink_targets",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Tag id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UnlinkBatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Links detached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ack"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not a scope member"
+          },
+          "404": {
+            "description": "Tag does not exist or is invisible"
+          },
+          "422": {
+            "description": "Batch rejected — per-item errors in `items[]`"
+          }
+        }
+      }
+    },
     "/teams": {
       "get": {
         "tags": [
@@ -545,6 +1026,113 @@
           }
         }
       },
+      "AddPinRequest": {
+        "type": "object",
+        "description": "Body for `POST /me/pins`. The server picks the position\n(`len(existing)`) and the `pinned_at` timestamp.",
+        "required": [
+          "kind",
+          "target_id"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/PinKindDto",
+            "description": "Pin target kind."
+          },
+          "target_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "`dp_repos.id` or `dp_tags.id` per [`kind`](Self::kind)."
+          }
+        }
+      },
+      "AppInstallBannerOrgDto": {
+        "type": "object",
+        "description": "One row in `GET /me/app-install-banner`.\n\n`writes_available` mirrors the write-gate verdict for the\n`(viewer, org)` pair so the frontend can render the §8.4\naffordance without re-querying. `admin_copy_text` is the\n§13.6 copy-able snippet; `manage_url` is the GitHub deep-link\n(omitted when no App slug is configured).",
+        "required": [
+          "org_id",
+          "login",
+          "writes_available",
+          "admin_copy_text"
+        ],
+        "properties": {
+          "admin_copy_text": {
+            "type": "string",
+            "description": "Copy-able admin text the viewer pastes into Slack / email\nto ask their org admin to re-consent. Always present —\neven for orgs where writes are already available, the\nfrontend hides the row but the text is harmless to carry."
+          },
+          "login": {
+            "type": "string",
+            "description": "GitHub org login (e.g. `\"NubeIO\"`)."
+          },
+          "manage_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "GitHub-side deep-link to the install's permissions page.\n`None` when no slug is configured or when no install\nrecord exists for the org."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Display name, if known."
+          },
+          "org_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "dev-pulse-local org id."
+          },
+          "writes_available": {
+            "type": "boolean",
+            "description": "`true` iff a §8 issue write against this org would succeed\n(deployment flag on AND install record allows\n`issues: write`)."
+          }
+        }
+      },
+      "AppInstallBannerResponse": {
+        "type": "object",
+        "description": "Full §13.6 banner response.\n\n`request_issues_write` mirrors the deployment-level flag so the\nUI can render the \"writes disabled in this deployment\" mode\nwithout inspecting each row's `writes_available`.",
+        "required": [
+          "request_issues_write",
+          "orgs"
+        ],
+        "properties": {
+          "orgs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AppInstallBannerOrgDto"
+            },
+            "description": "One row per org the viewer is a member of (read through\n`Store::list_memberships_for_user`). Orgs the viewer\ncannot see at all are *not* included — the §15.11 access\ngate is the single visibility check (§9 cross-ref)."
+          },
+          "request_issues_write": {
+            "type": "boolean",
+            "description": "`false` when [`GitHubAppConfig::request_issues_write`] is\noff; the §8 surface is hard-disabled deployment-wide."
+          }
+        }
+      },
+      "AppManifest": {
+        "type": "object",
+        "description": "The App's default permission set as declared in its manifest.\n\nEach key is a GitHub permission resource (e.g. `\"issues\"`,\n`\"metadata\"`); each value is the requested level (`\"read\"` or\n`\"write\"`). [`app_manifest_permissions`] renders this from\n[`GitHubAppConfig`] — `issues` is `\"write\"` when\n[`GitHubAppConfig::request_issues_write`] is `true`, omitted\notherwise. The other resources are the read-only set the v1\nreporting surface needs and do not change with the flag.\n\nUsed by deployment tooling and the (future) `/admin/app-manifest`\nsurface. Pure value; no side-effects.",
+        "required": [
+          "slug",
+          "default_permissions"
+        ],
+        "properties": {
+          "default_permissions": {
+            "type": "object",
+            "description": "`resource -> level` map. Serialised in BTreeMap order so\nthe JSON is deterministic across runs (the OpenAPI\nsnapshot test cares).",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "slug": {
+            "type": "string",
+            "description": "App slug — informational, copied verbatim from\n[`GitHubAppConfig::slug`]. Empty when unset."
+          }
+        }
+      },
       "CountRow": {
         "type": "object",
         "description": "One aggregated count row. The `key` is stringified so the same\nshape works for UUID group-bys (`User`, `Team`, `Repo`, `Org`) and\ntime-bucket group-bys (`Day`, `Week`, `Month` — RFC3339 instants).",
@@ -561,6 +1149,42 @@
           "key": {
             "type": "string",
             "description": "The bucket key, formatted as a string."
+          }
+        }
+      },
+      "CreateTagRequest": {
+        "type": "object",
+        "description": "Body for `POST /tags`. Server picks `id`, `created_by`,\n`created_at`. `scope_id` is required; the caller must be a\nscope member or the request returns `403`.",
+        "required": [
+          "scope_kind",
+          "scope_id",
+          "name",
+          "color"
+        ],
+        "properties": {
+          "color": {
+            "type": "string",
+            "description": "Semantic palette name."
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional description."
+          },
+          "name": {
+            "type": "string",
+            "description": "Display name. Case-insensitive uniqueness is enforced per\nscope by the migration-0005 expression index — a clash\nsurfaces as `409 tag_name_conflict`."
+          },
+          "scope_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Owning user/team/org id. For `user`-scope tags, must equal\nthe caller (returns `403 tag_scope_member_required`\notherwise)."
+          },
+          "scope_kind": {
+            "$ref": "#/components/schemas/TagScopeKindDto",
+            "description": "Scope discriminator."
           }
         }
       },
@@ -730,6 +1354,64 @@
           }
         }
       },
+      "LinkBatchRequest": {
+        "type": "object",
+        "description": "Body for `POST /tags/{id}/links` — batch link.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LinkRequestItem"
+            },
+            "description": "Items to link. Transactional all-or-nothing; per-item\nerrors are returned via [`ApiError::Batch`] on rejection."
+          }
+        }
+      },
+      "LinkBatchResponse": {
+        "type": "object",
+        "description": "Response from `POST /tags/{id}/links` on success — the\nattached link rows plus an optional soft warning when the\ntag's link count crosses [`TAG_LINK_WARN_THRESHOLD`] (§13.5).",
+        "required": [
+          "linked"
+        ],
+        "properties": {
+          "linked": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TagLinkDto"
+            },
+            "description": "The persisted link rows in insertion order."
+          },
+          "warning": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional advisory warning. `\"tag_link_count_high\"` when\nthe tag now holds more than the warning threshold — the\noperation committed regardless (§13.5 \"the response\ncarries the warning, the operation still commits\")."
+          }
+        }
+      },
+      "LinkRequestItem": {
+        "type": "object",
+        "description": "One entry in a `POST /tags/{id}/links` request — what to\nattach.",
+        "required": [
+          "kind",
+          "target_id"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/TagLinkKindDto",
+            "description": "Target kind discriminator."
+          },
+          "target_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Linked target id, per [`kind`](Self::kind)."
+          }
+        }
+      },
       "MembershipDto": {
         "type": "object",
         "description": "`dp_memberships` projection inside the export.",
@@ -801,6 +1483,64 @@
           }
         }
       },
+      "PinDto": {
+        "type": "object",
+        "description": "One row in `GET /me/pins`. Hydration of `target_id` to a full\nrepo / tag payload is a follow-up stage — for now the client\njoins against `/orgs`, `/repos`, `/tags` itself.",
+        "required": [
+          "kind",
+          "target_id",
+          "position",
+          "pinned_at"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/PinKindDto",
+            "description": "Discriminator for `target_id`."
+          },
+          "pinned_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the row was created."
+          },
+          "position": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Sidebar order. Lower comes first; assigned by the server."
+          },
+          "target_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Either a `dp_repos.id` or a `dp_tags.id` per [`kind`](Self::kind)."
+          }
+        }
+      },
+      "PinKeyDto": {
+        "type": "object",
+        "description": "One entry of [`ReorderRequest::order`].",
+        "required": [
+          "kind",
+          "target_id"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/PinKindDto",
+            "description": "Pin target kind."
+          },
+          "target_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "`dp_repos.id` or `dp_tags.id` per [`kind`](Self::kind)."
+          }
+        }
+      },
+      "PinKindDto": {
+        "type": "string",
+        "description": "Wire form of [`PinKind`]. Mirrors the lower-case strings in the\n`dp_user_pins.kind` CHECK constraint (`'repo' | 'tag'`).",
+        "enum": [
+          "repo",
+          "tag"
+        ]
+      },
       "RefreshResponse": {
         "oneOf": [
           {
@@ -849,6 +1589,22 @@
         ],
         "description": "Response body for `POST /admin/refresh`. Variants are flattened\nso a coalesce comes out as `{ \"ran\": false }` and a real tick\nas `{ \"ran\": true, \"items\": …, \"errors\": …, \"partial\": … }`."
       },
+      "ReorderRequest": {
+        "type": "object",
+        "description": "Body for `PUT /me/pins/order`. The slice **must** exactly cover\nthe caller's current pin set — extra / missing entries are\nrejected (`400 reorder_set_mismatch`).",
+        "required": [
+          "order"
+        ],
+        "properties": {
+          "order": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PinKeyDto"
+            },
+            "description": "New order. Entry `i` becomes `position = i` after the\ntransaction commits."
+          }
+        }
+      },
       "ReportResponse": {
         "type": "object",
         "description": "The envelope every report handler returns. `rows` is left as\n[`serde_json::Value`] so the same struct serves the five report\nshapes without forcing a per-handler enum — the OpenAPI doc\ndescribes each handler's `rows` schema via per-route `body =\n<Concrete>` overrides (added when the aggregator lands).",
@@ -861,6 +1617,13 @@
           "data_as_of": {
             "$ref": "#/components/schemas/DataAsOfDto",
             "description": "Per-response freshness envelope (§11.7)."
+          },
+          "empty_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the report has no rows, when the emptiness is the\n*intentional* SCOPE-PROJECTS §7.7 outcome of the tag filter\nnot matching the requested metric's attribution column\n(e.g. an `issue`-only tag queried against a commit metric).\n\n`None` for every other empty result (window too tight,\nno matching events, etc.) — those stay as `rows: []` so the\nUI's existing empty-state copy still renders. Locked literal\nis [`EMPTY_REASON_TAG_KIND_MISMATCH`]."
           },
           "resolved_window": {
             "type": "object",
@@ -890,6 +1653,172 @@
             "description": "User to flip home org for."
           }
         }
+      },
+      "TagDetailResponse": {
+        "type": "object",
+        "description": "`GET /tags/{id}` response: the tag plus a *page* of its links\n(§7.5: \"links are paginated separately (`?links_page=…`) to\nkeep a single response bounded even for tags near the §13.5\n500-link soft warning\").",
+        "required": [
+          "tag",
+          "links",
+          "links_page",
+          "links_page_size"
+        ],
+        "properties": {
+          "links": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TagLinkDto"
+            },
+            "description": "One page of links — only those visible to the viewer."
+          },
+          "links_page": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Zero-based page index of the returned slice.",
+            "minimum": 0
+          },
+          "links_page_size": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Page size used for `links` (see [`LINKS_PAGE_SIZE`]).",
+            "minimum": 0
+          },
+          "tag": {
+            "$ref": "#/components/schemas/TagDto",
+            "description": "The tag header."
+          }
+        }
+      },
+      "TagDto": {
+        "type": "object",
+        "description": "Tag row carried back to the client. Mirrors [`Tag`] but the\nthree nullable `scope_*_id` columns are collapsed into a single\n`scope_id` — the discriminator + id is enough on the wire, and\nmatches how the frontend renders it.",
+        "required": [
+          "id",
+          "scope_kind",
+          "scope_id",
+          "name",
+          "color",
+          "created_by",
+          "created_at",
+          "visible_link_count"
+        ],
+        "properties": {
+          "archived_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "`Some(_)` iff archived (§7.2 soft-delete)."
+          },
+          "color": {
+            "type": "string",
+            "description": "Semantic palette name (`indigo`, `red`, …)."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Created-at timestamp."
+          },
+          "created_by": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Author."
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional free-form description."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Tag primary key."
+          },
+          "name": {
+            "type": "string",
+            "description": "Display name."
+          },
+          "scope_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Owning user/team/org id (per [`scope_kind`](Self::scope_kind))."
+          },
+          "scope_kind": {
+            "$ref": "#/components/schemas/TagScopeKindDto",
+            "description": "Scope discriminator."
+          },
+          "visible_link_count": {
+            "type": "integer",
+            "format": "int32",
+            "description": "**Viewer-visible** link count — never the true total\n(§7.4). Populated by every list / get path.",
+            "minimum": 0
+          }
+        }
+      },
+      "TagLinkDto": {
+        "type": "object",
+        "description": "One link row carried back to the client. Mirrors [`TagLink`]\nbut collapses the four `target_*_id` columns into a single\n`target_id` paired with [`kind`](Self::kind).",
+        "required": [
+          "id",
+          "tag_id",
+          "kind",
+          "target_id",
+          "added_by",
+          "added_at"
+        ],
+        "properties": {
+          "added_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the link was attached."
+          },
+          "added_by": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Who attached the link."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Link primary key."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/TagLinkKindDto",
+            "description": "Discriminator for `target_id`."
+          },
+          "tag_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Parent tag."
+          },
+          "target_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Linked repo / issue / user / team id per [`kind`](Self::kind)."
+          }
+        }
+      },
+      "TagLinkKindDto": {
+        "type": "string",
+        "description": "Wire form of [`TagLinkKind`] — `repo | issue | user | team`.",
+        "enum": [
+          "repo",
+          "issue",
+          "user",
+          "team"
+        ]
+      },
+      "TagScopeKindDto": {
+        "type": "string",
+        "description": "Wire form of [`TagScopeKind`] — `user | team | org`.",
+        "enum": [
+          "user",
+          "team",
+          "org"
+        ]
       },
       "TeamDto": {
         "type": "object",
@@ -924,6 +1853,56 @@
           "slug": {
             "type": "string",
             "description": "URL slug."
+          }
+        }
+      },
+      "UnlinkBatchRequest": {
+        "type": "object",
+        "description": "Body for `DELETE /tags/{id}/links` — batch unlink. Same\n`(kind, target_id)` shape as link — IDs are resolved on the\nserver inside the same transaction so a partial unlink is\nimpossible.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LinkRequestItem"
+            },
+            "description": "Items to detach."
+          }
+        }
+      },
+      "UpdateTagRequest": {
+        "type": "object",
+        "description": "Body for `PATCH /tags/{id}`. Every field is optional; missing\nfields are left unchanged. Setting `archived_at: Some(true)`\narchives the tag (§7.4 — no hard delete); `Some(false)`\nun-archives.",
+        "properties": {
+          "archived": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "`Some(true)` archives, `Some(false)` un-archives, `None`\nleaves the archive bit alone."
+          },
+          "color": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "New color (recolour)."
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Set or clear the description.\n`None` leaves untouched; `Some(None)` clears."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "New name (rename)."
           }
         }
       },
@@ -1009,6 +1988,18 @@
     {
       "name": "admin",
       "description": "Operator-only surface: refresh, run-log, GDPR cascade + export."
+    },
+    {
+      "name": "pins",
+      "description": "Per-user pinned repos / tags (SCOPE-PROJECTS §6)."
+    },
+    {
+      "name": "tags",
+      "description": "Cross-org home-grown tags (SCOPE-PROJECTS §7)."
+    },
+    {
+      "name": "github_app",
+      "description": "GitHub App install permission surface (SCOPE-PROJECTS §8.4, §13.6)."
     },
     {
       "name": "webhooks",

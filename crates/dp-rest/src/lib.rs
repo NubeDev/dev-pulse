@@ -33,17 +33,26 @@
 //! [`Store::set_home_org_for_user`]: dp_domain::store::Store::set_home_org_for_user
 
 pub mod admin;
+pub mod app_permissions;
 pub mod audit;
 pub mod directory;
 pub mod error;
+pub mod issues;
 pub mod openapi;
+pub mod pins;
 pub mod reports;
 pub mod state;
+pub mod tags;
 
 pub use admin::{
     admin_router, anonymise_user, export_user, list_runs, AdminState, ExportEvent, FetchRunDto,
     MembershipDto, RefreshQuery, RefreshResponse, RunsQuery, UserExport, EXPORT_PAGE_SIZE,
     RUNS_DEFAULT_LIMIT, RUNS_MAX_LIMIT,
+};
+pub use app_permissions::{
+    app_manifest_permissions, app_permissions_router, list_app_install_banner,
+    require_issues_write, AppInstallBannerOrgDto, AppInstallBannerResponse, AppManifest,
+    GitHubAppConfig,
 };
 pub use audit::Principal;
 pub use directory::{
@@ -51,9 +60,23 @@ pub use directory::{
     OrgRequired, SetHomeOrgRequest, TeamDto, UserDto,
 };
 pub use error::ApiError;
+pub use issues::{
+    acquire_issue_mutation_slot, commit_issue_mutation, rollback_issue_mutation,
+    sweep_pending_remote_timeouts, AcquireOutcome, AcquiredSlot, SweepReport,
+};
 pub use openapi::DevPulseApi;
+pub use pins::{
+    add_pin, list_pins, pins_router, remove_pin, reorder_pins, AddPinRequest, PinDto, PinKeyDto,
+    PinKindDto, ReorderRequest, PIN_CAP,
+};
 pub use reports::{
     freshness_report, home_org_split_report, org_report, reports_router, team_report,
     user_report, CountRow, DataAsOfDto, HomeOrgSplitRow, ReportQuery, ReportResponse,
 };
 pub use state::AppState;
+pub use tags::{
+    create_tag, get_tag, link_targets, list_my_tags, list_tags, tags_router, unlink_targets,
+    update_tag, CreateTagRequest, LinkBatchRequest, LinkBatchResponse, LinkRequestItem,
+    ListTagsQuery, TagDetailQuery, TagDetailResponse, TagDto, TagLinkKindDto, TagScopeKindDto,
+    UnlinkBatchRequest, UpdateTagRequest, LINKS_PAGE_SIZE,
+};

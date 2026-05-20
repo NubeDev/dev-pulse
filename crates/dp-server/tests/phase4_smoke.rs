@@ -364,6 +364,10 @@ impl TestApp {
             webhook_secret,
             registry: registry_p,
             metrics,
+            // SCOPE-PROJECTS §13.6 — the smoke does not exercise
+            // the App permission surface, so the default config
+            // (request_issues_write = true, no slug) is fine.
+            github_app: std::sync::Arc::new(dp_rest::GitHubAppConfig::default()),
         };
 
         let router = build(BuildConfig {

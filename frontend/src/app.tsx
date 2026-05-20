@@ -29,6 +29,9 @@ import { LeaderboardPage } from "./reports/leaderboard-page.jsx";
 import { OrgReportPage } from "./reports/org-report-page.jsx";
 import { TeamReportPage } from "./reports/team-report-page.jsx";
 import { UserReportPage } from "./reports/user-report-page.jsx";
+import { IssuesPage } from "./workflow/issues-page.jsx";
+import { PinsPage } from "./workflow/pins-page.jsx";
+import { TagsPage } from "./workflow/tags-page.jsx";
 import {
   adminTabOf,
   directoryTabOf,
@@ -37,9 +40,11 @@ import {
   reportTabOf,
   sectionOf,
   useRoute,
+  workflowTabOf,
   type AdminTab,
   type DirectoryTab,
   type ReportTab,
+  type WorkflowTab,
 } from "./routes.js";
 
 export function App(): JSX.Element {
@@ -98,7 +103,7 @@ function SectionPane({
   section,
   route,
 }: {
-  section: "reports" | "directory" | "admin";
+  section: "reports" | "directory" | "admin" | "workflow";
   route: string;
 }): JSX.Element {
   switch (section) {
@@ -108,6 +113,8 @@ function SectionPane({
       return <DirectoryPane tab={directoryTabOf(route)} />;
     case "admin":
       return <AdminPane tab={adminTabOf(route)} />;
+    case "workflow":
+      return <WorkflowPane tab={workflowTabOf(route)} />;
   }
 }
 
@@ -138,6 +145,17 @@ function DirectoryPane({ tab }: { tab: DirectoryTab }): JSX.Element {
       return <TeamsPage />;
     case "home-org":
       return <HomeOrgPage />;
+  }
+}
+
+function WorkflowPane({ tab }: { tab: WorkflowTab }): JSX.Element {
+  switch (tab) {
+    case "pins":
+      return <PinsPage />;
+    case "tags":
+      return <TagsPage />;
+    case "issues":
+      return <IssuesPage />;
   }
 }
 

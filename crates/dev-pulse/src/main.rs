@@ -68,7 +68,7 @@ use dp_server::auth::{
     config::GitHubAuthConfig, load_static_engine, register_dev_pulse_resources,
     CachedGithubOrgsSource, GithubOrgsSource, GithubOrgsStamper, StaticGithubOrgsSource,
 };
-use dp_server::{AppState, BuildConfig};
+use dp_server::{AppState, BuildConfig, GitHubAppConfig};
 
 // ---------------------------------------------------------------- config
 
@@ -125,6 +125,16 @@ struct GithubSection {
     /// real per-tick cost.
     #[serde(default = "default_max_requests_per_run")]
     max_requests_per_run: u64,
+    /// `[github.app]` — SCOPE-PROJECTS §13.6 GitHub App permission
+    /// configuration. Absent → defaults (`request_issues_write =
+    /// true`, no slug). The defaults match a fresh deployment per
+    /// §13.6 step 1 ("default `true` in new deployments"). Set
+    /// `request_issues_write = false` to hard-disable the §8
+    /// issue mutation surface (the documented escape hatch for
+    /// deployments whose security policy forbids any App with
+    /// write scope).
+    #[serde(default)]
+    app: GitHubAppConfig,
 }
 
 fn default_max_requests_per_run() -> u64 {
@@ -144,6 +154,7 @@ impl Default for GithubSection {
             token_ref: None,
             base_url: default_github_base_url(),
             max_requests_per_run: default_max_requests_per_run(),
+            app: GitHubAppConfig::default(),
         }
     }
 }
@@ -681,6 +692,12 @@ async fn run_serve(matches: &ArgMatches) -> Result<()> {
             webhook_secret,
             registry: prom_registry,
             metrics,
+            // SCOPE-PROJECTS §13.6 — the `[github.app]` block in
+            // `dp-config` carries the `request_issues_write`
+            // flag and the App slug. Absent block → defaults
+            // (flag on, no slug), which matches §13.6 step 1
+            // ("default `true` in new deployments").
+            github_app: Arc::new(cfg.github.app.clone()),
         },
         auth: auth_state,
         oauth: oauth_state,

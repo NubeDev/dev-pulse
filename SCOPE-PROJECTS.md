@@ -1,5 +1,25 @@
-# dev-pulse — Scope (Projects, Issues & Pins)
+# dev-pulse — Scope (Projects, Issues & Pins) — *design rationale*
 
+> **Status: promoted.** The normative scope for the workflow
+> surface now lives in [SCOPE.md](SCOPE.md) §16 (pinned repos &
+> tags), §17 (project tags), §18 (GitHub Issues CRUD), §19 (auth
+> implications), and the §15.15–§15.21 decisions block.
+>
+> This document is **retained as design rationale**, not deleted.
+> It captures the vision, the comparison against GitHub Projects v2,
+> conflict-handling walk-throughs, and the open questions that led
+> to the locked decisions. When the two documents disagree,
+> [SCOPE.md](SCOPE.md) is the normative source — this file is the
+> design diary. New decisions and surface-shape edits land in
+> [SCOPE.md](SCOPE.md); this file is updated only when its rationale
+> drifts from what was actually built.
+>
+> SCOPE.md §20 carries the §13.x → §15.x decision mapping.
+>
+> ---
+>
+> Original framing follows.
+>
 > Companion to [SCOPE.md](SCOPE.md). Covers the **workflow** half of
 > dev-pulse: pinned repos, home-grown project tags, and GitHub Issues
 > CRUD. The reporting half stays in [SCOPE.md](SCOPE.md); the two

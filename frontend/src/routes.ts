@@ -25,7 +25,27 @@
 
 import { useSyncExternalStore } from "react";
 
-export type Section = "reports" | "directory" | "admin" | "login";
+export type Section = "reports" | "directory" | "admin" | "workflow" | "login";
+
+/** Sub-route under the workflow section (SCOPE-PROJECTS §6 / §7 / §8). */
+export type WorkflowTab = "pins" | "tags" | "issues";
+
+/** Parse `#/workflow/...` → the active sub-tab. Defaults to `pins`. */
+export function workflowTabOf(route: string): WorkflowTab {
+  const path = route.replace(/^#/, "").replace(/^\/+/, "").split("/");
+  if (path[0] !== "workflow") return "pins";
+  switch (path[1]) {
+    case "tags":
+      return "tags";
+    case "issues":
+      return "issues";
+    case "pins":
+    case undefined:
+    case "":
+    default:
+      return "pins";
+  }
+}
 
 /** Sub-route under the reports section — drives the reports sub-nav. */
 export type ReportTab = "user" | "team" | "org" | "home-org-split" | "leaderboard" | "freshness";
@@ -138,6 +158,8 @@ export function sectionOf(route: string): Section {
       return "directory";
     case "admin":
       return "admin";
+    case "workflow":
+      return "workflow";
     case "reports":
     case "":
     default:
@@ -165,6 +187,7 @@ export function isKnownRoute(route: string): boolean {
     head === "login" ||
     head === "reports" ||
     head === "directory" ||
-    head === "admin"
+    head === "admin" ||
+    head === "workflow"
   );
 }

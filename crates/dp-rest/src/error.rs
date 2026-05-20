@@ -44,6 +44,108 @@ pub enum ApiError {
     /// read-path variants are user-recoverable.
     #[error("store error: {0}")]
     Store(#[from] StoreError),
+
+    /// Row already exists or a unique constraint fired in a way the
+    /// caller can recover from (e.g. re-pinning an item that is
+    /// already pinned — SCOPE-PROJECTS §6.4). Mapped to `409`.
+    #[error("{message}")]
+    Conflict {
+        /// Stable machine-readable code (e.g. `"pin_exists"`).
+        code: &'static str,
+        /// Human-readable message; safe to render verbatim.
+        message: String,
+    },
+
+    /// The targeted row does not exist (e.g. removing a pin that
+    /// was never set). Mapped to `404`.
+    #[error("{message}")]
+    NotFound {
+        /// Stable machine-readable code (e.g. `"pin_not_found"`).
+        code: &'static str,
+        /// Human-readable message; safe to render verbatim.
+        message: String,
+    },
+
+    /// Caller is authenticated but lacks the capability for the
+    /// requested operation — e.g. trying to mutate a tag whose
+    /// scope they can see but are not a member of
+    /// (SCOPE-PROJECTS §7.4 mutation rule). Mapped to `403`.
+    #[error("{message}")]
+    Forbidden {
+        /// Stable machine-readable code (e.g. `"tag_scope_member_required"`).
+        code: &'static str,
+        /// Human-readable message; safe to render verbatim.
+        message: String,
+    },
+
+    /// The caller asked for a write against an org whose GitHub App
+    /// install was granted **read-only** (`issues: write` not in
+    /// the install's permission set) — or no install record exists
+    /// for the org yet (fail-closed). SCOPE-PROJECTS §8.4 / §13.6:
+    /// the API mirrors the UI affordance with
+    /// `403 writes_not_available_for_org` so callers that bypass
+    /// the UI get a deterministic, machine-readable refusal — not
+    /// a 500.
+    ///
+    /// The body carries the offending org's login so the frontend
+    /// can render the banner without a second lookup, and a
+    /// `manage_url` deep-link the admin-copyable text in §13.6
+    /// points at.
+    #[error("{message}")]
+    WritesNotAvailable {
+        /// Stable machine-readable code; always
+        /// `"writes_not_available_for_org"`.
+        code: &'static str,
+        /// Human-readable message; safe to render verbatim.
+        message: String,
+        /// GitHub login of the org whose install lacks
+        /// `issues: write`. Used by the frontend to highlight the
+        /// matching row in the §13.6 banner.
+        org_login: String,
+        /// GitHub-side deep-link to the install's permissions
+        /// page — the same URL the §13.6 banner offers as a
+        /// copy-able admin link. `None` when dev-pulse has no
+        /// install record for the org (fail-closed branch).
+        manage_url: Option<String>,
+    },
+
+    /// Per-item validation failure inside a batch request. Used by
+    /// the `POST /tags/{id}/links` / `DELETE /tags/{id}/links`
+    /// transactional batch path (SCOPE-PROJECTS §7.5): the whole
+    /// batch was rejected, and the caller gets one error object per
+    /// offending item so the UI can highlight exactly which rows
+    /// failed. Mapped to `422`.
+    ///
+    /// The body shape is `{ error, code, items: [{ index, code,
+    /// message }, ...] }` — `code` at the top level is the
+    /// envelope-level reason (typically `"batch_rejected"`), each
+    /// per-item code is the granular reason (`"target_not_visible"`,
+    /// `"wrong_kind"`, `"duplicate"`, …). All-or-nothing semantics:
+    /// nothing was committed.
+    #[error("{message}")]
+    Batch {
+        /// Envelope-level code (usually `"batch_rejected"`).
+        code: &'static str,
+        /// Envelope-level human message.
+        message: String,
+        /// Per-item failures. Indices reference positions in the
+        /// caller's submitted batch.
+        items: Vec<BatchItemError>,
+    },
+}
+
+/// One per-item failure in an [`ApiError::Batch`] response. Always
+/// serialises as `{ index, code, message }` — wire-stable so the
+/// frontend / MCP client can switch on `code` per item.
+#[derive(Debug, Clone, Serialize)]
+pub struct BatchItemError {
+    /// Zero-based position in the caller's submitted batch.
+    pub index: usize,
+    /// Stable machine-readable code for this row's failure
+    /// (`"target_not_visible"`, `"wrong_kind"`, `"duplicate"`, …).
+    pub code: &'static str,
+    /// Human-readable message.
+    pub message: String,
 }
 
 impl From<ResolveError> for ApiError {
@@ -70,28 +172,100 @@ struct ErrorBody<'a> {
     code: &'a str,
 }
 
+#[derive(Serialize)]
+struct BatchErrorBody<'a> {
+    error: &'a str,
+    code: &'a str,
+    items: &'a [BatchItemError],
+}
+
+/// Body shape for the §8.4 `writes_not_available_for_org` 403.
+/// Carries the offending org's login + a `manage_url` deep-link so
+/// the frontend can render the §13.6 banner row without a second
+/// round-trip. Wire-stable.
+#[derive(Serialize)]
+struct WritesNotAvailableBody<'a> {
+    error: &'a str,
+    code: &'a str,
+    org_login: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    manage_url: Option<&'a str>,
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let (status, code, message) = match &self {
-            ApiError::BadRequest { code, message } => {
-                (StatusCode::BAD_REQUEST, *code, message.clone())
-            }
+        match &self {
+            ApiError::BadRequest { code, message } => (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorBody {
+                    error: message,
+                    code,
+                }),
+            )
+                .into_response(),
             ApiError::Store(e) => {
                 tracing::error!(error = %e, "store error returned to client");
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    "store_error",
-                    "internal error".to_string(),
+                    Json(ErrorBody {
+                        error: "internal error",
+                        code: "store_error",
+                    }),
                 )
+                    .into_response()
             }
-        };
-        (
-            status,
-            Json(ErrorBody {
-                error: &message,
+            ApiError::Conflict { code, message } => (
+                StatusCode::CONFLICT,
+                Json(ErrorBody {
+                    error: message,
+                    code,
+                }),
+            )
+                .into_response(),
+            ApiError::NotFound { code, message } => (
+                StatusCode::NOT_FOUND,
+                Json(ErrorBody {
+                    error: message,
+                    code,
+                }),
+            )
+                .into_response(),
+            ApiError::Forbidden { code, message } => (
+                StatusCode::FORBIDDEN,
+                Json(ErrorBody {
+                    error: message,
+                    code,
+                }),
+            )
+                .into_response(),
+            ApiError::WritesNotAvailable {
                 code,
-            }),
-        )
-            .into_response()
+                message,
+                org_login,
+                manage_url,
+            } => (
+                StatusCode::FORBIDDEN,
+                Json(WritesNotAvailableBody {
+                    error: message,
+                    code,
+                    org_login,
+                    manage_url: manage_url.as_deref(),
+                }),
+            )
+                .into_response(),
+            ApiError::Batch {
+                code,
+                message,
+                items,
+            } => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(BatchErrorBody {
+                    error: message,
+                    code,
+                    items,
+                }),
+            )
+                .into_response(),
+        }
     }
 }

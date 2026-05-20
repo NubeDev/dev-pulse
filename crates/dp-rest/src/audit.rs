@@ -18,9 +18,19 @@
 //! | [`RUNS_LIST`]        | `GET /admin/runs`                                   |
 //! | [`AUTH_SIGNED_IN`]   | successful OAuth callback (session minted)          |
 //! | [`AUTH_DENIED_ORG`]  | authz denial for an out-of-org GitHub user          |
+//! | [`PIN_ADD`]          | `POST /me/pins` (SCOPE-PROJECTS §6.5)               |
+//! | [`PIN_REMOVE`]       | `DELETE /me/pins/{kind}/{id}` (SCOPE-PROJECTS §6.5) |
+//! | [`PIN_REORDER`]      | `PUT /me/pins/order` (SCOPE-PROJECTS §6.5)          |
+//! | [`TAG_CREATE`]       | `POST /tags` (SCOPE-PROJECTS §7.6)                  |
+//! | [`TAG_UPDATE`]       | `PATCH /tags/{id}` rename / recolour (§7.6)         |
+//! | [`TAG_ARCHIVE`]      | `PATCH /tags/{id}` setting `archived_at` (§7.6)     |
+//! | [`TAG_LINK`]         | `POST /tags/{id}/links` — one row per link (§7.6)   |
+//! | [`TAG_UNLINK`]       | `DELETE /tags/{id}/links` — one row per link (§7.6) |
 //!
 //! Stage 4 wires `HOME_ORG_SET`; the others land with their owning
-//! handlers in stages 5 / 9.
+//! handlers in stages 5 / 9. The three `pin.*` verbs ship with the
+//! workflow-surface stage in SCOPE-PROJECTS §6; the five `tag.*`
+//! verbs ship with the tags-surface stage in SCOPE-PROJECTS §7.6.
 
 use chrono::Utc;
 use uuid::Uuid;
@@ -46,6 +56,61 @@ pub const RUNS_LIST: &str = "runs.list";
 pub const AUTH_SIGNED_IN: &str = "auth.signed_in";
 /// `auth.denied_org` — authz denial for an out-of-org GitHub user.
 pub const AUTH_DENIED_ORG: &str = "auth.denied_org";
+/// `pin.add` — `POST /me/pins` (SCOPE-PROJECTS §6.5).
+pub const PIN_ADD: &str = "pin.add";
+/// `pin.remove` — `DELETE /me/pins/{kind}/{id}` (SCOPE-PROJECTS §6.5).
+pub const PIN_REMOVE: &str = "pin.remove";
+/// `pin.reorder` — `PUT /me/pins/order` (SCOPE-PROJECTS §6.5).
+pub const PIN_REORDER: &str = "pin.reorder";
+/// `tag.create` — `POST /tags` (SCOPE-PROJECTS §7.6).
+pub const TAG_CREATE: &str = "tag.create";
+/// `tag.update` — `PATCH /tags/{id}` (rename / recolour /
+/// description). Archive is its own verb so the audit log can
+/// answer "when was this tag retired?" with one query.
+pub const TAG_UPDATE: &str = "tag.update";
+/// `tag.archive` — `PATCH /tags/{id}` with `archived_at` set.
+pub const TAG_ARCHIVE: &str = "tag.archive";
+/// `tag.link` — one row **per linked target** in `POST /tags/{id}/links`.
+/// Target string carries the full `(tag_id, kind, target_id)` tuple
+/// per §7.6 "Each `tag.link` / `tag.unlink` records the
+/// `(tag_id, kind, target_id)` tuple."
+pub const TAG_LINK: &str = "tag.link";
+/// `tag.unlink` — one row per detached link in
+/// `DELETE /tags/{id}/links`. Same tuple format as [`TAG_LINK`].
+pub const TAG_UNLINK: &str = "tag.unlink";
+/// `issue.create` — `POST /repos/{owner}/{repo}/issues` mirrored
+/// to GitHub via the §8.2 write path (SCOPE-PROJECTS §8.5).
+pub const ISSUE_CREATE: &str = "issue.create";
+/// `issue.update` — `PATCH /repos/{owner}/{repo}/issues/{n}`
+/// partial update (title / body / labels / assignees / milestone).
+pub const ISSUE_UPDATE: &str = "issue.update";
+/// `issue.close` — explicit close transition via §8.2 write path.
+pub const ISSUE_CLOSE: &str = "issue.close";
+/// `issue.reopen` — explicit reopen transition via §8.2 write path.
+pub const ISSUE_REOPEN: &str = "issue.reopen";
+/// `issue.comment` — `POST /repos/{owner}/{repo}/issues/{n}/comments`.
+pub const ISSUE_COMMENT: &str = "issue.comment";
+/// `issue.pending_remote_timeout` — emitted by the §8.5 sweeper
+/// when a `dp_issues.pending_remote` flag has lingered past
+/// `issues.pending_remote_timeout_secs`. The audit target carries
+/// the issue id; the corresponding `dp_issue_mutations.result`
+/// row (if one was recorded) is updated to
+/// `pending_remote_timeout` in the same tick.
+pub const ISSUE_PENDING_REMOTE_TIMEOUT: &str = "issue.pending_remote_timeout";
+
+/// Pick the §8.5 audit verb for a given
+/// [`IssueMutationOp`][dp_domain::issue_mutation::IssueMutationOp].
+/// Single source of truth so handlers do not open-code the match.
+pub fn issue_audit_verb(op: dp_domain::issue_mutation::IssueMutationOp) -> &'static str {
+    use dp_domain::issue_mutation::IssueMutationOp as Op;
+    match op {
+        Op::Create => ISSUE_CREATE,
+        Op::Update => ISSUE_UPDATE,
+        Op::Close => ISSUE_CLOSE,
+        Op::Reopen => ISSUE_REOPEN,
+        Op::Comment => ISSUE_COMMENT,
+    }
+}
 
 // ---- principal stub ------------------------------------------------------
 
