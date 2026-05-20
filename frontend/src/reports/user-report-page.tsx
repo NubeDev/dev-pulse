@@ -203,26 +203,20 @@ export function UserReportPage(): JSX.Element {
   return (
     <Card>
       <CardHeader>
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "flex-start",
-            gap: "1rem",
-            flexWrap: "wrap",
-          }}
-        >
-          <div>
-            <CardTitle>User activity report</CardTitle>
-            <CardDescription>
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="grid gap-1">
+            <CardTitle className="text-2xl font-semibold tracking-tight">
+              User activity report
+            </CardTitle>
+            <CardDescription className="text-muted-foreground">
               <code>GET /reports/user/:user_id</code> · SCOPE §11.5 headline + table + trend.
             </CardDescription>
           </div>
           <DataAsOfBanner data={dataAsOf} loading={anyLoading && !dataAsOf} />
         </div>
       </CardHeader>
-      <CardContent style={{ display: "grid", gap: "1rem" }}>
-        <div style={{ display: "grid", gap: "0.375rem", maxWidth: "24rem" }}>
+      <CardContent className="grid gap-4">
+        <div className="grid max-w-sm gap-1.5">
           <Label htmlFor={dropdownId}>User</Label>
           <Select
             value={activeUserId ?? ""}
@@ -236,7 +230,7 @@ export function UserReportPage(): JSX.Element {
               {users.map((u) => (
                 <SelectItem key={u.id} value={u.id}>
                   {u.name ?? u.login}
-                  {u.name ? <span style={{ color: "var(--muted-foreground)" }}> · {u.login}</span> : null}
+                  {u.name ? <span className="text-muted-foreground"> · {u.login}</span> : null}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -247,18 +241,14 @@ export function UserReportPage(): JSX.Element {
 
         <LensTabs value={lens} onChange={setLens}>
           {!activeUserId ? (
-            <p style={{ color: "var(--muted-foreground)" }}>
+            <p className="text-muted-foreground">
               Pick a user above to load the report.
             </p>
           ) : (
             <>
               <p
                 data-testid="headline"
-                style={{
-                  fontSize: "1rem",
-                  margin: "0 0 1rem",
-                  color: "var(--foreground)",
-                }}
+                className="mb-2 text-base text-foreground"
               >
                 {anyLoading && !dataAsOf ? "Loading report…" : headline}
               </p>

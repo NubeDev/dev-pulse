@@ -4,7 +4,14 @@
  * Renders the lens-aware headline timestamp prominently, with a
  * fallback to the latest reconciler/webhook stamp when `headline`
  * is null (a fresh org with no reconciler run yet).
+ *
+ * Visual: a compact muted pill that lives inside the report card's
+ * header — uses Tailwind tokens (`bg-muted`, `text-muted-foreground`)
+ * plus a shadcn `Badge` for the source/relative-time delta tag.
  */
+
+import { Badge } from "@nube/starter-ui-kit/components/badge";
+import { cn } from "@nube/starter-ui-kit/lib/utils";
 
 import type { DataAsOf } from "../api/client.js";
 
@@ -41,26 +48,14 @@ export function DataAsOfBanner({ data, loading }: DataAsOfBannerProps): JSX.Elem
       role="status"
       aria-live="polite"
       data-testid="data-as-of"
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: "0.5rem",
-        padding: "0.375rem 0.75rem",
-        borderRadius: "var(--radius-sm, 0.375rem)",
-        background: "var(--muted)",
-        color: "var(--muted-foreground)",
-        fontSize: "0.8125rem",
-        fontVariantNumeric: "tabular-nums",
-      }}
+      className="inline-flex items-center gap-2 rounded-md bg-muted px-3 py-1.5 text-[0.8125rem] tabular-nums text-muted-foreground"
     >
       <span
         aria-hidden
-        style={{
-          width: "0.5rem",
-          height: "0.5rem",
-          borderRadius: "50%",
-          background: loading ? "var(--muted-foreground)" : "oklch(0.7 0.18 145)",
-        }}
+        className={cn(
+          "size-2 shrink-0 rounded-full",
+          loading ? "bg-muted-foreground" : "bg-emerald-500",
+        )}
       />
       {loading || !data ? (
         <span>Data as of … (loading)</span>
@@ -68,10 +63,13 @@ export function DataAsOfBanner({ data, loading }: DataAsOfBannerProps): JSX.Elem
         const { ts, source } = pick(data);
         if (!ts) return <span>Data not yet available (pending first reconciler run)</span>;
         return (
-          <span>
-            <strong style={{ color: "var(--foreground)" }}>Data as of</strong>{" "}
-            {formatTs(ts)}
-            <span style={{ marginLeft: "0.375rem", opacity: 0.7 }}>· {source}</span>
+          <span className="inline-flex items-center gap-2">
+            <span>
+              <strong className="text-foreground">Data as of</strong> {formatTs(ts)}
+            </span>
+            <Badge variant="secondary" className="uppercase tracking-wider text-[0.625rem]">
+              {source}
+            </Badge>
           </span>
         );
       })()}
