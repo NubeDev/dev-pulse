@@ -6,8 +6,9 @@
  * the server, not the client — once an org is picked, we fetch
  * once and render.
  *
- * Markup: semantic `<table>` with shared `HEADER_CLASS` / `CELL_CLASS`
- * Tailwind constants (the kit doesn't ship a Table primitive).
+ * Layout (stage 4 visual rewrite): PageHeading lockup, filter Card
+ * with the org selector, results Card with the shadcn-shaped
+ * `Table` primitive (local — the kit doesn't ship one).
  */
 
 import { useState } from "react";
@@ -15,7 +16,6 @@ import { Alert, AlertDescription, AlertTitle } from "@nube/starter-ui-kit/compon
 import {
   Card,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
 } from "@nube/starter-ui-kit/components/card";
@@ -34,11 +34,16 @@ import {
   EmptyHeader,
   EmptyTitle,
 } from "../components/empty.jsx";
+import { PageHeading } from "../components/page-heading.jsx";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "../components/table.jsx";
 import { useDirectory, useTeamsForOrg } from "./use-directory.js";
-
-const HEADER_CLASS =
-  "border-b border-border px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground";
-const CELL_CLASS = "border-b border-border px-3 py-2 align-middle text-sm";
 
 export function TeamsPage(): JSX.Element {
   const dir = useDirectory();
@@ -46,88 +51,106 @@ export function TeamsPage(): JSX.Element {
   const teamsState = useTeamsForOrg(orgId);
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Teams</CardTitle>
-        <CardDescription>
-          <code>GET /teams?org_id=…</code> · teams are always scoped
-          to a single org, so pick one to load the list.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="grid gap-4">
-        <div className="grid max-w-xs gap-1">
-          <Label htmlFor="teams-org-select">Org</Label>
-          <Select
-            value={orgId ?? undefined}
-            onValueChange={(v) => setOrgId(v)}
-          >
-            <SelectTrigger id="teams-org-select" data-testid="teams-org-select">
-              <SelectValue placeholder={dir.loading ? "Loading orgs…" : "Select an org"} />
-            </SelectTrigger>
-            <SelectContent>
-              {dir.orgs.map((o) => (
-                <SelectItem key={o.id} value={o.id}>
-                  {o.login}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
+    <div className="grid gap-6">
+      <PageHeading
+        title="Teams"
+        description={
+          <>
+            <code className="font-mono text-xs">GET /teams?org_id=…</code> ·
+            teams are always scoped to a single org, so pick one to load the
+            list.
+          </>
+        }
+      />
 
-        {dir.error ? (
-          <Alert variant="destructive">
-            <AlertTitle>Failed to load orgs</AlertTitle>
-            <AlertDescription>{dir.error}</AlertDescription>
-          </Alert>
-        ) : null}
-        {teamsState.error ? (
-          <Alert variant="destructive" data-testid="teams-error">
-            <AlertTitle>Failed to load teams</AlertTitle>
-            <AlertDescription>{teamsState.error}</AlertDescription>
-          </Alert>
-        ) : null}
-
-        {orgId === null ? (
-          <p className="text-muted-foreground">
-            Pick an org to see its teams.
-          </p>
-        ) : teamsState.loading ? (
-          <p className="text-muted-foreground">Loading teams…</p>
-        ) : teamsState.teams.length === 0 ? (
-          <Empty data-testid="teams-empty">
-            <EmptyHeader>
-              <EmptyTitle>No teams in this org yet</EmptyTitle>
-              <EmptyDescription>
-                Teams appear here once GitHub returns them for the selected
-                org.
-              </EmptyDescription>
-            </EmptyHeader>
-          </Empty>
-        ) : (
-          <div className="overflow-hidden rounded-md border border-border bg-card">
-            <table data-testid="teams-table" className="w-full border-collapse">
-              <thead className="bg-muted">
-                <tr>
-                  <th className={HEADER_CLASS}>Slug</th>
-                  <th className={HEADER_CLASS}>Name</th>
-                </tr>
-              </thead>
-              <tbody>
-                {[...teamsState.teams]
-                  .sort((a, b) => a.slug.localeCompare(b.slug))
-                  .map((t) => (
-                    <tr key={t.id} data-team-id={t.id}>
-                      <td className={CELL_CLASS}>
-                        <code>{t.slug}</code>
-                      </td>
-                      <td className={CELL_CLASS}>{t.name}</td>
-                    </tr>
-                  ))}
-              </tbody>
-            </table>
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-lg font-medium">Filters</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid max-w-xs gap-1.5">
+            <Label htmlFor="teams-org-select">Org</Label>
+            <Select
+              value={orgId ?? undefined}
+              onValueChange={(v) => setOrgId(v)}
+            >
+              <SelectTrigger id="teams-org-select" data-testid="teams-org-select">
+                <SelectValue
+                  placeholder={dir.loading ? "Loading orgs…" : "Select an org"}
+                />
+              </SelectTrigger>
+              <SelectContent>
+                {dir.orgs.map((o) => (
+                  <SelectItem key={o.id} value={o.id}>
+                    {o.login}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
-        )}
-      </CardContent>
-    </Card>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-lg font-medium">Results</CardTitle>
+        </CardHeader>
+        <CardContent className="grid gap-4">
+          {dir.error ? (
+            <Alert variant="destructive">
+              <AlertTitle>Failed to load orgs</AlertTitle>
+              <AlertDescription>{dir.error}</AlertDescription>
+            </Alert>
+          ) : null}
+          {teamsState.error ? (
+            <Alert variant="destructive" data-testid="teams-error">
+              <AlertTitle>Failed to load teams</AlertTitle>
+              <AlertDescription>{teamsState.error}</AlertDescription>
+            </Alert>
+          ) : null}
+
+          {orgId === null ? (
+            <p className="text-sm text-muted-foreground">
+              Pick an org to see its teams.
+            </p>
+          ) : teamsState.loading ? (
+            <p className="text-sm text-muted-foreground">Loading teams…</p>
+          ) : teamsState.teams.length === 0 ? (
+            <Empty data-testid="teams-empty">
+              <EmptyHeader>
+                <EmptyTitle>No teams in this org yet</EmptyTitle>
+                <EmptyDescription>
+                  Teams appear here once GitHub returns them for the selected
+                  org.
+                </EmptyDescription>
+              </EmptyHeader>
+            </Empty>
+          ) : (
+            <div className="overflow-hidden rounded-md border border-border bg-card">
+              <Table data-testid="teams-table">
+                <TableHeader className="bg-muted/50">
+                  <TableRow>
+                    <TableHead>Slug</TableHead>
+                    <TableHead>Name</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {[...teamsState.teams]
+                    .sort((a, b) => a.slug.localeCompare(b.slug))
+                    .map((t) => (
+                      <TableRow key={t.id} data-team-id={t.id}>
+                        <TableCell>
+                          <code className="font-mono text-xs">{t.slug}</code>
+                        </TableCell>
+                        <TableCell>{t.name}</TableCell>
+                      </TableRow>
+                    ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
   );
 }

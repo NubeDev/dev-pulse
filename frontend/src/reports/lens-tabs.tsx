@@ -5,14 +5,11 @@
  *   - All orgs combined    — one row per user, summed across orgs.
  *   - Per-org split        — one row per (user × org).
  *
- * The user-report page renders the selected lens; the toggle owns
- * the `ScopeMode` value the page maps onto `ReportParams.scope_mode`.
- *
- * Implementation: shadcn `Tabs` in the kit's default horizontal
- * orientation (TabsList sits *above* TabsContent — i.e. tabs read
- * left-to-right). The kit's Tabs root carries `flex` + `data-horizontal:flex-col`,
- * so wrap it in a `grid gap-3` block to give the list and its hint
- * paragraph room to breathe without the triggers wrapping vertically.
+ * Implementation: shadcn `Tabs` in the kit's default segmented style
+ * (TabsList renders the muted pill row with the active trigger
+ * elevated to `bg-background`). The triggers read left-to-right as
+ * the kit's horizontal-orientation default; the page composes the
+ * tab content underneath.
  */
 
 import {
@@ -41,21 +38,24 @@ export interface LensTabsProps {
 }
 
 export function LensTabs({ value, onChange, children }: LensTabsProps): JSX.Element {
+  const active = LENSES.find((l) => l.value === value) ?? LENSES[0];
   return (
     <Tabs
       value={value}
       onValueChange={(v) => onChange(v as ScopeMode)}
       orientation="horizontal"
-      className="gap-3"
+      className="gap-4"
     >
-      <TabsList className="self-start">
-        {LENSES.map((l) => (
-          <TabsTrigger key={l.value} value={l.value}>{l.label}</TabsTrigger>
-        ))}
-      </TabsList>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <TabsList>
+          {LENSES.map((l) => (
+            <TabsTrigger key={l.value} value={l.value}>{l.label}</TabsTrigger>
+          ))}
+        </TabsList>
+        <p className="text-xs text-muted-foreground">{active!.hint}</p>
+      </div>
       {LENSES.map((l) => (
-        <TabsContent key={l.value} value={l.value} className="grid gap-3">
-          <p className="text-[0.8125rem] text-muted-foreground">{l.hint}</p>
+        <TabsContent key={l.value} value={l.value} className="grid gap-4">
           {children}
         </TabsContent>
       ))}

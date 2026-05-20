@@ -120,11 +120,30 @@ test.describe("dev-pulse smoke", () => {
   // strips a CardHeader or hand-rolls the lens toggle again, this
   // test trips immediately.
   //
+  // Phase 7 Apple-grade visual overhaul additions:
+  //   * body computed `font-family` must include "Inter" (the lifted
+  //     Inter Variable token from codeless-ui's globals.css).
+  //   * `--radius` on :root must be `0.625rem` (the same radius
+  //     ladder the reference uses).
+  //
   // Freshness is a single-view status dashboard (no lens toggle), so
   // it's checked for Card only — the Tabs requirement applies to the
   // four lens-bearing report pages (user, team, org, home-org-split).
-  test("every report page renders with shadcn Card + Tabs primitives", async ({ page }) => {
+  test("every report page renders with shadcn Card + Tabs primitives + Inter + --radius", async ({
+    page,
+  }) => {
     await signIn(page);
+
+    // ---- Design-token invariants (apply once; they're root-scoped).
+    const bodyFont = await page.evaluate(() =>
+      window.getComputedStyle(document.body).fontFamily,
+    );
+    expect(bodyFont, `body font-family was "${bodyFont}"`).toMatch(/Inter/i);
+
+    const rootRadius = await page.evaluate(() =>
+      getComputedStyle(document.documentElement).getPropertyValue("--radius").trim(),
+    );
+    expect(rootRadius, `--radius was "${rootRadius}"`).toBe("0.625rem");
 
     const reportsWithTabs = [
       { href: "#/reports/user", label: "user" },
@@ -138,8 +157,15 @@ test.describe("dev-pulse smoke", () => {
       await expect(page.getByTestId("reports-subnav")).toBeVisible();
       const cards = page.locator('[data-slot="card"]');
       const tabsLists = page.locator('[data-slot="tabs-list"]');
+      const tabs = page.locator('[data-slot="tabs"]');
       expect(await cards.count(), `${r.label}: <Card> count`).toBeGreaterThanOrEqual(1);
-      expect(await tabsLists.count(), `${r.label}: <Tabs> count`).toBeGreaterThanOrEqual(1);
+      // Stage-7 brief: assert on [data-slot="tabs"] specifically; the
+      // root Tabs wrapper carries the slot, and tabs-list lives inside
+      // it. Either presence proves the shadcn Tabs is mounted.
+      expect(
+        (await tabs.count()) + (await tabsLists.count()),
+        `${r.label}: <Tabs> presence`,
+      ).toBeGreaterThanOrEqual(1);
     }
 
     // Freshness — single-view dashboard, Card only.

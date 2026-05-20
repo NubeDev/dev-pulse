@@ -15,6 +15,10 @@
  * this isn't a destructive write, it's an idempotent re-assignment,
  * so the affirmative button is a regular primary `Button` and the
  * trigger composes via `<DialogTrigger asChild>`.
+ *
+ * Layout (stage 4 visual rewrite): PageHeading lockup at top, then a
+ * single form Card holding the two `Select`s, the trigger Button,
+ * and the feedback Alert. The form uses `grid gap-4` rhythm.
  */
 
 import { useMemo, useState } from "react";
@@ -25,7 +29,6 @@ import { Badge } from "@nube/starter-ui-kit/components/badge";
 import {
   Card,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
 } from "@nube/starter-ui-kit/components/card";
@@ -49,6 +52,7 @@ import {
 } from "@nube/starter-ui-kit/components/select";
 
 import { api } from "../api/client.js";
+import { PageHeading } from "../components/page-heading.jsx";
 import { USE_MOCK } from "./mocks.js";
 import { useDirectory } from "./use-directory.js";
 
@@ -118,165 +122,175 @@ export function HomeOrgPage(): JSX.Element {
     userId !== null && orgId !== null && !mutation.isPending;
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Home-org assignment</CardTitle>
-        <CardDescription>
-          <code>POST /home-org</code> · pick a user, pick one of their
-          orgs, confirm. Exactly one membership row per user ends up
-          flagged as <code>home_org</code> server-side.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="grid gap-4">
-        <div className="grid grid-cols-2 gap-3">
-          <div className="grid gap-1">
-            <Label htmlFor="home-org-user">User</Label>
-            <Select
-              value={userId ?? undefined}
-              onValueChange={(v) => {
-                setUserId(v);
-                // Reset org selection — the new user may not be in
-                // the previously chosen org.
-                setOrgId(null);
-                setFeedback(null);
-              }}
-            >
-              <SelectTrigger id="home-org-user" data-testid="home-org-user">
-                <SelectValue
-                  placeholder={dir.loading ? "Loading users…" : "Select a user"}
-                />
-              </SelectTrigger>
-              <SelectContent>
-                {dir.users.map((u) => (
-                  <SelectItem key={u.user.id} value={u.user.id}>
-                    {u.user.login}
-                    {u.user.name ? ` — ${u.user.name}` : ""}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            {selectedUser && selectedUser.home_org && (
-              <span className="text-[0.8125rem] text-muted-foreground">
-                Current home org:{" "}
-                <Badge variant="outline">
-                  {orgsById.get(selectedUser.home_org)?.login ??
-                    selectedUser.home_org.slice(0, 8)}
-                </Badge>
-              </span>
-            )}
-          </div>
+    <div className="grid gap-6">
+      <PageHeading
+        title="Home-org assignment"
+        description={
+          <>
+            <code className="font-mono text-xs">POST /home-org</code> · pick a
+            user, pick one of their orgs, confirm. Exactly one membership row
+            per user ends up flagged as <code>home_org</code> server-side.
+          </>
+        }
+      />
 
-          <div className="grid gap-1">
-            <Label htmlFor="home-org-org">Home org</Label>
-            <Select
-              value={orgId ?? undefined}
-              onValueChange={(v) => {
-                setOrgId(v);
-                setFeedback(null);
-              }}
-              disabled={selectedUser === null}
-            >
-              <SelectTrigger id="home-org-org" data-testid="home-org-org">
-                <SelectValue
-                  placeholder={
-                    selectedUser === null
-                      ? "Pick a user first"
-                      : selectableOrgs.length === 0
-                        ? "User has no memberships"
-                        : "Select an org"
-                  }
-                />
-              </SelectTrigger>
-              <SelectContent>
-                {selectableOrgs.map((o) => (
-                  <SelectItem key={o.id} value={o.id}>
-                    {o.login}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <Dialog
-            open={open}
-            onOpenChange={(next) => {
-              if (!next && mutation.isPending) return;
-              setOpen(next);
-            }}
-          >
-            <DialogTrigger asChild>
-              <Button
-                data-testid="home-org-submit"
-                disabled={!canSubmit}
-              >
-                Set home org…
-              </Button>
-            </DialogTrigger>
-            <DialogContent data-testid="home-org-confirm">
-              <DialogHeader>
-                <DialogTitle>Confirm home-org assignment</DialogTitle>
-                <DialogDescription>
-                  Any previous home-org flag for this user will be cleared
-                  atomically.
-                </DialogDescription>
-              </DialogHeader>
-              {userId && orgId ? (
-                <div className="grid gap-2 py-2 text-sm">
-                  <div className="grid grid-cols-[6rem_1fr] items-center gap-2">
-                    <span className="text-muted-foreground">User</span>
-                    <strong>
-                      {usersById.get(userId)?.user.login ?? "user"}
-                    </strong>
-                  </div>
-                  <div className="grid grid-cols-[6rem_1fr] items-center gap-2">
-                    <span className="text-muted-foreground">Home org</span>
-                    <strong>
-                      {orgsById.get(orgId)?.login ?? "org"}
-                    </strong>
-                  </div>
-                </div>
-              ) : null}
-              <DialogFooter>
-                <DialogClose asChild>
-                  <Button
-                    variant="outline"
-                    data-testid="home-org-cancel"
-                    disabled={mutation.isPending}
-                  >
-                    Cancel
-                  </Button>
-                </DialogClose>
-                <Button
-                  data-testid="home-org-confirm-submit"
-                  disabled={mutation.isPending || !userId || !orgId}
-                  onClick={(e) => {
-                    e.preventDefault();
-                    if (userId && orgId) mutation.mutate({ userId, orgId });
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-lg font-medium">Assign home org</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid gap-4">
+            <div className="grid gap-4 grid-cols-1 sm:grid-cols-2">
+              <div className="grid gap-1.5">
+                <Label htmlFor="home-org-user">User</Label>
+                <Select
+                  value={userId ?? undefined}
+                  onValueChange={(v) => {
+                    setUserId(v);
+                    // Reset org selection — the new user may not be in
+                    // the previously chosen org.
+                    setOrgId(null);
+                    setFeedback(null);
                   }}
                 >
-                  {mutation.isPending ? "Setting…" : "Confirm"}
-                </Button>
-              </DialogFooter>
-            </DialogContent>
-          </Dialog>
-          {feedback && (
-            <Alert
-              variant={feedback.kind === "ok" ? "default" : "destructive"}
-              data-testid="home-org-feedback"
-              data-kind={feedback.kind}
-              aria-live="polite"
-              className="py-2"
-            >
-              <AlertTitle>
-                {feedback.kind === "ok" ? "Done" : "Failed"}
-              </AlertTitle>
-              <AlertDescription>{feedback.message}</AlertDescription>
-            </Alert>
-          )}
-        </div>
-      </CardContent>
-    </Card>
+                  <SelectTrigger id="home-org-user" data-testid="home-org-user">
+                    <SelectValue
+                      placeholder={dir.loading ? "Loading users…" : "Select a user"}
+                    />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {dir.users.map((u) => (
+                      <SelectItem key={u.user.id} value={u.user.id}>
+                        {u.user.login}
+                        {u.user.name ? ` — ${u.user.name}` : ""}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {selectedUser && selectedUser.home_org && (
+                  <span className="text-xs text-muted-foreground">
+                    Current home org:{" "}
+                    <Badge variant="outline">
+                      {orgsById.get(selectedUser.home_org)?.login ??
+                        selectedUser.home_org.slice(0, 8)}
+                    </Badge>
+                  </span>
+                )}
+              </div>
+
+              <div className="grid gap-1.5">
+                <Label htmlFor="home-org-org">Home org</Label>
+                <Select
+                  value={orgId ?? undefined}
+                  onValueChange={(v) => {
+                    setOrgId(v);
+                    setFeedback(null);
+                  }}
+                  disabled={selectedUser === null}
+                >
+                  <SelectTrigger id="home-org-org" data-testid="home-org-org">
+                    <SelectValue
+                      placeholder={
+                        selectedUser === null
+                          ? "Pick a user first"
+                          : selectableOrgs.length === 0
+                            ? "User has no memberships"
+                            : "Select an org"
+                      }
+                    />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {selectableOrgs.map((o) => (
+                      <SelectItem key={o.id} value={o.id}>
+                        {o.login}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3">
+              <Dialog
+                open={open}
+                onOpenChange={(next) => {
+                  if (!next && mutation.isPending) return;
+                  setOpen(next);
+                }}
+              >
+                <DialogTrigger asChild>
+                  <Button
+                    data-testid="home-org-submit"
+                    disabled={!canSubmit}
+                  >
+                    Set home org…
+                  </Button>
+                </DialogTrigger>
+                <DialogContent data-testid="home-org-confirm">
+                  <DialogHeader>
+                    <DialogTitle>Confirm home-org assignment</DialogTitle>
+                    <DialogDescription>
+                      Any previous home-org flag for this user will be cleared
+                      atomically.
+                    </DialogDescription>
+                  </DialogHeader>
+                  {userId && orgId ? (
+                    <div className="grid gap-4 py-2 text-sm">
+                      <div className="grid grid-cols-[6rem_1fr] items-center gap-3">
+                        <span className="text-muted-foreground">User</span>
+                        <strong className="font-medium">
+                          {usersById.get(userId)?.user.login ?? "user"}
+                        </strong>
+                      </div>
+                      <div className="grid grid-cols-[6rem_1fr] items-center gap-3">
+                        <span className="text-muted-foreground">Home org</span>
+                        <strong className="font-medium">
+                          {orgsById.get(orgId)?.login ?? "org"}
+                        </strong>
+                      </div>
+                    </div>
+                  ) : null}
+                  <DialogFooter>
+                    <DialogClose asChild>
+                      <Button
+                        variant="outline"
+                        data-testid="home-org-cancel"
+                        disabled={mutation.isPending}
+                      >
+                        Cancel
+                      </Button>
+                    </DialogClose>
+                    <Button
+                      data-testid="home-org-confirm-submit"
+                      disabled={mutation.isPending || !userId || !orgId}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        if (userId && orgId) mutation.mutate({ userId, orgId });
+                      }}
+                    >
+                      {mutation.isPending ? "Setting…" : "Confirm"}
+                    </Button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
+            </div>
+
+            {feedback && (
+              <Alert
+                variant={feedback.kind === "ok" ? "default" : "destructive"}
+                data-testid="home-org-feedback"
+                data-kind={feedback.kind}
+                aria-live="polite"
+              >
+                <AlertTitle>
+                  {feedback.kind === "ok" ? "Done" : "Failed"}
+                </AlertTitle>
+                <AlertDescription>{feedback.message}</AlertDescription>
+              </Alert>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+    </div>
   );
 }

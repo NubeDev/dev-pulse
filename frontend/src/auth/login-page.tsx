@@ -26,12 +26,12 @@ import {
   Card,
   CardContent,
   CardDescription,
+  CardFooter,
   CardHeader,
   CardTitle,
 } from "@nube/starter-ui-kit/components/card";
 import { Input } from "@nube/starter-ui-kit/components/input";
 import { Label } from "@nube/starter-ui-kit/components/label";
-import { Separator } from "@nube/starter-ui-kit/components/separator";
 
 import { navigate } from "../routes.js";
 
@@ -61,51 +61,59 @@ export function LoginPage(): JSX.Element {
 
   return (
     <main className="grid min-h-dvh place-items-center bg-background p-8">
-      <Card className="w-full max-w-sm">
-        <CardHeader>
-          <CardTitle>dev-pulse</CardTitle>
-          <CardDescription>
-            Sign in with your operator credentials.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <form onSubmit={onSubmit} className="grid gap-4">
-            <div className="grid gap-2">
-              <Label htmlFor="login-email">Email</Label>
-              <Input
-                id="login-email"
-                type="email"
-                autoComplete="username"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                required
-                disabled={submitting}
-              />
+      <form id="login-form" onSubmit={onSubmit} className="contents">
+        <Card className="w-full max-w-sm">
+          <CardHeader>
+            <CardTitle>dev-pulse</CardTitle>
+            <CardDescription>
+              Sign in with your operator credentials.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="grid gap-4">
+              <div className="grid gap-1.5">
+                <Label htmlFor="login-email">Email</Label>
+                <Input
+                  id="login-email"
+                  type="email"
+                  autoComplete="username"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  required
+                  disabled={submitting}
+                />
+              </div>
+              <div className="grid gap-1.5">
+                <Label htmlFor="login-password">Password</Label>
+                <Input
+                  id="login-password"
+                  type="password"
+                  autoComplete="current-password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
+                  disabled={submitting}
+                />
+              </div>
+              {error && (
+                <Alert variant="destructive" role="alert">
+                  <AlertDescription>{error}</AlertDescription>
+                </Alert>
+              )}
             </div>
-            <div className="grid gap-2">
-              <Label htmlFor="login-password">Password</Label>
-              <Input
-                id="login-password"
-                type="password"
-                autoComplete="current-password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-                disabled={submitting}
-              />
-            </div>
-            {error && (
-              <Alert variant="destructive" role="alert">
-                <AlertDescription>{error}</AlertDescription>
-              </Alert>
-            )}
-            <Separator />
-            <Button type="submit" disabled={submitting || !email || !password}>
+          </CardContent>
+          <CardFooter>
+            <Button
+              type="submit"
+              form="login-form"
+              className="w-full"
+              disabled={submitting || !email || !password}
+            >
               {submitting ? "Signing in…" : "Sign in"}
             </Button>
-          </form>
-        </CardContent>
-      </Card>
+          </CardFooter>
+        </Card>
+      </form>
     </main>
   );
 }

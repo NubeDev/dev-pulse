@@ -39,7 +39,7 @@ export function NotFoundPage(): JSX.Element {
         </CardHeader>
         <CardContent className="flex flex-wrap justify-center gap-2">
           <Button asChild>
-            <a href="#/reports">Go to reports</a>
+            <a href="#/">Back to home</a>
           </Button>
           <Button variant="outline" asChild>
             <a href="#/directory">Open directory</a>

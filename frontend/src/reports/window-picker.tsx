@@ -7,10 +7,12 @@
  * `[start, end)` is server-side; the picker just hands the labels
  * across the wire.
  *
- * The "last quarter" preset is mapped to `last_90_days` because the
- * dp-rest `WindowLabel` enum has no `last_quarter` variant (see
- * `crates/dp-domain/src/window.rs`); the UI label still says
- * "Last quarter" for operator-readability.
+ * Layout: this component renders its Label+Select pairs as *bare*
+ * grid cells (no wrapping Card / border). The parent report page
+ * owns the filter Card and the responsive grid; the picker is one
+ * row of fields inside it, sitting alongside the entity selector
+ * (User/Team/Org). The shared grid keeps the rhythm consistent across
+ * every report page.
  */
 
 import { useId } from "react";
@@ -44,7 +46,7 @@ const PRESETS: ReadonlyArray<{ value: WindowPreset; label: string }> = [
   { value: "custom", label: "Custom range" },
 ];
 
-/** Common IANA TZs operators reach for; "Other" can be typed in. */
+/** Common IANA TZs operators reach for. */
 const TZ_OPTIONS: readonly string[] = [
   "UTC",
   "Europe/London",
@@ -65,18 +67,10 @@ export interface WindowState {
   custom_end?: string;
 }
 
-/** Default the picker reaches for on first paint. */
 export function defaultWindowState(): WindowState {
   return { preset: "last_7_days", tz: "UTC", anchor: "utc" };
 }
 
-/**
- * Fold the UI-facing state into the dp-rest `ReportParams` envelope.
- * `preset === "custom"` maps to `window_label = "custom"` and forwards
- * the `custom_start` / `custom_end` fields; everything else is a
- * straight passthrough (the preset names are deliberately the same as
- * the `WindowLabel` snake_case values so the mapping is lossless).
- */
 export function windowStateToParams(
   s: WindowState,
 ): Pick<
@@ -103,6 +97,11 @@ export interface WindowPickerProps {
   onChange: (next: WindowState) => void;
 }
 
+/**
+ * Render the four picker fields (Window / Time zone / Anchor /
+ * optional Custom start+end) as fragment grid cells. The parent grid
+ * owns the column flow.
+ */
 export function WindowPicker({ value, onChange }: WindowPickerProps): JSX.Element {
   const presetId = useId();
   const tzId = useId();
@@ -114,9 +113,6 @@ export function WindowPicker({ value, onChange }: WindowPickerProps): JSX.Elemen
     onChange({ ...value, ...p });
   }
 
-  // Custom datetime-local <Input> uses a value missing the seconds /
-  // tz suffix. Server expects RFC3339 with `Z`, so we round-trip
-  // through that on the boundary.
   function toLocalInput(rfc3339: string | undefined): string {
     if (!rfc3339) return "";
     const m = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})/.exec(rfc3339);
@@ -124,14 +120,11 @@ export function WindowPicker({ value, onChange }: WindowPickerProps): JSX.Elemen
   }
   function fromLocalInput(local: string): string | undefined {
     if (!local) return undefined;
-    // datetime-local has no tz; treat it as UTC for predictability —
-    // the picker is *not* the source of truth for tz resolution
-    // (that's the dp-rest server, given the `tz`+`anchor` fields).
     return `${local}:00Z`;
   }
 
   return (
-    <div className="grid grid-cols-[repeat(auto-fit,minmax(10rem,1fr))] gap-3 rounded-md border border-border bg-card p-3">
+    <>
       <div className="grid gap-1.5">
         <Label htmlFor={presetId}>Window</Label>
         <Select
@@ -202,6 +195,13 @@ export function WindowPicker({ value, onChange }: WindowPickerProps): JSX.Elemen
           </div>
         </>
       )}
-    </div>
+    </>
   );
 }
+
+/**
+ * Shared Tailwind class for the parent filter grid. Re-used by every
+ * report page so the column flow stays consistent.
+ */
+export const FILTER_GRID_CLASS =
+  "grid grid-cols-[repeat(auto-fit,minmax(12rem,1fr))] gap-3";
