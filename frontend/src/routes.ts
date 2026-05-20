@@ -8,18 +8,42 @@
  *
  * Route shape:
  *   #/login                       — login page
- *   #/reports[/...]               — protected: reports
+ *   #/reports                     — protected: reports landing (= user report)
+ *   #/reports/user[/:user_id]     — user activity report
+ *   #/reports/team[/:team_id]     — team activity report
+ *   #/reports/org[/:org_id]       — org activity report
+ *   #/reports/home-org-split      — cross-company exec view
  *   #/directory[/...]             — protected: directory
  *   #/admin[/...]                 — protected: admin
  *   #/                            — alias for #/reports
- *
- * Stage 3 only wires the section roots; later stages add per-report
- * sub-routes.
  */
 
 import { useSyncExternalStore } from "react";
 
 export type Section = "reports" | "directory" | "admin" | "login";
+
+/** Sub-route under the reports section — drives the reports sub-nav. */
+export type ReportTab = "user" | "team" | "org" | "home-org-split";
+
+/** Parse `#/reports/...` → the active sub-tab. Defaults to `user`
+ *  (the SCOPE §11.5 landing report). */
+export function reportTabOf(route: string): ReportTab {
+  const path = route.replace(/^#/, "").replace(/^\/+/, "").split("/");
+  if (path[0] !== "reports") return "user";
+  switch (path[1]) {
+    case "team":
+      return "team";
+    case "org":
+      return "org";
+    case "home-org-split":
+      return "home-org-split";
+    case "user":
+    case undefined:
+    case "":
+    default:
+      return "user";
+  }
+}
 
 function subscribe(cb: () => void): () => void {
   window.addEventListener("hashchange", cb);

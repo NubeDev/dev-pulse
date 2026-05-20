@@ -16,8 +16,11 @@ import { authStrategy } from "./auth/strategy.js";
 import { LoginPage } from "./auth/login-page.jsx";
 import { ProtectedRoute } from "./auth/protected-route.jsx";
 import { AppShell } from "./layout/app-shell.jsx";
+import { HomeOrgSplitReportPage } from "./reports/home-org-split-report-page.jsx";
+import { OrgReportPage } from "./reports/org-report-page.jsx";
+import { TeamReportPage } from "./reports/team-report-page.jsx";
 import { UserReportPage } from "./reports/user-report-page.jsx";
-import { isLoginRoute, sectionOf, useRoute } from "./routes.js";
+import { isLoginRoute, reportTabOf, sectionOf, useRoute, type ReportTab } from "./routes.js";
 
 export function App(): JSX.Element {
   return (
@@ -39,7 +42,7 @@ function Router(): JSX.Element {
       return (
         <ProtectedRoute>
           <AppShell>
-            <SectionPane section="reports" />
+            <SectionPane section="reports" route={route} />
           </AppShell>
         </ProtectedRoute>
       );
@@ -55,20 +58,97 @@ function Router(): JSX.Element {
   return (
     <ProtectedRoute>
       <AppShell>
-        <SectionPane section={proteced} />
+        <SectionPane section={proteced} route={route} />
       </AppShell>
     </ProtectedRoute>
   );
 }
 
-function SectionPane({ section }: { section: "reports" | "directory" | "admin" }): JSX.Element {
+function SectionPane({
+  section,
+  route,
+}: {
+  section: "reports" | "directory" | "admin";
+  route: string;
+}): JSX.Element {
   switch (section) {
     case "reports":
-      return <UserReportPage />;
+      return <ReportsSection tab={reportTabOf(route)} />;
     case "directory":
       return <DirectoryHome />;
     case "admin":
       return <AdminHome />;
+  }
+}
+
+interface ReportNavItem {
+  readonly tab: ReportTab;
+  readonly label: string;
+  readonly href: string;
+}
+
+const REPORT_TABS: readonly ReportNavItem[] = [
+  { tab: "user", label: "User", href: "#/reports/user" },
+  { tab: "team", label: "Team", href: "#/reports/team" },
+  { tab: "org", label: "Org", href: "#/reports/org" },
+  { tab: "home-org-split", label: "Home-org split", href: "#/reports/home-org-split" },
+];
+
+function ReportsSection({ tab }: { tab: ReportTab }): JSX.Element {
+  // The reports sub-nav is rendered above the active report pane.
+  // Plain anchors (not Tabs) keep the route the source of truth so
+  // deep links + back-button work without an extra controlled state.
+  // No leaderboard affordance anywhere — by design (§4).
+  return (
+    <div style={{ display: "grid", gap: "1rem" }}>
+      <nav
+        aria-label="Reports"
+        data-testid="reports-subnav"
+        style={{
+          display: "flex",
+          gap: "0.25rem",
+          padding: "0.25rem",
+          background: "var(--muted)",
+          borderRadius: "var(--radius-md, 0.5rem)",
+          alignSelf: "flex-start",
+        }}
+      >
+        {REPORT_TABS.map((item) => {
+          const isActive = item.tab === tab;
+          return (
+            <a
+              key={item.tab}
+              href={item.href}
+              aria-current={isActive ? "page" : undefined}
+              style={{
+                padding: "0.375rem 0.75rem",
+                borderRadius: "var(--radius-sm, 0.375rem)",
+                fontSize: "0.875rem",
+                textDecoration: "none",
+                color: isActive ? "var(--primary-foreground)" : "var(--foreground)",
+                background: isActive ? "var(--primary)" : "transparent",
+              }}
+            >
+              {item.label}
+            </a>
+          );
+        })}
+      </nav>
+      <ReportsPane tab={tab} />
+    </div>
+  );
+}
+
+function ReportsPane({ tab }: { tab: ReportTab }): JSX.Element {
+  switch (tab) {
+    case "user":
+      return <UserReportPage />;
+    case "team":
+      return <TeamReportPage />;
+    case "org":
+      return <OrgReportPage />;
+    case "home-org-split":
+      return <HomeOrgSplitReportPage />;
   }
 }
 
