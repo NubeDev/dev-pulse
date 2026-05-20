@@ -16,15 +16,15 @@
  */
 
 import { useId } from "react";
-import { Input } from "@nube/starter-ui-kit/components/input";
-import { Label } from "@nube/starter-ui-kit/components/label";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@nube/starter-ui-kit/components/select";
+} from "@/components/ui/select";
 
 import type { WindowAnchor, WindowLabel } from "../api/client.js";
 

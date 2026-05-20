@@ -227,10 +227,19 @@ async fn upsert_user_by_login(
     let Some(login) = login.filter(|s| !s.is_empty()) else {
         return Ok(None);
     };
-    // Negative synthetic id keyspace so we never collide with a
-    // real GitHub id (which are positive). The reconciler later
-    // overwrites the row via upsert on `github_id`, at which point
-    // a real positive id replaces this one.
+    // If a row already exists for this login (e.g. the reconciler
+    // has minted the canonical real-github_id row), reuse it. Stops
+    // the co-author / noreply-login path from spawning a duplicate
+    // synthetic row keyed on a negative `github_id` for a login
+    // that already has a positive-id row in `dp_users`.
+    if let Some(existing) = store.find_user_by_login(login).await? {
+        return Ok(Some(existing.id));
+    }
+    // No row yet — mint a synthetic with a negative `github_id` so
+    // we never collide with a real GitHub id (which are positive).
+    // The reconciler later overwrites the row via upsert on the
+    // real `github_id`, at which point a real positive id replaces
+    // this one.
     let synth_id = -(crc32(login.as_bytes()) as i64 + 1);
     let user = store
         .upsert_user(&User {

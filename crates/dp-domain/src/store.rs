@@ -107,6 +107,46 @@ pub trait Store: Send + Sync {
     /// Fetch by GitHub numeric id (the stable id GitHub exposes).
     async fn get_user_by_github_id(&self, github_id: i64) -> Result<User, StoreError>;
 
+    /// Look up a non-deleted user by GitHub login. Returns `Ok(None)`
+    /// when no row matches. Used by the webhook / commit-trailer
+    /// path to avoid minting a synthetic duplicate when GitHub has
+    /// already given us a real `github_id` row for the same login
+    /// via the reconciler.
+    ///
+    /// If multiple rows share the login (e.g. a synthetic + a real
+    /// row created in different orderings), implementations should
+    /// prefer the row with the *positive* (real) `github_id` so the
+    /// caller can collapse onto the canonical row.
+    ///
+    /// Default impl falls back to a `list_users` scan so test fakes
+    /// don't need to override; production backends should use the
+    /// `dp_users_login_idx` index.
+    async fn find_user_by_login(&self, login: &str) -> Result<Option<User>, StoreError> {
+        let needle = login.to_ascii_lowercase();
+        let mut best: Option<User> = None;
+        for u in self.list_users().await? {
+            if u.login.to_ascii_lowercase() != needle {
+                continue;
+            }
+            // Prefer a real (positive) github_id over a synthetic one;
+            // among reals, prefer the lowest (oldest) id so this agrees
+            // with the canonical rule in migration 0003.
+            let better = match &best {
+                None => true,
+                Some(cur) => match (cur.github_id >= 0, u.github_id >= 0) {
+                    (false, true) => true,
+                    (true, true) => u.github_id < cur.github_id,
+                    (false, false) => u.github_id < cur.github_id,
+                    (true, false) => false,
+                },
+            };
+            if better {
+                best = Some(u);
+            }
+        }
+        Ok(best)
+    }
+
     /// List all non-deleted users.
     async fn list_users(&self) -> Result<Vec<User>, StoreError>;
 

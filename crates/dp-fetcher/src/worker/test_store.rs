@@ -198,7 +198,19 @@ impl Store for FakeStore {
         unimplemented!()
     }
     async fn list_users(&self) -> Result<Vec<User>, StoreError> {
-        unimplemented!()
+        let g = self.inner.lock().unwrap();
+        Ok(g.users.values().cloned().collect())
+    }
+    async fn find_user_by_login(&self, login: &str) -> Result<Option<User>, StoreError> {
+        let g = self.inner.lock().unwrap();
+        // Mirror PgStore: prefer the real (positive github_id) row
+        // over any synthetic (negative) row.
+        let best = g
+            .users
+            .values()
+            .filter(|u| u.login == login)
+            .max_by_key(|u| (u.github_id >= 0, u.github_id));
+        Ok(best.cloned())
     }
     async fn pseudonymise_user(&self, _: Uuid) -> Result<(), StoreError> {
         unimplemented!()

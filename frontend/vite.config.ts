@@ -71,10 +71,16 @@ export default defineConfig({
   plugins: [react(), tailwindcss(), ...(useMocks ? [mockAuthPlugin()] : [])],
   resolve: {
     alias: {
-      // `@nube/starter-ui-kit` ships source-only and self-references via
-      // `@/` aliases at build time. Mirror it here so Vite resolves
-      // those imports the same way tsc does (see tsconfig#paths).
-      "@": path.resolve(
+      // Local `@/*` alias (matches tsconfig.json#paths) so the shadcn
+      // dashboard-01 block components — written into `src/components`,
+      // `src/lib`, `src/hooks` — resolve correctly in dev and build.
+      "@": path.resolve(__dirname, "src"),
+      // `@kit/*` reaches into `@nube/starter-ui-kit` source for the
+      // theme module (pure React, no UI deps) without importing the
+      // package barrel — which would otherwise drag every kit
+      // primitive into the type-check graph and trip the React 18/19
+      // typing mismatch on upstream files.
+      "@kit": path.resolve(
         __dirname,
         "../../starter/packages/starter-ui-kit/src",
       ),

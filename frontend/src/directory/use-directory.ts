@@ -61,6 +61,13 @@ export interface DirectoryData {
   /** `org_id -> member count`, derived from the same fanout. */
   memberCount: ReadonlyMap<string, number>;
   loading: boolean;
+  /** Failure on `GET /orgs` specifically. Distinguished from the
+   *  per-org user fanout so consumers (e.g. the Teams page) that
+   *  don't depend on the fanout don't surface unrelated errors. */
+  orgsError: string | null;
+  /** Failure on any `GET /users?org_id=…` fanout query. */
+  usersError: string | null;
+  /** Combined error for back-compat — `orgsError ?? usersError`. */
   error: string | null;
 }
 
@@ -182,10 +189,12 @@ export function useDirectory(): UseDirectoryResult {
 
   const loading =
     orgsQuery.isPending || userQueries.some((q) => q.isPending);
-  const error =
-    orgsQuery.error?.message ??
-    userQueries.find((q) => q.error)?.error?.message ??
-    null;
+  const orgsError = orgsQuery.error?.message ?? null;
+  const usersError =
+    userQueries.find((q) => q.error)?.error?.message ?? null;
+  // Back-compat: pages that haven't been updated still see the
+  // combined error. New code should prefer `orgsError`/`usersError`.
+  const error = orgsError ?? usersError;
 
   const invalidate = useCallback(() => {
     void qc.invalidateQueries({ queryKey: ["users"] });
@@ -198,6 +207,8 @@ export function useDirectory(): UseDirectoryResult {
     users: users.length > 0 ? users : fallbackUsers,
     memberCount,
     loading,
+    orgsError,
+    usersError,
     error,
     homeOrg,
     invalidate,

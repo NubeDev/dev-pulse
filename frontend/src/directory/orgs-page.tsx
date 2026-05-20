@@ -17,9 +17,9 @@ import {
   CardContent,
   CardHeader,
   CardTitle,
-} from "@nube/starter-ui-kit/components/card";
-import { Alert, AlertDescription, AlertTitle } from "@nube/starter-ui-kit/components/alert";
-import { Badge } from "@nube/starter-ui-kit/components/badge";
+} from "@/components/ui/card";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
 
 import {
   Empty,
@@ -45,7 +45,7 @@ export function OrgsPage(): JSX.Element {
   );
 
   return (
-    <div className="grid gap-6">
+    <div className="flex flex-col gap-4 px-4 md:gap-6 lg:px-6">
       <PageHeading
         title="Orgs"
         description={

@@ -1,6 +1,6 @@
 /**
  * Local Empty primitive — mirrors shadcn's `Empty` family of
- * components from `@nube/starter-ui-kit/components/empty`.
+ * components from `@/components/ui/empty`.
  *
  * The upstream module relies on the implicit global `React` type
  * (a React-18-vs-19 declaration mismatch — same as `skeleton.tsx`),
@@ -12,7 +12,7 @@
  */
 
 import type { HTMLAttributes } from "react";
-import { cn } from "@nube/starter-ui-kit/lib/utils";
+import { cn } from "@/lib/utils";
 
 export function Empty({
   className,

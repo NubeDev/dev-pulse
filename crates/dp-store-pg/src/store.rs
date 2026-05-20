@@ -296,6 +296,31 @@ impl Store for PgStore {
         rows.iter().map(row_to_user).collect()
     }
 
+    async fn find_user_by_login(&self, login: &str) -> Result<Option<User>, StoreError> {
+        // Prefer the row with a real (positive) github_id when both
+        // a synthetic (negative) trailer row and the real row exist
+        // for the same login — the trailer path uses this to fold
+        // future events onto the canonical row. Match case-insensitively
+        // (GitHub logins are) and prefer the *lowest* positive github_id
+        // (oldest real GitHub account) so this agrees with the
+        // canonical-row rule in migration 0003.
+        let row = sqlx::query(
+            "SELECT id, github_id, login, email, name, deleted_at \
+             FROM dp_users \
+             WHERE lower(login) = lower($1) AND deleted_at IS NULL \
+             ORDER BY (github_id >= 0) DESC, github_id ASC \
+             LIMIT 1",
+        )
+        .bind(login)
+        .fetch_optional(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        match row {
+            Some(r) => row_to_user(&r).map(Some),
+            None => Ok(None),
+        }
+    }
+
     async fn pseudonymise_user(&self, id: Uuid) -> Result<(), StoreError> {
         // Rewrite to a stable `deleted-user-<short-id>` form. The
         // hash is derived from the row id so re-running this is a

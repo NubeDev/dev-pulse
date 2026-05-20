@@ -23,15 +23,15 @@
 
 import { useMemo, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
-import { Alert, AlertDescription, AlertTitle } from "@nube/starter-ui-kit/components/alert";
-import { Button } from "@nube/starter-ui-kit/components/button";
-import { Badge } from "@nube/starter-ui-kit/components/badge";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import {
   Card,
   CardContent,
   CardHeader,
   CardTitle,
-} from "@nube/starter-ui-kit/components/card";
+} from "@/components/ui/card";
 import {
   Dialog,
   DialogClose,
@@ -41,15 +41,15 @@ import {
   DialogHeader,
   DialogTitle,
   DialogTrigger,
-} from "@nube/starter-ui-kit/components/dialog";
-import { Label } from "@nube/starter-ui-kit/components/label";
+} from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@nube/starter-ui-kit/components/select";
+} from "@/components/ui/select";
 
 import { api } from "../api/client.js";
 import { PageHeading } from "../components/page-heading.jsx";
@@ -122,7 +122,7 @@ export function HomeOrgPage(): JSX.Element {
     userId !== null && orgId !== null && !mutation.isPending;
 
   return (
-    <div className="grid gap-6">
+    <div className="flex flex-col gap-4 px-4 md:gap-6 lg:px-6">
       <PageHeading
         title="Home-org assignment"
         description={

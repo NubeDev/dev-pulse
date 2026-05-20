@@ -1,14 +1,10 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-// `@/theme` resolves through the Vite + tsconfig `@/*` alias to
-// `starter-ui-kit/src/theme` — the package doesn't expose a `./theme`
-// subpath in its `exports` map, and importing from the barrel
-// (`@nube/starter-ui-kit`) would drag every component into the
-// type-check graph and trip the React 18/19 typing mismatch on
-// upstream `skeleton.tsx` / `empty.tsx`.
-// eslint-disable-next-line @typescript-eslint/consistent-type-imports
-import { ThemeProvider } from "@/theme";
+// `@kit/theme` reaches the kit's pure theme module without pulling
+// the package barrel into the type-check graph (which would trip
+// the React 18/19 typing mismatch on upstream kit primitives).
+import { ThemeProvider } from "@kit/theme";
 
 import "./globals.css";
 import { App } from "./app.jsx";

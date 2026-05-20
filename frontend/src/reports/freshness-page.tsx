@@ -19,10 +19,10 @@ import { useQuery } from "@tanstack/react-query";
 import {
   Card,
   CardContent,
-} from "@nube/starter-ui-kit/components/card";
-import { Alert, AlertDescription } from "@nube/starter-ui-kit/components/alert";
-import { Badge } from "@nube/starter-ui-kit/components/badge";
-import { cn } from "@nube/starter-ui-kit/lib/utils";
+} from "@/components/ui/card";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
 
 import { api } from "../api/client.js";
 import type { DataAsOf, OrgDto, ReportResponse } from "../api/client.js";
@@ -225,7 +225,7 @@ export function FreshnessPage(): JSX.Element {
   const overallBand_ = BAND_CLASSES[overall];
 
   return (
-    <div className="grid gap-6">
+    <div className="flex flex-col gap-4 px-4 md:gap-6 lg:px-6">
       <PageHeading
         title="Data freshness"
         description={

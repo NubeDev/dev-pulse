@@ -1,0 +1,22 @@
+name: org-leaderboard
+goal: |
+  Implement the cross-cutting `leaderboard` report kind defined in
+  ORG-REPORTS.md as a single endpoint that ranks subjects (user, team,
+  org, home_org_label) for one §15.7 metric across the three §8.1
+  org-scope modes, plus a separate `my_standing` endpoint for IC
+  self-view. Lock the ten §6.x decisions, wire REST + MCP + frontend
+  off the same envelope, and promote the proposal into SCOPE.md §8.2
+  and §15.15.
+
+stages:
+  - investigate §15.7 metric layer composability (additive aggregates? extractable percentile aggregator for §6.8?) — produces a short note pinned to SCOPE.md or the job dir that decides whether `also_compute` is a field add or a metric-layer refactor
+  - REVIEW before any code — confirm the §6.3 escape hatch is cheap; if §15.7 needs refactor, decide whether to land that first as a separate stage
+  - scaffold the `LeaderboardEnvelope` type, the response shape (incl. `envelope.resolved_at` / `resolved_window`, `subject_org`), and a thin SQL builder for `subject = user` single-org mode only; no pagination, no also_compute yet
+  - extend to all four `SubjectKind` values and all three `OrgScope` modes; lock the §6.1 tie-break order and §6.8 home_org_label aggregation (incl. the `__unlabeled__` bucket)
+  - add the §6.2 reconciliation identity (and the duration-metric exemption) plus the §6.4 split bot footer; wire a debug-build assertion that the identity holds for count metrics
+  - add §6.5 pinned-cursor pagination with the `cursor_window_mismatch` error variant; tests for stale-cursor and re-resolve cases
+  - add §6.3 `also_compute` (cap 5 metrics) carried in `row.context`; server-side sort and pagination stay single-metric; tests proving page boundaries don't drift when `also_compute` changes
+  - add §6.10 `subject_ids` small-N path (cap 50, pagination disabled in that mode) and the `subject_ids_too_large` error
+  - add §6.9 `my_standing` as a separate endpoint reusing the leaderboard SQL primitives but with its own envelope, permission check, and a headline computed over the visible set only
+  - REVIEW before promotion — full surface review of REST + MCP + frontend behaviour against ORG-REPORTS.md §6.1–§6.10 before locking text into SCOPE.md
+  - promote ORG-REPORTS.md §1–§5 into SCOPE.md §8.2 and §6.1–§6.10 into SCOPE.md §15.15 in the existing Decision format, noting the two-endpoint shape (§6.9 + §6.10) so it isn't lost in the fold; delete ORG-REPORTS.md or retain as design rationale per the §8 promotion path

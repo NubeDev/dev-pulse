@@ -26,16 +26,16 @@
 
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Alert, AlertDescription, AlertTitle } from "@nube/starter-ui-kit/components/alert";
-import { Badge } from "@nube/starter-ui-kit/components/badge";
-import { Button } from "@nube/starter-ui-kit/components/button";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
   CardHeader,
   CardTitle,
-} from "@nube/starter-ui-kit/components/card";
-import { cn } from "@nube/starter-ui-kit/lib/utils";
+} from "@/components/ui/card";
+import { cn } from "@/lib/utils";
 
 import { api } from "../api/client.js";
 import type { FetchRunDto } from "../api/client.js";
@@ -142,7 +142,7 @@ export function RunsPage(): JSX.Element {
   const hasPrev = page > 0;
 
   return (
-    <div className="grid gap-6">
+    <div className="flex flex-col gap-4 px-4 md:gap-6 lg:px-6">
       <PageHeading
         title="Fetch runs"
         description={

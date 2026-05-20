@@ -1,7 +1,7 @@
 /**
  * Local Skeleton primitive.
  *
- * The shadcn-shipped `@nube/starter-ui-kit/components/skeleton`
+ * The shadcn-shipped `@/components/ui/skeleton`
  * uses the implicit global `React` type, which trips a
  * React-18-vs-19 declaration mismatch when imported into this
  * frontend (React 18). To keep dev-pulse's typecheck clean
@@ -17,7 +17,7 @@
  */
 
 import type { HTMLAttributes } from "react";
-import { cn } from "@nube/starter-ui-kit/lib/utils";
+import { cn } from "@/lib/utils";
 
 export interface SkeletonProps extends HTMLAttributes<HTMLDivElement> {}
 

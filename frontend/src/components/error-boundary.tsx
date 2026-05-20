@@ -21,8 +21,8 @@ import {
   Alert,
   AlertDescription,
   AlertTitle,
-} from "@nube/starter-ui-kit/components/alert";
-import { Button } from "@nube/starter-ui-kit/components/button";
+} from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
 
 export interface ErrorBoundaryProps {
   /** Optional label shown above the error — defaults to "this view". */

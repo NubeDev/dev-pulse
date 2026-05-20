@@ -12,21 +12,21 @@
  */
 
 import { useState } from "react";
-import { Alert, AlertDescription, AlertTitle } from "@nube/starter-ui-kit/components/alert";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   Card,
   CardContent,
   CardHeader,
   CardTitle,
-} from "@nube/starter-ui-kit/components/card";
-import { Label } from "@nube/starter-ui-kit/components/label";
+} from "@/components/ui/card";
+import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@nube/starter-ui-kit/components/select";
+} from "@/components/ui/select";
 
 import {
   Empty,
@@ -51,7 +51,7 @@ export function TeamsPage(): JSX.Element {
   const teamsState = useTeamsForOrg(orgId);
 
   return (
-    <div className="grid gap-6">
+    <div className="flex flex-col gap-4 px-4 md:gap-6 lg:px-6">
       <PageHeading
         title="Teams"
         description={
@@ -96,10 +96,10 @@ export function TeamsPage(): JSX.Element {
           <CardTitle className="text-lg font-medium">Results</CardTitle>
         </CardHeader>
         <CardContent className="grid gap-4">
-          {dir.error ? (
+          {dir.orgsError ? (
             <Alert variant="destructive">
               <AlertTitle>Failed to load orgs</AlertTitle>
-              <AlertDescription>{dir.error}</AlertDescription>
+              <AlertDescription>{dir.orgsError}</AlertDescription>
             </Alert>
           ) : null}
           {teamsState.error ? (

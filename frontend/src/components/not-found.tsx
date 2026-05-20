@@ -11,14 +11,14 @@
  * as the offending URL fragment.
  */
 
-import { Button } from "@nube/starter-ui-kit/components/button";
+import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
-} from "@nube/starter-ui-kit/components/card";
+} from "@/components/ui/card";
 
 import { useRoute } from "../routes.js";
 
