@@ -1,16 +1,9 @@
 /**
- * `GET /reports/org/:org_id` page — same skeleton as user/team/
- * home-org-split. Single Org selector populated from `GET /orgs`.
+ * `GET /reports/org/:org_id` — built on the shared `ReportShell`.
  */
 
 import { useMemo, useState, useId } from "react";
 import { useQueries, useQuery } from "@tanstack/react-query";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -31,9 +24,7 @@ import type {
 import { navigate, useRoute } from "../routes.js";
 
 import { ACTIVITY_KINDS } from "./activity-types.js";
-import { ActivityTable, buildActivityRows } from "./activity-table.jsx";
-import { DataAsOfBanner } from "./data-as-of.jsx";
-import { LENSES, LensTabs } from "./lens-tabs.jsx";
+import { ReportShell, type PerKind } from "./report-shell.jsx";
 import {
   WindowPicker,
   FILTER_GRID_CLASS,
@@ -41,7 +32,6 @@ import {
   windowStateToParams,
   type WindowState,
 } from "./window-picker.jsx";
-import { PageHeading } from "../components/page-heading.jsx";
 
 const USE_MOCK = import.meta.env.VITE_USE_MOCK_REPORTS === "1";
 
@@ -126,7 +116,7 @@ export function OrgReportPage(): JSX.Element {
   });
 
   const perKind = useMemo(() => {
-    const m = new Map<string, { rows: ReadonlyArray<CountRow>; loading: boolean }>();
+    const m = new Map<string, PerKind>();
     queries.forEach((q, i) => {
       const kind = ACTIVITY_KINDS[i]!;
       m.set(kind.key, {
@@ -136,28 +126,10 @@ export function OrgReportPage(): JSX.Element {
     });
     return m;
   }, [queries]);
-  const tableRows = useMemo(() => buildActivityRows(perKind), [perKind]);
 
   const firstSettled = queries.find((q) => q.data);
   const dataAsOf: DataAsOf | null = firstSettled?.data?.data_as_of ?? null;
   const anyLoading = queries.some((q) => q.isPending);
-
-  const headline = useMemo(() => {
-    if (!activeOrg) return "";
-    const top = [...tableRows]
-      .filter((r) => r.total > 0)
-      .sort((a, b) => b.total - a.total)
-      .slice(0, 3);
-    if (top.length === 0) {
-      return `Org ${activeOrg.name ?? activeOrg.login} recorded no activity in the selected window.`;
-    }
-    const lensLabel = LENSES.find((l) => l.value === lens)?.label ?? "";
-    const parts = top.map((r) => `${r.total} ${r.label.toLowerCase()}`);
-    const joined = parts.length === 1
-      ? parts[0]
-      : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
-    return `Org ${activeOrg.name ?? activeOrg.login} recorded ${joined} (${lensLabel}).`;
-  }, [activeOrg, tableRows, lens]);
 
   function selectOrg(id: string): void {
     setOrgId(id);
@@ -165,74 +137,50 @@ export function OrgReportPage(): JSX.Element {
   }
 
   const dropdownId = useId();
+  const subjectLabel = activeOrg ? `Org ${activeOrg.name ?? activeOrg.login}` : null;
+
   return (
-    <div className="grid gap-6">
-      <PageHeading
-        title="Org activity report"
-        description={
-          <>
-            <code className="font-mono text-xs">GET /reports/org/:org_id</code> · headline + table + trend.
-          </>
-        }
-      />
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-lg font-medium">Filters</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className={FILTER_GRID_CLASS}>
-            <div className="grid gap-1.5">
-              <Label htmlFor={dropdownId}>Org</Label>
-              <Select
-                value={activeOrgId ?? ""}
-                onValueChange={selectOrg}
-                disabled={orgsQuery.isPending || orgs.length === 0}
-              >
-                <SelectTrigger id={dropdownId} data-testid="org-select">
-                  <SelectValue placeholder={orgsQuery.isPending ? "Loading orgs…" : "Select an org"} />
-                </SelectTrigger>
-                <SelectContent>
-                  {orgs.map((o) => (
-                    <SelectItem key={o.id} value={o.id}>
-                      {o.name ?? o.login}
-                      {o.name ? <span className="text-muted-foreground"> · {o.login}</span> : null}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <WindowPicker value={windowState} onChange={setWindowState} />
+    <ReportShell
+      title="Org activity"
+      description={
+        <>
+          <code className="font-mono text-xs">GET /reports/org/:org_id</code> ·
+          headline · KPI tiles · area chart · per-kind table.
+        </>
+      }
+      ready={!!activeOrgId}
+      emptyPrompt="Pick an org above to load the report."
+      perKind={perKind}
+      dataAsOf={dataAsOf}
+      dataAsOfLoading={anyLoading && !dataAsOf}
+      lens={lens}
+      onLensChange={setLens}
+      subjectLabel={subjectLabel}
+      filters={
+        <div className={FILTER_GRID_CLASS}>
+          <div className="grid gap-1.5">
+            <Label htmlFor={dropdownId}>Org</Label>
+            <Select
+              value={activeOrgId ?? ""}
+              onValueChange={selectOrg}
+              disabled={orgsQuery.isPending || orgs.length === 0}
+            >
+              <SelectTrigger id={dropdownId} data-testid="org-select">
+                <SelectValue placeholder={orgsQuery.isPending ? "Loading orgs…" : "Select an org"} />
+              </SelectTrigger>
+              <SelectContent>
+                {orgs.map((o) => (
+                  <SelectItem key={o.id} value={o.id}>
+                    {o.name ?? o.login}
+                    {o.name ? <span className="text-muted-foreground"> · {o.login}</span> : null}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
-        </CardContent>
-      </Card>
-
-      <DataAsOfBanner data={dataAsOf} loading={anyLoading && !dataAsOf} />
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-lg font-medium">Activity</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <LensTabs value={lens} onChange={setLens}>
-            {!activeOrgId ? (
-              <p className="text-sm text-muted-foreground">
-                Pick an org above to load the report.
-              </p>
-            ) : (
-              <>
-                <p
-                  data-testid="headline"
-                  className="text-sm text-foreground"
-                >
-                  {anyLoading && !dataAsOf ? "Loading report…" : headline}
-                </p>
-                <ActivityTable rows={tableRows} />
-              </>
-            )}
-          </LensTabs>
-        </CardContent>
-      </Card>
-    </div>
+          <WindowPicker value={windowState} onChange={setWindowState} />
+        </div>
+      }
+    />
   );
 }

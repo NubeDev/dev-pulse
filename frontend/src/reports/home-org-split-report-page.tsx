@@ -220,7 +220,7 @@ export function HomeOrgSplitReportPage(): JSX.Element {
   }, [rolled, grandTotal, lens]);
 
   return (
-    <div className="grid gap-6">
+    <div className="flex flex-col gap-4 px-4 md:gap-6 lg:px-6">
       <PageHeading
         title="Home-org split"
         description={

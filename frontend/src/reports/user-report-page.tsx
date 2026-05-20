@@ -1,26 +1,10 @@
 /**
- * `GET /reports/user/:user_id` page — SCOPE §11.5 "headline + table
- * + trend" shape, three-lens toggle (§8.1), "Data as of" banner per
- * §0.3.
- *
- * Skeleton (shared with team / org / home-org-split):
- *
- *   1. PageHeading lockup (h1 + muted description).
- *   2. Filter Card — User picker, Window, Time zone, Anchor — laid
- *      out in one responsive grid of Label+Select pairs.
- *   3. Data-as-of Alert with the staleness Badge.
- *   4. Results Card — TabsList (three lenses, segmented) over the
- *      activity Table (per-kind totals + sparkline).
+ * `GET /reports/user/:user_id` — built on the shared `ReportShell`
+ * (SectionCards + ChartAreaInteractive + DataTable from dashboard-01).
  */
 
 import { useMemo, useState, useId } from "react";
 import { useQueries, useQuery } from "@tanstack/react-query";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -41,9 +25,7 @@ import type {
 import { navigate, useRoute } from "../routes.js";
 
 import { ACTIVITY_KINDS } from "./activity-types.js";
-import { ActivityTable, buildActivityRows } from "./activity-table.jsx";
-import { DataAsOfBanner } from "./data-as-of.jsx";
-import { LENSES, LensTabs } from "./lens-tabs.jsx";
+import { ReportShell, type PerKind } from "./report-shell.jsx";
 import {
   WindowPicker,
   FILTER_GRID_CLASS,
@@ -51,7 +33,6 @@ import {
   windowStateToParams,
   type WindowState,
 } from "./window-picker.jsx";
-import { PageHeading } from "../components/page-heading.jsx";
 
 const USE_MOCK = import.meta.env.VITE_USE_MOCK_REPORTS === "1";
 
@@ -136,7 +117,7 @@ export function UserReportPage(): JSX.Element {
   });
 
   const perKind = useMemo(() => {
-    const m = new Map<string, { rows: ReadonlyArray<CountRow>; loading: boolean }>();
+    const m = new Map<string, PerKind>();
     queries.forEach((q, i) => {
       const kind = ACTIVITY_KINDS[i]!;
       m.set(kind.key, {
@@ -146,28 +127,10 @@ export function UserReportPage(): JSX.Element {
     });
     return m;
   }, [queries]);
-  const tableRows = useMemo(() => buildActivityRows(perKind), [perKind]);
 
   const firstSettled = queries.find((q) => q.data);
   const dataAsOf: DataAsOf | null = firstSettled?.data?.data_as_of ?? null;
   const anyLoading = queries.some((q) => q.isPending);
-
-  const headline = useMemo(() => {
-    if (!activeUser) return "";
-    const top = [...tableRows]
-      .filter((r) => r.total > 0)
-      .sort((a, b) => b.total - a.total)
-      .slice(0, 3);
-    if (top.length === 0) {
-      return `${activeUser.login} had no recorded activity in the selected window.`;
-    }
-    const lensLabel = LENSES.find((l) => l.value === lens)?.label ?? "";
-    const parts = top.map((r) => `${r.total} ${r.label.toLowerCase()}`);
-    const joined = parts.length === 1
-      ? parts[0]
-      : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
-    return `${activeUser.name ?? activeUser.login} recorded ${joined} (${lensLabel}).`;
-  }, [activeUser, tableRows, lens]);
 
   function selectUser(id: string): void {
     setUserId(id);
@@ -175,74 +138,50 @@ export function UserReportPage(): JSX.Element {
   }
 
   const dropdownId = useId();
+  const subjectLabel = activeUser?.name ?? activeUser?.login ?? null;
+
   return (
-    <div className="grid gap-6">
-      <PageHeading
-        title="User activity report"
-        description={
-          <>
-            <code className="font-mono text-xs">GET /reports/user/:user_id</code> · headline + table + trend.
-          </>
-        }
-      />
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-lg font-medium">Filters</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className={FILTER_GRID_CLASS}>
-            <div className="grid gap-1.5">
-              <Label htmlFor={dropdownId}>User</Label>
-              <Select
-                value={activeUserId ?? ""}
-                onValueChange={selectUser}
-                disabled={usersQuery.isPending || users.length === 0}
-              >
-                <SelectTrigger id={dropdownId} data-testid="user-select">
-                  <SelectValue placeholder={usersQuery.isPending ? "Loading users…" : "Select a user"} />
-                </SelectTrigger>
-                <SelectContent>
-                  {users.map((u) => (
-                    <SelectItem key={u.id} value={u.id}>
-                      {u.name ?? u.login}
-                      {u.name ? <span className="text-muted-foreground"> · {u.login}</span> : null}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <WindowPicker value={windowState} onChange={setWindowState} />
+    <ReportShell
+      title="User activity"
+      description={
+        <>
+          <code className="font-mono text-xs">GET /reports/user/:user_id</code> ·
+          headline · KPI tiles · area chart · per-kind table.
+        </>
+      }
+      ready={!!activeUserId}
+      emptyPrompt="Pick a user above to load the report."
+      perKind={perKind}
+      dataAsOf={dataAsOf}
+      dataAsOfLoading={anyLoading && !dataAsOf}
+      lens={lens}
+      onLensChange={setLens}
+      subjectLabel={subjectLabel}
+      filters={
+        <div className={FILTER_GRID_CLASS}>
+          <div className="grid gap-1.5">
+            <Label htmlFor={dropdownId}>User</Label>
+            <Select
+              value={activeUserId ?? ""}
+              onValueChange={selectUser}
+              disabled={usersQuery.isPending || users.length === 0}
+            >
+              <SelectTrigger id={dropdownId} data-testid="user-select">
+                <SelectValue placeholder={usersQuery.isPending ? "Loading users…" : "Select a user"} />
+              </SelectTrigger>
+              <SelectContent>
+                {users.map((u) => (
+                  <SelectItem key={u.id} value={u.id}>
+                    {u.name ?? u.login}
+                    {u.name ? <span className="text-muted-foreground"> · {u.login}</span> : null}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
-        </CardContent>
-      </Card>
-
-      <DataAsOfBanner data={dataAsOf} loading={anyLoading && !dataAsOf} />
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-lg font-medium">Activity</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <LensTabs value={lens} onChange={setLens}>
-            {!activeUserId ? (
-              <p className="text-sm text-muted-foreground">
-                Pick a user above to load the report.
-              </p>
-            ) : (
-              <>
-                <p
-                  data-testid="headline"
-                  className="text-sm text-foreground"
-                >
-                  {anyLoading && !dataAsOf ? "Loading report…" : headline}
-                </p>
-                <ActivityTable rows={tableRows} />
-              </>
-            )}
-          </LensTabs>
-        </CardContent>
-      </Card>
-    </div>
+          <WindowPicker value={windowState} onChange={setWindowState} />
+        </div>
+      }
+    />
   );
 }

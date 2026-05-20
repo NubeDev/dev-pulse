@@ -1,17 +1,10 @@
 /**
- * `GET /reports/team/:team_id` page — same skeleton as user/org/
- * home-org-split. The selector is two-step (org → team) because
- * dp-rest's `GET /teams` is scoped per-org.
+ * `GET /reports/team/:team_id` — built on the shared `ReportShell`.
+ * Two-step selector (org → team).
  */
 
 import { useMemo, useState, useId } from "react";
 import { useQueries, useQuery } from "@tanstack/react-query";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -33,9 +26,7 @@ import type {
 import { navigate, useRoute } from "../routes.js";
 
 import { ACTIVITY_KINDS } from "./activity-types.js";
-import { ActivityTable, buildActivityRows } from "./activity-table.jsx";
-import { DataAsOfBanner } from "./data-as-of.jsx";
-import { LENSES, LensTabs } from "./lens-tabs.jsx";
+import { ReportShell, type PerKind } from "./report-shell.jsx";
 import {
   WindowPicker,
   FILTER_GRID_CLASS,
@@ -43,7 +34,6 @@ import {
   windowStateToParams,
   type WindowState,
 } from "./window-picker.jsx";
-import { PageHeading } from "../components/page-heading.jsx";
 
 const USE_MOCK = import.meta.env.VITE_USE_MOCK_REPORTS === "1";
 
@@ -148,7 +138,7 @@ export function TeamReportPage(): JSX.Element {
   });
 
   const perKind = useMemo(() => {
-    const m = new Map<string, { rows: ReadonlyArray<CountRow>; loading: boolean }>();
+    const m = new Map<string, PerKind>();
     queries.forEach((q, i) => {
       const kind = ACTIVITY_KINDS[i]!;
       m.set(kind.key, {
@@ -158,28 +148,10 @@ export function TeamReportPage(): JSX.Element {
     });
     return m;
   }, [queries]);
-  const tableRows = useMemo(() => buildActivityRows(perKind), [perKind]);
 
   const firstSettled = queries.find((q) => q.data);
   const dataAsOf: DataAsOf | null = firstSettled?.data?.data_as_of ?? null;
   const anyLoading = queries.some((q) => q.isPending);
-
-  const headline = useMemo(() => {
-    if (!activeTeam) return "";
-    const top = [...tableRows]
-      .filter((r) => r.total > 0)
-      .sort((a, b) => b.total - a.total)
-      .slice(0, 3);
-    if (top.length === 0) {
-      return `Team ${activeTeam.name} recorded no activity in the selected window.`;
-    }
-    const lensLabel = LENSES.find((l) => l.value === lens)?.label ?? "";
-    const parts = top.map((r) => `${r.total} ${r.label.toLowerCase()}`);
-    const joined = parts.length === 1
-      ? parts[0]
-      : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
-    return `Team ${activeTeam.name} recorded ${joined} (${lensLabel}).`;
-  }, [activeTeam, tableRows, lens]);
 
   function selectTeam(id: string): void {
     setTeamId(id);
@@ -192,93 +164,69 @@ export function TeamReportPage(): JSX.Element {
 
   const orgDropdownId = useId();
   const teamDropdownId = useId();
+  const subjectLabel = activeTeam ? `Team ${activeTeam.name}` : null;
+
   return (
-    <div className="grid gap-6">
-      <PageHeading
-        title="Team activity report"
-        description={
-          <>
-            <code className="font-mono text-xs">GET /reports/team/:team_id</code> · headline + table + trend.
-          </>
-        }
-      />
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-lg font-medium">Filters</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className={FILTER_GRID_CLASS}>
-            <div className="grid gap-1.5">
-              <Label htmlFor={orgDropdownId}>Org</Label>
-              <Select
-                value={activeOrgId ?? ""}
-                onValueChange={selectOrg}
-                disabled={orgsQuery.isPending || orgs.length === 0}
-              >
-                <SelectTrigger id={orgDropdownId} data-testid="team-org-select">
-                  <SelectValue placeholder={orgsQuery.isPending ? "Loading orgs…" : "Select an org"} />
-                </SelectTrigger>
-                <SelectContent>
-                  {orgs.map((o) => (
-                    <SelectItem key={o.id} value={o.id}>
-                      {o.name ?? o.login}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="grid gap-1.5">
-              <Label htmlFor={teamDropdownId}>Team</Label>
-              <Select
-                value={activeTeamId ?? ""}
-                onValueChange={selectTeam}
-                disabled={teamsQuery.isPending || teams.length === 0}
-              >
-                <SelectTrigger id={teamDropdownId} data-testid="team-select">
-                  <SelectValue placeholder={teamsQuery.isPending ? "Loading teams…" : "Select a team"} />
-                </SelectTrigger>
-                <SelectContent>
-                  {teams.map((t) => (
-                    <SelectItem key={t.id} value={t.id}>
-                      {t.name}
-                      <span className="text-muted-foreground"> · {t.slug}</span>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <WindowPicker value={windowState} onChange={setWindowState} />
+    <ReportShell
+      title="Team activity"
+      description={
+        <>
+          <code className="font-mono text-xs">GET /reports/team/:team_id</code> ·
+          headline · KPI tiles · area chart · per-kind table.
+        </>
+      }
+      ready={!!activeTeamId}
+      emptyPrompt="Pick an org and team above to load the report."
+      perKind={perKind}
+      dataAsOf={dataAsOf}
+      dataAsOfLoading={anyLoading && !dataAsOf}
+      lens={lens}
+      onLensChange={setLens}
+      subjectLabel={subjectLabel}
+      filters={
+        <div className={FILTER_GRID_CLASS}>
+          <div className="grid gap-1.5">
+            <Label htmlFor={orgDropdownId}>Org</Label>
+            <Select
+              value={activeOrgId ?? ""}
+              onValueChange={selectOrg}
+              disabled={orgsQuery.isPending || orgs.length === 0}
+            >
+              <SelectTrigger id={orgDropdownId} data-testid="team-org-select">
+                <SelectValue placeholder={orgsQuery.isPending ? "Loading orgs…" : "Select an org"} />
+              </SelectTrigger>
+              <SelectContent>
+                {orgs.map((o) => (
+                  <SelectItem key={o.id} value={o.id}>
+                    {o.name ?? o.login}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
-        </CardContent>
-      </Card>
-
-      <DataAsOfBanner data={dataAsOf} loading={anyLoading && !dataAsOf} />
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-lg font-medium">Activity</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <LensTabs value={lens} onChange={setLens}>
-            {!activeTeamId ? (
-              <p className="text-sm text-muted-foreground">
-                Pick an org and team above to load the report.
-              </p>
-            ) : (
-              <>
-                <p
-                  data-testid="headline"
-                  className="text-sm text-foreground"
-                >
-                  {anyLoading && !dataAsOf ? "Loading report…" : headline}
-                </p>
-                <ActivityTable rows={tableRows} />
-              </>
-            )}
-          </LensTabs>
-        </CardContent>
-      </Card>
-    </div>
+          <div className="grid gap-1.5">
+            <Label htmlFor={teamDropdownId}>Team</Label>
+            <Select
+              value={activeTeamId ?? ""}
+              onValueChange={selectTeam}
+              disabled={teamsQuery.isPending || teams.length === 0}
+            >
+              <SelectTrigger id={teamDropdownId} data-testid="team-select">
+                <SelectValue placeholder={teamsQuery.isPending ? "Loading teams…" : "Select a team"} />
+              </SelectTrigger>
+              <SelectContent>
+                {teams.map((t) => (
+                  <SelectItem key={t.id} value={t.id}>
+                    {t.name}
+                    <span className="text-muted-foreground"> · {t.slug}</span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <WindowPicker value={windowState} onChange={setWindowState} />
+        </div>
+      }
+    />
   );
 }

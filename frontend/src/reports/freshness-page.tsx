@@ -225,7 +225,7 @@ export function FreshnessPage(): JSX.Element {
   const overallBand_ = BAND_CLASSES[overall];
 
   return (
-    <div className="grid gap-6">
+    <div className="flex flex-col gap-4 px-4 md:gap-6 lg:px-6">
       <PageHeading
         title="Data freshness"
         description={

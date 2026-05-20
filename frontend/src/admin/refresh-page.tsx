@@ -111,7 +111,7 @@ export function RefreshPage(): JSX.Element {
   const selectedOrg = orgs.find((o) => o.id === orgId);
 
   return (
-    <div className="grid gap-6">
+    <div className="flex flex-col gap-4 px-4 md:gap-6 lg:px-6">
       <PageHeading
         title="Refresh trigger"
         description={
