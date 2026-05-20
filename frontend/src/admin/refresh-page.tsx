@@ -8,14 +8,12 @@
  * `?org_id=…` to narrow to one org (`repo_id` is also supported but
  * we don't expose it from the UI — repo-level refresh is a CLI move).
  *
- * Renders the previous outcome (items / errors / partial) below the
- * button so the operator gets immediate confirmation; if the
- * reconciler short-circuited (already running, debounced) the
- * response is `{ ran: false }` and we say so.
- *
- * Surfaces use shadcn `Alert` — the error path is `variant="destructive"`,
- * the result panel is the default variant. The `data-testid` lands on
- * the Alert root so the smoke tests still see `refresh-result`.
+ * Layout (stage 4 visual rewrite): PageHeading lockup at top, then a
+ * single form Card holding the org scope `Select`, the trigger
+ * Button, and one always-mounted status `Alert` that walks through
+ * four states (idle / loading + spinner / success + check /
+ * destructive). The `data-testid="refresh-result"` hook lands on the
+ * Alert root in the success branch so the smoke tests still see it.
  */
 
 import { useState } from "react";
@@ -26,7 +24,6 @@ import { Button } from "@nube/starter-ui-kit/components/button";
 import {
   Card,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
 } from "@nube/starter-ui-kit/components/card";
@@ -39,15 +36,37 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@nube/starter-ui-kit/components/select";
+import { Spinner } from "@nube/starter-ui-kit/components/spinner";
 
 import { api } from "../api/client.js";
 import type { RefreshResponse } from "../api/client.js";
+import { PageHeading } from "../components/page-heading.jsx";
 import { MOCK_ORGS, USE_MOCK, mockRefresh } from "./mocks.js";
 
 /** Sentinel value for the "all orgs" option in the `<Select>`.  We use
  *  a sentinel rather than `undefined` because Radix's `<SelectItem>`
  *  refuses an empty string. */
 const ALL_ORGS = "__all__";
+
+/** Tiny inline check icon used in the success Alert. Avoids pulling
+ *  a new icon dep just for one glyph. Sized to match Alert's left
+ *  icon slot. */
+function CheckIcon(): JSX.Element {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.25"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="size-4 text-emerald-600 dark:text-emerald-400"
+    >
+      <path d="M20 6 9 17l-5-5" />
+    </svg>
+  );
+}
 
 export function RefreshPage(): JSX.Element {
   const qc = useQueryClient();
@@ -92,104 +111,132 @@ export function RefreshPage(): JSX.Element {
   const selectedOrg = orgs.find((o) => o.id === orgId);
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Refresh trigger</CardTitle>
-        <CardDescription>
-          <code>POST /admin/refresh</code> · operator-triggered reconciler tick.
-          Narrow to one org with the selector below, or leave on "All orgs" for
-          a full sweep.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="grid gap-4">
-        <div className="grid max-w-md gap-1">
-          <Label htmlFor="refresh-org">Org scope</Label>
-          <Select value={orgId} onValueChange={setOrgId}>
-            <SelectTrigger id="refresh-org" data-testid="refresh-org">
-              <SelectValue placeholder={orgsQuery.isPending ? "Loading orgs…" : "All orgs"} />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={ALL_ORGS}>All orgs (full sweep)</SelectItem>
-              {orgs.map((o) => (
-                <SelectItem key={o.id} value={o.id}>
-                  {o.login}{o.name ? ` — ${o.name}` : ""}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
+    <div className="grid gap-6">
+      <PageHeading
+        title="Refresh trigger"
+        description={
+          <>
+            <code className="font-mono text-xs">POST /admin/refresh</code> ·
+            operator-triggered reconciler tick. Narrow to one org with the
+            selector below, or leave on "All orgs" for a full sweep.
+          </>
+        }
+      />
 
-        <div className="flex flex-wrap items-center gap-3">
-          <Button
-            data-testid="refresh-trigger"
-            disabled={refresh.isPending}
-            onClick={trigger}
-          >
-            {refresh.isPending ? "Refreshing…" : "Trigger refresh"}
-          </Button>
-          <span className="text-sm text-muted-foreground">
-            Scope:{" "}
-            <code data-testid="refresh-scope">
-              {orgId === ALL_ORGS ? "all orgs" : selectedOrg?.login ?? orgId.slice(0, 8)}
-            </code>
-          </span>
-        </div>
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Trigger reconciler</CardTitle>
+        </CardHeader>
+        <CardContent className="grid gap-4">
+          <div className="grid max-w-md gap-1.5">
+            <Label htmlFor="refresh-org">Org scope</Label>
+            <Select value={orgId} onValueChange={setOrgId}>
+              <SelectTrigger id="refresh-org" data-testid="refresh-org">
+                <SelectValue placeholder={orgsQuery.isPending ? "Loading orgs…" : "All orgs"} />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ALL_ORGS}>All orgs (full sweep)</SelectItem>
+                {orgs.map((o) => (
+                  <SelectItem key={o.id} value={o.id}>
+                    {o.login}{o.name ? ` — ${o.name}` : ""}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
 
-        {error ? (
-          <Alert variant="destructive" data-testid="refresh-error">
-            <AlertTitle>Refresh failed</AlertTitle>
-            <AlertDescription>{error}</AlertDescription>
-          </Alert>
-        ) : null}
+          <div className="flex flex-wrap items-center gap-3">
+            <Button
+              data-testid="refresh-trigger"
+              disabled={refresh.isPending}
+              onClick={trigger}
+            >
+              {refresh.isPending ? "Refreshing…" : "Trigger refresh"}
+            </Button>
+            <span className="text-sm text-muted-foreground">
+              Scope:{" "}
+              <code className="font-mono text-xs" data-testid="refresh-scope">
+                {orgId === ALL_ORGS ? "all orgs" : selectedOrg?.login ?? orgId.slice(0, 8)}
+              </code>
+            </span>
+          </div>
 
-        {lastResult ? (
-          <Alert
-            data-testid="refresh-result"
-            data-ran={lastResult.ran}
-            aria-live="polite"
-          >
-            {lastResult.ran ? (
-              <>
-                <AlertTitle>Refresh complete.</AlertTitle>
-                <AlertDescription>
-                  <div className="flex flex-wrap gap-2 pt-1">
-                    <Badge variant="outline" data-testid="refresh-items">
-                      {lastResult.items} items
-                    </Badge>
-                    <Badge
-                      variant="outline"
-                      data-testid="refresh-errors"
-                      className={cn(
-                        "border",
-                        lastResult.errors > 0 &&
-                          "border-red-500 text-red-600 dark:text-red-400",
-                      )}
-                    >
-                      {lastResult.errors} errors
-                    </Badge>
-                    {lastResult.partial ? (
+          {error ? (
+            <Alert variant="destructive" data-testid="refresh-error">
+              <AlertTitle>Refresh failed</AlertTitle>
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
+          ) : refresh.isPending ? (
+            <Alert
+              data-testid="refresh-status"
+              data-kind="loading"
+              aria-live="polite"
+            >
+              <Spinner className="text-muted-foreground" />
+              <AlertTitle>Refreshing…</AlertTitle>
+              <AlertDescription>
+                Asking dp-rest to reconcile the selected scope.
+              </AlertDescription>
+            </Alert>
+          ) : lastResult ? (
+            <Alert
+              data-testid="refresh-result"
+              data-ran={lastResult.ran}
+              aria-live="polite"
+            >
+              {lastResult.ran ? (
+                <>
+                  <CheckIcon />
+                  <AlertTitle>Refresh complete.</AlertTitle>
+                  <AlertDescription>
+                    <div className="flex flex-wrap gap-2 pt-1">
+                      <Badge variant="outline" data-testid="refresh-items">
+                        {lastResult.items} items
+                      </Badge>
                       <Badge
                         variant="outline"
-                        data-testid="refresh-partial"
-                        className="border-amber-500 text-amber-600 dark:text-amber-400"
+                        data-testid="refresh-errors"
+                        className={cn(
+                          "border",
+                          lastResult.errors > 0 &&
+                            "border-red-500 text-red-600 dark:text-red-400",
+                        )}
                       >
-                        Partial
+                        {lastResult.errors} errors
                       </Badge>
-                    ) : null}
-                  </div>
-                </AlertDescription>
-              </>
-            ) : (
-              <>
-                <AlertTitle>No-op.</AlertTitle>
-                <AlertDescription>
-                  The reconciler was already running or recently completed; nothing to do.
-                </AlertDescription>
-              </>
-            )}
-          </Alert>
-        ) : null}
-      </CardContent>
-    </Card>
+                      {lastResult.partial ? (
+                        <Badge
+                          variant="outline"
+                          data-testid="refresh-partial"
+                          className="border-amber-500 text-amber-600 dark:text-amber-400"
+                        >
+                          Partial
+                        </Badge>
+                      ) : null}
+                    </div>
+                  </AlertDescription>
+                </>
+              ) : (
+                <>
+                  <CheckIcon />
+                  <AlertTitle>No-op.</AlertTitle>
+                  <AlertDescription>
+                    The reconciler was already running or recently completed;
+                    nothing to do.
+                  </AlertDescription>
+                </>
+              )}
+            </Alert>
+          ) : (
+            <Alert data-testid="refresh-status" data-kind="idle">
+              <AlertTitle>Ready</AlertTitle>
+              <AlertDescription>
+                Pick a scope and trigger the reconciler to see results here.
+              </AlertDescription>
+            </Alert>
+          )}
+        </CardContent>
+      </Card>
+    </div>
   );
 }

@@ -64,6 +64,7 @@ import {
 
 import { api, StarterError } from "../api/client.js";
 import type { UserDto } from "../api/client.js";
+import { PageHeading } from "../components/page-heading.jsx";
 import { MOCK_USERS, USE_MOCK, mockUserExport } from "./mocks.js";
 
 interface Feedback {
@@ -166,16 +167,28 @@ export function AdminUsersPage(): JSX.Element {
       : null;
 
   return (
-    <Card>
+    <div className="grid gap-6">
+      <PageHeading
+        title="User GDPR controls"
+        description={
+          <>
+            Export or anonymise a single user.{" "}
+            <code className="font-mono text-xs">POST /admin/users/:id/anonymise</code>{" "}
+            is irreversible — confirmation required.
+          </>
+        }
+      />
+
+      <Card>
       <CardHeader>
-        <CardTitle>User GDPR controls</CardTitle>
+        <CardTitle className="text-base">Pick a user</CardTitle>
         <CardDescription>
-          Export or anonymise a single user. <code>POST /admin/users/:id/anonymise</code>{" "}
-          is irreversible — confirmation required.
+          Export streams the user's full record as JSON; anonymise scrubs
+          identifying fields and cascades the redaction.
         </CardDescription>
       </CardHeader>
       <CardContent className="grid gap-4">
-        <div className="grid max-w-lg gap-1">
+        <div className="grid max-w-lg gap-1.5">
           <Label htmlFor="admin-user">User</Label>
           <Select
             value={userId ?? undefined}
@@ -199,38 +212,40 @@ export function AdminUsersPage(): JSX.Element {
           </Select>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            data-testid="admin-export"
-            disabled={selected === null || exportMut.isPending}
-            onClick={() => {
-              if (selected) {
-                setFeedback(null);
-                exportMut.mutate(selected);
-              }
-            }}
-          >
-            {exportMut.isPending ? "Preparing download…" : "Export user data"}
-          </Button>
-          <Button
-            data-testid="admin-anonymise"
-            variant="destructive"
-            disabled={selected === null}
-            onClick={() => {
-              if (selected) {
-                setFeedback(null);
-                setTypedLogin("");
-                setConfirmOpen(true);
-              }
-            }}
-          >
-            Anonymise user…
-          </Button>
+        <div className="grid gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              data-testid="admin-export"
+              disabled={selected === null || exportMut.isPending}
+              onClick={() => {
+                if (selected) {
+                  setFeedback(null);
+                  exportMut.mutate(selected);
+                }
+              }}
+            >
+              {exportMut.isPending ? "Preparing download…" : "Export user data"}
+            </Button>
+            <Button
+              data-testid="admin-anonymise"
+              variant="destructive"
+              disabled={selected === null}
+              onClick={() => {
+                if (selected) {
+                  setFeedback(null);
+                  setTypedLogin("");
+                  setConfirmOpen(true);
+                }
+              }}
+            >
+              Anonymise user…
+            </Button>
+          </div>
           {exportProgress !== null ? (
             <Progress
               value={exportProgress}
               data-testid="admin-export-progress"
-              className="ml-2 h-2 max-w-[14rem]"
+              className="h-2 max-w-[18rem]"
             />
           ) : null}
         </div>
@@ -273,7 +288,7 @@ export function AdminUsersPage(): JSX.Element {
               ) : null}
             </AlertDialogDescription>
           </AlertDialogHeader>
-          <div className="grid gap-1">
+          <div className="grid gap-1.5 py-1">
             <Label htmlFor="anonymise-confirm-login">Confirm login</Label>
             <Input
               id="anonymise-confirm-login"
@@ -309,7 +324,8 @@ export function AdminUsersPage(): JSX.Element {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </Card>
+      </Card>
+    </div>
   );
 }
 
