@@ -15,6 +15,7 @@
 pub mod aggregate;
 pub mod envelope;
 pub mod freshness;
+pub mod leaderboard;
 pub mod lenses;
 
 pub use aggregate::{
@@ -28,6 +29,12 @@ pub use envelope::{
     WindowLabel, WindowSpec,
 };
 pub use freshness::{pick_headline as pick_freshness_headline, DataAsOf, DataAsOfExt};
+pub use leaderboard::{
+    build_user_single_org_sql, resolve_leaderboard_envelope, LeaderboardContext,
+    LeaderboardEnvelope, LeaderboardError, LeaderboardFooter, LeaderboardHeadline,
+    LeaderboardPrimary, LeaderboardResponse, LeaderboardRow, MetricId,
+    ResolvedLeaderboardEnvelope, SubjectKind, USER_SINGLE_ORG_BIND_ORDER,
+};
 
 // Re-export the resolved Window type from dp-domain so callers only
 // need to depend on dp-reports for the request/response shapes.

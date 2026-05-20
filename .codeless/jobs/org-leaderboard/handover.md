@@ -1,55 +1,94 @@
-# Handover — after stage 1 (composability investigation)
+# Handover — after stage 3 (scaffold leaderboard envelope + thin SQL builder)
 
-Stage 1 is done. Next agent picks up **stage 2** (REVIEW gate, no
-code) and then **stage 3** (scaffold the `LeaderboardEnvelope`
-type + thin SQL builder for `subject = user` single-org mode).
+Stage 3 is done. Next agent picks up **stage 4**: extend to all four
+`SubjectKind` values and all three `OrgScope` modes; lock the §6.1
+tie-break order and §6.8 `home_org_label` aggregation (incl. the
+`__unlabeled__` bucket).
 
-## What the investigation concluded
+## What landed in stage 3
 
-See `STAGE-1-COMPOSABILITY.md` in this dir for the full note. The
-short version:
+`crates/dp-reports/src/leaderboard.rs` (new module, re-exported from
+`crates/dp-reports/src/lib.rs`):
 
-- **§6.3 `also_compute` is a field add, not a refactor.** The
-  `dp-reports::aggregate` layer (`CountMetric`, `METRIC_ROLE_MAP`,
-  `filter_rows_for_metric`, `count_by_*` reducers) is already
-  composable over `Vec<EventActorRow>` returned by one store
-  fetch. N metrics = one widened-predicate fetch + N pure
-  reducers in memory.
-- **§6.8 `home_org_label` percentile aggregation reuses
-  `compute_percentiles(&[i64])`** — it's already a free
-  function with the §15.9 `n < 5 → None` floor baked in.
-- **No new stage is inserted before stage 3.**
+- **Types** (ORG-REPORTS §3 / §4):
+  - `SubjectKind` — `user | team | org | home_org_label`, snake_case
+    wire form.
+  - `MetricId` — internally tagged `{family, id}` so adding
+    `Duration(...)` later is non-breaking (duration store fetch is a
+    Phase-3 follow-up per `STAGE-1-COMPOSABILITY.md` §3).
+  - `LeaderboardEnvelope` — window, scope_mode, orgs/repos/teams,
+    actor_roles override, subject, rank_by, include_bots (default
+    false per §6.4). **No** `also_compute` / `subject_ids` / `page`
+    fields yet — those land in stages 7/8/6 and are additive.
+  - `ResolvedLeaderboardEnvelope` — carries `resolved_at` +
+    `resolved_window` so identical input + identical resolved_at
+    produce identical output (§4 / §6.5 cursor pinning).
+  - `LeaderboardResponse` — `envelope + headline + rows + footer`,
+    matching the §4 jsonc.
+  - `LeaderboardRow` — `rank, subject_id, subject_kind, subject_label,
+    subject_org (Option, only serialised in `per_org_split`),
+    primary, context, sparkline, active_orgs`.
+  - `LeaderboardContext` — `active_days, repos_touched, extras` (the
+    extras map is the §6.3 `also_compute` payload slot; serialised
+    omitted when empty).
+  - `LeaderboardFooter` — five-field reconciliation footer locked
+    in shape (zeroed in stage 3; §6.2/§6.4/§6.6 wire stages fill it).
+- **Errors** — `LeaderboardError` enum is `#[non_exhaustive]` and
+  shared across surfaces. Stage 3 only emits
+  `SubjectNotYetWired` / `ScopeModeNotYetWired` /
+  `SingleOrgRequiresOneOrg` / `Resolve(ResolveError)`. Stage 6 will
+  add `CursorWindowMismatch`; stage 8 will add `SubjectIdsTooLarge`.
+- **`resolve_leaderboard_envelope(env, now)`** — guards stage 3
+  scope (subject=user + single_org + exactly one org id) and stamps
+  `resolved_at = now`. Tests pin a deterministic clock.
+- **`build_user_single_org_sql()`** — `&'static str` SQL emitter.
+  Selects `subject_id / primary_value / active_days / repos_touched /
+  active_orgs`, `GROUP BY ea.user_id`, and applies the §6.1
+  tie-break `primary_value DESC → active_days DESC → subject_id ASC`
+  in `ORDER BY`. No `LIMIT` / `OFFSET` (pagination is stage 6).
+- **`USER_SINGLE_ORG_BIND_ORDER`** — documents the six bind params
+  so the store adapter and any integration test can't drift (§11.4).
+  Tested for length 6 and that `$1..$6` all appear.
+- **14 unit tests** in the `tests` module cover: JSON round-trip,
+  metric-id wire form, snake_case subject_kind, `include_bots`
+  default, stage-3 rejection of unwired subject/scope/zero-or-many
+  orgs, `resolved_at` + window echo, tie-break order in the SQL,
+  expected projection columns, no `LIMIT`/`OFFSET`, bind-order
+  length, `subject_org` `skip_serializing_if = "Option::is_none"`,
+  and footer fields always serialised.
 
-## Caveat the next stage must respect
+## Verification
 
-`DurationMetric` is defined in `aggregate.rs` but the matching
-store fetch (`list_duration_samples_in_window` or equivalent) is
-not implemented yet. Stages 3–9 scope themselves to count metrics
-first; duration metrics inherit the leaderboard plumbing the
-moment the store fetch lands. Flag this explicitly in the stage-3
-handover so it isn't lost.
+- `cargo build --workspace` — clean.
+- `cargo test -p dp-reports leaderboard` — 14/14 green.
+- `bash scripts/check-boundaries.sh` — OK (zero `starter_*` imports).
 
-## Files touched this stage
+## What you need to know for stage 4
 
-- `.codeless/jobs/org-leaderboard/STAGE-1-COMPOSABILITY.md` —
-  new, the pinned investigation note.
-- `.codeless/jobs/org-leaderboard/SCOPE.md` — open questions 1
-  and 2 marked resolved, pointing at the note.
-- `.codeless/jobs/org-leaderboard/handover.md` — this file.
+- The scaffold deliberately keeps the SQL builder a pure
+  `&'static str`. The store adapter (`crates/dp-store-pg/src/store.rs`)
+  isn't wired to call it yet — that integration is intentionally
+  deferred so stage 4 can extend the builder to all four subjects /
+  three scope modes *before* anyone depends on a one-subject path.
+- The `active_orgs` column is hard-coded `1::bigint` in single-org
+  SQL on purpose: stage 4's `all_orgs_combined` / `per_org_split`
+  variants compute it properly and share the row-mapper.
+- `LeaderboardContext::extras` is the §6.3 `also_compute` slot —
+  reserve the field but stage 7 owns the actual fan-out logic.
+- Per `STAGE-1-COMPOSABILITY.md`: when stage 4 adds the
+  `union_of_default_roles(rank_by, also_compute)` widening helper,
+  it lives in the leaderboard engine, **not** in `METRIC_ROLE_MAP`.
+- Stage 4 still won't need to touch
+  `crates/dp-reports/src/aggregate.rs` — the count reducers
+  (`count_by_user / _team / _org`) are already the building blocks
+  per the stage-1 note.
+- `MetricId::Duration(...)` is still parked behind the missing
+  `list_duration_samples_in_window` store method. Leaderboards
+  against count metrics ship first; duration metrics flip on once
+  that fetch lands. Not a stage 4 blocker.
 
-No code under `crates/` was changed. No tests need to run for this
-stage; the `checks` step is "the note is on disk and SCOPE.md
-points at it" — both true.
+## Open questions
 
-## For the REVIEW gate (stage 2)
-
-WORKFLOW.md requires the stage-1 handover to include:
-- A one-paragraph answer to SCOPE open questions 1 and 2 —
-  done, both in SCOPE.md and in STAGE-1-COMPOSABILITY.md §4.
-- The decision on whether `also_compute` is a field add or a
-  refactor — **field add**, see STAGE-1-COMPOSABILITY.md §5.
-- If a refactor: a proposed new stage to insert before stage 3 —
-  not applicable, no refactor.
-
-The REVIEW gate should also note the duration-metric store-fetch
-caveat (above) so stage 3 inherits it.
+- (none) — stage 3 introduced no new SCOPE questions. SCOPE Q3 + Q4
+  remain owned by stages 9 (permission gate) and the frontend
+  wiring stage respectively.
