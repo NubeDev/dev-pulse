@@ -1,0 +1,108 @@
+name: triage-slice-2
+goal: |
+  Land slice 1.5 (P0 inbox bugs) + slice 2 of the Triage workbench
+  per linear-projects-idea.md. Multi-identity model with membership
+  reconciliation, Teams/People rail entries, issue write handlers
+  through the §8.2 CAS path, timeline / sync-status / reports
+  endpoints, start/due dates with Projects v2 mirror, OpenAPI
+  registration of every new + previously-missing handler, plus the
+  matching frontend (identity manager, dates UI, bulk inbox,
+  group-by/sort, ⌘K, resizable splitters, dark-mode polish) and the
+  two tech-debt cleanups (dp-fetcher tests, PinDto.label).
+  Everything green via cargo test, pnpm typecheck, make build.
+
+stages:
+  - |
+    Slice 1.5 P0 fixes — split dp_issues.version / external_version
+    (migration 0013), rewrite list_inbox_issues to identity-set
+    semantics, change POST /me/inbox/seen wire shape to carry the
+    client-observed version with LEAST() on upsert. Tests cover
+    own-write-not-unread and the seen-race.
+  - |
+    Multi-identity schema + stamper — migration 0014 adds
+    dp_user_identities (with is_primary partial unique) and
+    dp_membership_identities provenance join; deprecation backfill
+    from dp_users.github_id; GithubOrgsStamper produces set-shaped
+    Principal.extra.github logins/user_ids/orgs; principal_dirty
+    table drives re-stamp on link/unlink without forced re-login;
+    refuse to mint principal when identity set is empty (401
+    identity_set_empty).
+  - |
+    Identity endpoints + CLI + membership reconciliation — wire
+    GET /me/identities, POST /me/identities/link/start and callback
+    via server-side nonce table (state never carries session id),
+    DELETE /me/identities/by-github-user-id with last-identity
+    guard, PATCH primary, admin transfer + admin link verbs,
+    dev-pulse link-identity CLI; identity resource registered in
+    policy. Membership reconciler implements §3.0.2.b invariant
+    (dp_memberships exists iff any provenance row exists).
+  - |
+    REVIEW — schema + identity model. Confirm migration order,
+    deprecation strategy for dp_users.github_id, principal cache
+    invalidation, and the nonce-based OAuth state flow before
+    touching the write surface.
+  - |
+    Triage issue write handlers — mount issues_write_router for
+    POST /issues, PATCH /issues/by-id, POST comments through the
+    existing acquire/commit/rollback helpers; real octocrab
+    round-trip; issues-write gating; 409 stale_local_version
+    mapping per §8.3; integration tests cover happy path + CAS
+    miss + GitHub failure rollback.
+  - |
+    Read-side endpoints — GET /issues/by-id/timeline backed by the
+    §6 guarded expression index on dp_activity_events;
+    GET /repos/by-id/sync-status + POST /repos/by-id/sync with the
+    new repos-sync auth pair; GET /reports/issues with the §5.10
+    SQL shapes (jsonb_array_elements_text for wip,
+    jsonb_array_length for untriaged, EXTRACT EPOCH for
+    lead_time); /me/queue gets the keyset cursor + per-arm LIMIT
+    push-down and the new dp_issues_updated_at_idx covering index.
+  - |
+    Dates on issues (§3.10) — migration 0015 adds dp_issue_dates
+    (CHECK start <= due) + optional dp_repo_project_link;
+    PATCH /issues/by-id/dates synchronous local upsert; if the
+    repo is linked, enqueue a best-effort GraphQL mirror task
+    (addProjectV2ItemById + updateProjectV2ItemFieldValue) that
+    records failures in mirror_error and never blocks the save;
+    pull-back from Projects v2 stays a §3.10 slice-3 deferral with
+    a stub task type for the queue.
+  - |
+    OpenAPI + audit + bulk inbox — register every new handler
+    (me_queue, inbox seen/patch/bulk, identities, write verbs,
+    timeline, sync-status, reports, dates) on DevPulseApi; add
+    POST /me/inbox/bulk for mark-all / snooze-all / done-all;
+    audit vocabulary extended for IDENTITY_*, DATE_SET,
+    REPO_SYNC_REQUESTED, BULK_INBOX_*; dp_user_issue_state BEFORE
+    UPDATE trigger from §6 actually shipped.
+  - |
+    REVIEW — backend done. Confirm OpenAPI surface, policy
+    resource registry, and migration chain (0013 to 0015) before
+    frontend starts depending on them.
+  - |
+    Frontend backbone — identity manager at #/account/identities
+    (link/unlink/transfer/set-primary, user-menu badge showing the
+    active identity set); Teams + People entries in the Triage
+    views rail with collapsed-by-default People per the §13.5 cap;
+    Untriaged scoped to dp_memberships orgs with the 24h age
+    floor; snoozed view backed by /me/queue?status=snoozed; bulk
+    inbox actions on the selection; group-by + sort dropdowns on
+    the middle pane; ⌘K palette (slice-2 scope — jump-to +
+    view-switch + apply-to-selection).
+  - |
+    Frontend dates + saved views + polish — start/due date pickers
+    in the peek panel, Due column in the list (toggle g then d),
+    Due-this-week + Overdue smart views in the rail, past-due
+    re-bump to inbox; tag-backed saved views as first-class rail
+    entries with counts (slice-3 §14.6); resizable pane splitters;
+    dark-mode pass on the new surfaces; PinDto.label denormalized
+    or client-side joined against repo list so the rail stops
+    showing target_id.slice(0,8).
+  - |
+    Tech debt + handover — triage the pre-existing dp-fetcher test
+    failures noted in §0, fix or quarantine with a tracking issue;
+    final cargo test --workspace + cd frontend && pnpm typecheck +
+    make build, all green; update §0 progress log with what landed
+    and what was explicitly deferred (Projects v2 pull-back,
+    saved-view CRUD as a separate object, SLA / digest, on-call
+    rotation handoff); write the slice-3 brief so the next job
+    picks up cleanly.
