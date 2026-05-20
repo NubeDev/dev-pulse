@@ -22,6 +22,12 @@ import {
 import { Alert, AlertDescription, AlertTitle } from "@nube/starter-ui-kit/components/alert";
 import { Badge } from "@nube/starter-ui-kit/components/badge";
 
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyTitle,
+} from "../components/empty.jsx";
 import { useDirectory } from "./use-directory.js";
 
 const HEADER_CLASS =
@@ -54,9 +60,14 @@ export function OrgsPage(): JSX.Element {
         {dir.loading && sortedOrgs.length === 0 ? (
           <p className="text-muted-foreground">Loading orgs…</p>
         ) : sortedOrgs.length === 0 ? (
-          <p data-testid="orgs-empty" className="text-muted-foreground">
-            No orgs tracked yet.
-          </p>
+          <Empty data-testid="orgs-empty">
+            <EmptyHeader>
+              <EmptyTitle>No orgs tracked yet</EmptyTitle>
+              <EmptyDescription>
+                Run a fetch or webhook to seed the first one.
+              </EmptyDescription>
+            </EmptyHeader>
+          </Empty>
         ) : (
           <div className="overflow-hidden rounded-md border border-border bg-card">
             <table data-testid="orgs-table" className="w-full border-collapse">

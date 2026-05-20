@@ -10,17 +10,19 @@
  * Network / query errors are surfaced inline by the pages
  * themselves (`useQuery().error`) — this boundary is for the
  * synchronous "something threw during render" case.
+ *
+ * Renders the shadcn `Alert` primitive (destructive variant) so
+ * the failure mode is visually distinct from a normal Card panel,
+ * with a retry `Button` + reload-page secondary action below.
  */
 
 import { Component, type ErrorInfo, type ReactNode } from "react";
-import { Button } from "@nube/starter-ui-kit/components/button";
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@nube/starter-ui-kit/components/card";
+  Alert,
+  AlertDescription,
+  AlertTitle,
+} from "@nube/starter-ui-kit/components/alert";
+import { Button } from "@nube/starter-ui-kit/components/button";
 
 export interface ErrorBoundaryProps {
   /** Optional label shown above the error — defaults to "this view". */
@@ -62,31 +64,17 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, State> {
     if (!this.state.err) return this.props.children;
     const scope = this.props.scope ?? "this view";
     return (
-      <Card data-testid="error-boundary" role="alert">
-        <CardHeader>
-          <CardTitle>Something went wrong rendering {scope}.</CardTitle>
-          <CardDescription>
+      <Alert variant="destructive" data-testid="error-boundary">
+        <AlertTitle>Something went wrong rendering {scope}.</AlertTitle>
+        <AlertDescription>
+          <p>
             The error has been logged to the browser console. Try again, or
             reload the page if the problem persists.
-          </CardDescription>
-        </CardHeader>
-        <CardContent style={{ display: "grid", gap: "0.75rem" }}>
-          <pre
-            style={{
-              fontSize: "0.8125rem",
-              color: "var(--muted-foreground)",
-              background: "var(--muted)",
-              padding: "0.75rem",
-              borderRadius: "var(--radius-sm, 0.375rem)",
-              overflow: "auto",
-              whiteSpace: "pre-wrap",
-              wordBreak: "break-word",
-              margin: 0,
-            }}
-          >
+          </p>
+          <pre className="m-0 max-w-full overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted px-3 py-2 text-[0.8125rem] text-muted-foreground">
             {this.state.err.message}
           </pre>
-          <div style={{ display: "flex", gap: "0.5rem" }}>
+          <div className="flex flex-wrap gap-2">
             <Button onClick={this.reset} data-testid="error-boundary-retry">
               Retry
             </Button>
@@ -97,8 +85,8 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, State> {
               Reload page
             </Button>
           </div>
-        </CardContent>
-      </Card>
+        </AlertDescription>
+      </Alert>
     );
   }
 }

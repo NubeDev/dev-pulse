@@ -28,6 +28,12 @@ import {
   SelectValue,
 } from "@nube/starter-ui-kit/components/select";
 
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyTitle,
+} from "../components/empty.jsx";
 import { useDirectory, useTeamsForOrg } from "./use-directory.js";
 
 const HEADER_CLASS =
@@ -88,9 +94,15 @@ export function TeamsPage(): JSX.Element {
         ) : teamsState.loading ? (
           <p className="text-muted-foreground">Loading teams…</p>
         ) : teamsState.teams.length === 0 ? (
-          <p data-testid="teams-empty" className="text-muted-foreground">
-            No teams in this org yet.
-          </p>
+          <Empty data-testid="teams-empty">
+            <EmptyHeader>
+              <EmptyTitle>No teams in this org yet</EmptyTitle>
+              <EmptyDescription>
+                Teams appear here once GitHub returns them for the selected
+                org.
+              </EmptyDescription>
+            </EmptyHeader>
+          </Empty>
         ) : (
           <div className="overflow-hidden rounded-md border border-border bg-card">
             <table data-testid="teams-table" className="w-full border-collapse">
