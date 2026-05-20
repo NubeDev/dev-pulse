@@ -134,46 +134,67 @@ const REPORT_TABS: readonly ReportNavItem[] = [
   { tab: "freshness", label: "Freshness", href: "#/reports/freshness" },
 ];
 
+/**
+ * Shared sub-nav strip for Reports / Directory / Admin. Anchor-shaped
+ * (the hash route stays the source of truth — we don't want a
+ * controlled `Tabs` here because deep links + back-button must work
+ * without extra state) but visually a segmented control: a muted
+ * pill background with an active-state primary swatch on the selected
+ * anchor. Pure Tailwind utilities — no inline styles.
+ */
+interface SubNavItem<T extends string> {
+  readonly tab: T;
+  readonly label: string;
+  readonly href: string;
+}
+
+function SubNav<T extends string>({
+  label,
+  testId,
+  items,
+  active,
+}: {
+  label: string;
+  testId: string;
+  items: readonly SubNavItem<T>[];
+  active: T;
+}): JSX.Element {
+  return (
+    <nav
+      aria-label={label}
+      data-testid={testId}
+      className="flex gap-1 self-start rounded-md bg-muted p-1"
+    >
+      {items.map((item) => {
+        const isActive = item.tab === active;
+        return (
+          <a
+            key={item.tab}
+            href={item.href}
+            aria-current={isActive ? "page" : undefined}
+            className={
+              "rounded-sm px-3 py-1.5 text-sm no-underline transition-colors " +
+              (isActive
+                ? "bg-primary text-primary-foreground"
+                : "text-foreground hover:bg-background/60")
+            }
+          >
+            {item.label}
+          </a>
+        );
+      })}
+    </nav>
+  );
+}
+
 function ReportsSection({ tab }: { tab: ReportTab }): JSX.Element {
   // The reports sub-nav is rendered above the active report pane.
   // Plain anchors (not Tabs) keep the route the source of truth so
   // deep links + back-button work without an extra controlled state.
   // No leaderboard affordance anywhere — by design (§4).
   return (
-    <div style={{ display: "grid", gap: "1rem" }}>
-      <nav
-        aria-label="Reports"
-        data-testid="reports-subnav"
-        style={{
-          display: "flex",
-          gap: "0.25rem",
-          padding: "0.25rem",
-          background: "var(--muted)",
-          borderRadius: "var(--radius-md, 0.5rem)",
-          alignSelf: "flex-start",
-        }}
-      >
-        {REPORT_TABS.map((item) => {
-          const isActive = item.tab === tab;
-          return (
-            <a
-              key={item.tab}
-              href={item.href}
-              aria-current={isActive ? "page" : undefined}
-              style={{
-                padding: "0.375rem 0.75rem",
-                borderRadius: "var(--radius-sm, 0.375rem)",
-                fontSize: "0.875rem",
-                textDecoration: "none",
-                color: isActive ? "var(--primary-foreground)" : "var(--foreground)",
-                background: isActive ? "var(--primary)" : "transparent",
-              }}
-            >
-              {item.label}
-            </a>
-          );
-        })}
-      </nav>
+    <div className="grid gap-4">
+      <SubNav label="Reports" testId="reports-subnav" items={REPORT_TABS} active={tab} />
       <ReportsPane tab={tab} />
     </div>
   );
@@ -211,40 +232,8 @@ function DirectorySection({ tab }: { tab: DirectoryTab }): JSX.Element {
   // Same sub-nav pattern as Reports: plain anchors so the hash
   // route is the source of truth for the active tab.
   return (
-    <div style={{ display: "grid", gap: "1rem" }}>
-      <nav
-        aria-label="Directory"
-        data-testid="directory-subnav"
-        style={{
-          display: "flex",
-          gap: "0.25rem",
-          padding: "0.25rem",
-          background: "var(--muted)",
-          borderRadius: "var(--radius-md, 0.5rem)",
-          alignSelf: "flex-start",
-        }}
-      >
-        {DIRECTORY_TABS.map((item) => {
-          const isActive = item.tab === tab;
-          return (
-            <a
-              key={item.tab}
-              href={item.href}
-              aria-current={isActive ? "page" : undefined}
-              style={{
-                padding: "0.375rem 0.75rem",
-                borderRadius: "var(--radius-sm, 0.375rem)",
-                fontSize: "0.875rem",
-                textDecoration: "none",
-                color: isActive ? "var(--primary-foreground)" : "var(--foreground)",
-                background: isActive ? "var(--primary)" : "transparent",
-              }}
-            >
-              {item.label}
-            </a>
-          );
-        })}
-      </nav>
+    <div className="grid gap-4">
+      <SubNav label="Directory" testId="directory-subnav" items={DIRECTORY_TABS} active={tab} />
       <DirectoryPane tab={tab} />
     </div>
   );
@@ -280,40 +269,8 @@ function AdminSection({ tab }: { tab: AdminTab }): JSX.Element {
   // hash route stays the source of truth so deep links + back-button
   // work without an extra controlled state.
   return (
-    <div style={{ display: "grid", gap: "1rem" }}>
-      <nav
-        aria-label="Admin"
-        data-testid="admin-subnav"
-        style={{
-          display: "flex",
-          gap: "0.25rem",
-          padding: "0.25rem",
-          background: "var(--muted)",
-          borderRadius: "var(--radius-md, 0.5rem)",
-          alignSelf: "flex-start",
-        }}
-      >
-        {ADMIN_TABS.map((item) => {
-          const isActive = item.tab === tab;
-          return (
-            <a
-              key={item.tab}
-              href={item.href}
-              aria-current={isActive ? "page" : undefined}
-              style={{
-                padding: "0.375rem 0.75rem",
-                borderRadius: "var(--radius-sm, 0.375rem)",
-                fontSize: "0.875rem",
-                textDecoration: "none",
-                color: isActive ? "var(--primary-foreground)" : "var(--foreground)",
-                background: isActive ? "var(--primary)" : "transparent",
-              }}
-            >
-              {item.label}
-            </a>
-          );
-        })}
-      </nav>
+    <div className="grid gap-4">
+      <SubNav label="Admin" testId="admin-subnav" items={ADMIN_TABS} active={tab} />
       <AdminPane tab={tab} />
     </div>
   );
