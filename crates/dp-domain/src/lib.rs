@@ -46,7 +46,7 @@ pub use freshness::DataAsOf;
 pub use issue_mutation::{IssueMutation, IssueMutationOp, IssueMutationResult};
 pub use membership::{Membership, MembershipRole};
 pub use org::Org;
-pub use pin::{Pin, PinKind};
+pub use pin::{Pin, PinKind, PIN_CAP};
 pub use repo::Repo;
 pub use store::{Store, StoreError};
 pub use tag::{Tag, TagScopeKind};

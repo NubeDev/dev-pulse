@@ -37,6 +37,7 @@ pub mod audit;
 pub mod directory;
 pub mod error;
 pub mod openapi;
+pub mod pins;
 pub mod reports;
 pub mod state;
 
@@ -52,6 +53,10 @@ pub use directory::{
 };
 pub use error::ApiError;
 pub use openapi::DevPulseApi;
+pub use pins::{
+    add_pin, list_pins, pins_router, remove_pin, reorder_pins, AddPinRequest, PinDto, PinKeyDto,
+    PinKindDto, ReorderRequest, PIN_CAP,
+};
 pub use reports::{
     freshness_report, home_org_split_report, org_report, reports_router, team_report,
     user_report, CountRow, DataAsOfDto, HomeOrgSplitRow, ReportQuery, ReportResponse,

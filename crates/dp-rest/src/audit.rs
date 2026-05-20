@@ -18,9 +18,13 @@
 //! | [`RUNS_LIST`]        | `GET /admin/runs`                                   |
 //! | [`AUTH_SIGNED_IN`]   | successful OAuth callback (session minted)          |
 //! | [`AUTH_DENIED_ORG`]  | authz denial for an out-of-org GitHub user          |
+//! | [`PIN_ADD`]          | `POST /me/pins` (SCOPE-PROJECTS §6.5)               |
+//! | [`PIN_REMOVE`]       | `DELETE /me/pins/{kind}/{id}` (SCOPE-PROJECTS §6.5) |
+//! | [`PIN_REORDER`]      | `PUT /me/pins/order` (SCOPE-PROJECTS §6.5)          |
 //!
 //! Stage 4 wires `HOME_ORG_SET`; the others land with their owning
-//! handlers in stages 5 / 9.
+//! handlers in stages 5 / 9. The three `pin.*` verbs ship with the
+//! workflow-surface stage in SCOPE-PROJECTS §6.
 
 use chrono::Utc;
 use uuid::Uuid;
@@ -46,6 +50,12 @@ pub const RUNS_LIST: &str = "runs.list";
 pub const AUTH_SIGNED_IN: &str = "auth.signed_in";
 /// `auth.denied_org` — authz denial for an out-of-org GitHub user.
 pub const AUTH_DENIED_ORG: &str = "auth.denied_org";
+/// `pin.add` — `POST /me/pins` (SCOPE-PROJECTS §6.5).
+pub const PIN_ADD: &str = "pin.add";
+/// `pin.remove` — `DELETE /me/pins/{kind}/{id}` (SCOPE-PROJECTS §6.5).
+pub const PIN_REMOVE: &str = "pin.remove";
+/// `pin.reorder` — `PUT /me/pins/order` (SCOPE-PROJECTS §6.5).
+pub const PIN_REORDER: &str = "pin.reorder";
 
 // ---- principal stub ------------------------------------------------------
 

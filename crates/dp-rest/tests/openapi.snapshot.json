@@ -213,6 +213,148 @@
         }
       }
     },
+    "/me/pins": {
+      "get": {
+        "tags": [
+          "pins"
+        ],
+        "summary": "`GET /me/pins` — caller's pins, ordered by `position` ascending.",
+        "description": "Audit: not audited. Pins are personal UI state and `GET` traffic\nwould swamp the audit log without operational value (§6.5 only\npins the three mutation verbs).",
+        "operationId": "list_pins",
+        "responses": {
+          "200": {
+            "description": "Caller's pins, ordered by position",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PinDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "pins"
+        ],
+        "summary": "`POST /me/pins` — append a pin to the caller's list.",
+        "description": "* Position is server-assigned (`len(existing)`).\n* Returns `400 pin_cap_exceeded` if the caller already has\n  [`PIN_CAP`] pins (§13.5).\n* Returns `409 pin_exists` if the `(kind, target_id)` row is\n  already in the caller's pins (idempotent re-pinning, §6.4 /\n  the composite-PK note in [`dp_domain::store::Store::add_pin`]).\n* Audit: writes [`audit::PIN_ADD`] with target\n  `\"<kind>:<target_id>\"` after the row lands.",
+        "operationId": "add_pin",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddPinRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Pin appended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PinDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Pin cap exceeded"
+          },
+          "409": {
+            "description": "Pin already exists for this caller"
+          }
+        }
+      }
+    },
+    "/me/pins/order": {
+      "put": {
+        "tags": [
+          "pins"
+        ],
+        "summary": "`PUT /me/pins/order` — atomically rewrite the caller's pin order.",
+        "description": "The request body's `order` must exactly cover the caller's\ncurrent pin set; missing or extra `(kind, target_id)` entries\nsurface as `400 reorder_set_mismatch`. The store applies the\nrewrite in one transaction so a concurrent reader cannot observe\na partial reorder (§6.3 row-by-row comment, §13 atomicity rules).\n\nAudit: writes one [`audit::PIN_REORDER`] row with target\n`\"count:<n>\"` (n = number of pins reordered). We do **not** dump\nthe full key list into the audit target — that would balloon the\n`dp_audit_log.target` column past the small-text comfort zone\nand the audit verb is meaningful at row granularity (one row =\none reorder operation).",
+        "operationId": "reorder_pins",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReorderRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Pins reordered atomically",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ack"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`order` does not exactly cover the caller's pins"
+          }
+        }
+      }
+    },
+    "/me/pins/{kind}/{target_id}": {
+      "delete": {
+        "tags": [
+          "pins"
+        ],
+        "summary": "`DELETE /me/pins/{kind}/{id}` — remove one pin.",
+        "description": "Returns `404 pin_not_found` when the row is not in the caller's\npin set. Audit: writes [`audit::PIN_REMOVE`] after the row is\ngone.\n\nNote on positions: the §6.3 schema does not auto-compact `position`\nvalues on delete (the store does not renumber). The next\n[`reorder_pins`](crate::pins::reorder_pins) call is what compacts\nthe gap.",
+        "operationId": "remove_pin",
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "path",
+            "description": "`repo` or `tag`",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/PinKindDto"
+            }
+          },
+          {
+            "name": "target_id",
+            "in": "path",
+            "description": "Pin target id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Pin removed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ack"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such pin for caller"
+          }
+        }
+      }
+    },
     "/orgs": {
       "get": {
         "tags": [
@@ -545,6 +687,25 @@
           }
         }
       },
+      "AddPinRequest": {
+        "type": "object",
+        "description": "Body for `POST /me/pins`. The server picks the position\n(`len(existing)`) and the `pinned_at` timestamp.",
+        "required": [
+          "kind",
+          "target_id"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/PinKindDto",
+            "description": "Pin target kind."
+          },
+          "target_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "`dp_repos.id` or `dp_tags.id` per [`kind`](Self::kind)."
+          }
+        }
+      },
       "CountRow": {
         "type": "object",
         "description": "One aggregated count row. The `key` is stringified so the same\nshape works for UUID group-bys (`User`, `Team`, `Repo`, `Org`) and\ntime-bucket group-bys (`Day`, `Week`, `Month` — RFC3339 instants).",
@@ -801,6 +962,64 @@
           }
         }
       },
+      "PinDto": {
+        "type": "object",
+        "description": "One row in `GET /me/pins`. Hydration of `target_id` to a full\nrepo / tag payload is a follow-up stage — for now the client\njoins against `/orgs`, `/repos`, `/tags` itself.",
+        "required": [
+          "kind",
+          "target_id",
+          "position",
+          "pinned_at"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/PinKindDto",
+            "description": "Discriminator for `target_id`."
+          },
+          "pinned_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the row was created."
+          },
+          "position": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Sidebar order. Lower comes first; assigned by the server."
+          },
+          "target_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Either a `dp_repos.id` or a `dp_tags.id` per [`kind`](Self::kind)."
+          }
+        }
+      },
+      "PinKeyDto": {
+        "type": "object",
+        "description": "One entry of [`ReorderRequest::order`].",
+        "required": [
+          "kind",
+          "target_id"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/PinKindDto",
+            "description": "Pin target kind."
+          },
+          "target_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "`dp_repos.id` or `dp_tags.id` per [`kind`](Self::kind)."
+          }
+        }
+      },
+      "PinKindDto": {
+        "type": "string",
+        "description": "Wire form of [`PinKind`]. Mirrors the lower-case strings in the\n`dp_user_pins.kind` CHECK constraint (`'repo' | 'tag'`).",
+        "enum": [
+          "repo",
+          "tag"
+        ]
+      },
       "RefreshResponse": {
         "oneOf": [
           {
@@ -848,6 +1067,22 @@
           }
         ],
         "description": "Response body for `POST /admin/refresh`. Variants are flattened\nso a coalesce comes out as `{ \"ran\": false }` and a real tick\nas `{ \"ran\": true, \"items\": …, \"errors\": …, \"partial\": … }`."
+      },
+      "ReorderRequest": {
+        "type": "object",
+        "description": "Body for `PUT /me/pins/order`. The slice **must** exactly cover\nthe caller's current pin set — extra / missing entries are\nrejected (`400 reorder_set_mismatch`).",
+        "required": [
+          "order"
+        ],
+        "properties": {
+          "order": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PinKeyDto"
+            },
+            "description": "New order. Entry `i` becomes `position = i` after the\ntransaction commits."
+          }
+        }
       },
       "ReportResponse": {
         "type": "object",
@@ -1009,6 +1244,10 @@
     {
       "name": "admin",
       "description": "Operator-only surface: refresh, run-log, GDPR cascade + export."
+    },
+    {
+      "name": "pins",
+      "description": "Per-user pinned repos / tags (SCOPE-PROJECTS §6)."
     },
     {
       "name": "webhooks",

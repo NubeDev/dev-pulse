@@ -82,8 +82,8 @@ use dp_domain::store::Store;
 use dp_fetcher::reconciler::Scheduler;
 use dp_fetcher::webhook::{self, WebhookMetrics, WebhookSecretSource, WebhookState};
 use dp_rest::{
-    admin_router, directory_router, reports_router, AdminState, AppState as RestAppState,
-    DevPulseApi,
+    admin_router, directory_router, pins_router, reports_router, AdminState,
+    AppState as RestAppState, DevPulseApi,
 };
 use utoipa::OpenApi;
 use uuid::Uuid;
@@ -221,12 +221,14 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
     let admin_state = Arc::new(AdminState::new(scheduler.clone(), store.clone()));
 
     let reports = reports_router(rest_state.clone());
-    let directory = directory_router(rest_state);
+    let directory = directory_router(rest_state.clone());
+    let pins = pins_router(rest_state);
     let admin = admin_router(admin_state);
 
     let protected = Router::new()
         .merge(reports)
         .merge(directory)
+        .merge(pins)
         .merge(admin);
 
     // Hand the policy engine down via Extension. The per-route

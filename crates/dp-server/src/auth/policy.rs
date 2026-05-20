@@ -101,6 +101,13 @@ pub fn register_dev_pulse_resources(registry: &StaticRegistry) {
         "Admin",
         "Admin surface: reconciler runs, refresh trigger, GDPR anonymise/export.",
     ));
+    registry.register_spec(ResourceSpec::from_static(
+        "pins",
+        &["read", "write"],
+        Ownership::None,
+        "Pins",
+        "Per-user pinned repos / tags (SCOPE-PROJECTS §6). `write` covers add / remove / reorder.",
+    ));
 }
 
 /// Load + compile the policy file, wrap it in

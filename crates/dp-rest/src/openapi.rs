@@ -91,6 +91,11 @@ async fn webhook_github_stub() {}
         crate::admin::list_runs,
         crate::admin::anonymise_user,
         crate::admin::export_user,
+        // Pins (SCOPE-PROJECTS §6).
+        crate::pins::list_pins,
+        crate::pins::add_pin,
+        crate::pins::remove_pin,
+        crate::pins::reorder_pins,
         // Webhooks (Phase 2 — docs-only stub, real handler in dp-fetcher).
         webhook_github_stub,
     ),
@@ -112,11 +117,18 @@ async fn webhook_github_stub() {}
         crate::admin::UserExport,
         crate::admin::ExportEvent,
         crate::admin::MembershipDto,
+        // Pins.
+        crate::pins::PinDto,
+        crate::pins::PinKindDto,
+        crate::pins::AddPinRequest,
+        crate::pins::PinKeyDto,
+        crate::pins::ReorderRequest,
     )),
     tags(
         (name = "reports",   description = "Per-user / team / org activity reports + freshness probe."),
         (name = "directory", description = "Operator-facing user / org / team listings + home-org flip."),
         (name = "admin",     description = "Operator-only surface: refresh, run-log, GDPR cascade + export."),
+        (name = "pins",      description = "Per-user pinned repos / tags (SCOPE-PROJECTS §6)."),
         (name = "webhooks",  description = "GitHub webhook receiver. HMAC-authenticated, not principal-wrapped."),
     ),
 )]

@@ -8,6 +8,12 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// Per-user data-model cap (SCOPE-PROJECTS §6.1 / §13.5, working
+/// assumption 20). Lives in the domain crate so the REST handler
+/// and the Postgres store both read the *same* number without
+/// crossing a layer boundary. Eventually moves into `dp-config`.
+pub const PIN_CAP: usize = 20;
+
 /// What a pin points at. The two cases hit different target tables —
 /// `repo` → `dp_repos.id`, `tag` → `dp_tags.id` — but the pin row
 /// itself stores only `target_id: UUID` and this discriminator.
@@ -15,7 +21,7 @@ use uuid::Uuid;
 /// The `repo` arm covers "pin this repo I work in"; the `tag` arm is
 /// the headline §6.1 case — pinning a tag is equivalent to pinning
 /// every repo currently linked to it, expanded at render time.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PinKind {
     /// `target_id` references `dp_repos.id`.

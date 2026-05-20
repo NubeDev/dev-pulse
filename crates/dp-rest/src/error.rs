@@ -44,6 +44,27 @@ pub enum ApiError {
     /// read-path variants are user-recoverable.
     #[error("store error: {0}")]
     Store(#[from] StoreError),
+
+    /// Row already exists or a unique constraint fired in a way the
+    /// caller can recover from (e.g. re-pinning an item that is
+    /// already pinned — SCOPE-PROJECTS §6.4). Mapped to `409`.
+    #[error("{message}")]
+    Conflict {
+        /// Stable machine-readable code (e.g. `"pin_exists"`).
+        code: &'static str,
+        /// Human-readable message; safe to render verbatim.
+        message: String,
+    },
+
+    /// The targeted row does not exist (e.g. removing a pin that
+    /// was never set). Mapped to `404`.
+    #[error("{message}")]
+    NotFound {
+        /// Stable machine-readable code (e.g. `"pin_not_found"`).
+        code: &'static str,
+        /// Human-readable message; safe to render verbatim.
+        message: String,
+    },
 }
 
 impl From<ResolveError> for ApiError {
@@ -83,6 +104,12 @@ impl IntoResponse for ApiError {
                     "store_error",
                     "internal error".to_string(),
                 )
+            }
+            ApiError::Conflict { code, message } => {
+                (StatusCode::CONFLICT, *code, message.clone())
+            }
+            ApiError::NotFound { code, message } => {
+                (StatusCode::NOT_FOUND, *code, message.clone())
             }
         };
         (
