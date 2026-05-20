@@ -26,6 +26,8 @@ tokio       = { workspace = true }
 tracing     = { workspace = true }
 utoipa      = { workspace = true }
 uuid        = { workspace = true }
+tokio-stream = "0.1"
+bytes        = "1"
 
 [dev-dependencies]
 tower       = { version = "0.5", features = ["util"] }

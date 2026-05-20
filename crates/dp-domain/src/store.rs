@@ -260,6 +260,46 @@ pub trait Store: Send + Sync {
     /// List the most recent `limit` runs of any kind, newest first.
     async fn list_recent_fetch_runs(&self, limit: i64) -> Result<Vec<FetchRun>, StoreError>;
 
+    /// Paginated projection over `dp_fetch_runs` ordered newest
+    /// first. Phase 4 stage 5 surfaces this on `GET /admin/runs`.
+    ///
+    /// Default impl falls back to [`Self::list_recent_fetch_runs`]
+    /// reading `limit + offset` rows and discarding the prefix —
+    /// inefficient but keeps every existing fake compiling. The PG
+    /// backend overrides with `LIMIT … OFFSET …`.
+    async fn list_fetch_runs(
+        &self,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<FetchRun>, StoreError> {
+        let take = limit.max(0);
+        let skip = offset.max(0);
+        let total = take.saturating_add(skip);
+        let mut rows = self.list_recent_fetch_runs(total).await?;
+        let skip = skip as usize;
+        if skip >= rows.len() {
+            return Ok(Vec::new());
+        }
+        Ok(rows.split_off(skip))
+    }
+
+    /// Page through every `event_actor` row credited to `user_id`,
+    /// joined back to its parent event. Ordered by `(ts ASC,
+    /// event_id ASC)` for a stable streaming order across pages.
+    ///
+    /// Phase 4 stage 5 uses this to chunk the GDPR export so a
+    /// 500MB user history does not need to materialise in process
+    /// memory. Default impl returns the empty vec so test fakes
+    /// that don't model events stay green.
+    async fn list_event_actor_rows_for_user_page(
+        &self,
+        _user_id: Uuid,
+        _offset: i64,
+        _limit: i64,
+    ) -> Result<Vec<EventActorRow>, StoreError> {
+        Ok(Vec::new())
+    }
+
     /// Snapshot the data-freshness envelope every report response
     /// carries (SCOPE §11.7 / TODO §0.3).
     ///

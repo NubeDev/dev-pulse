@@ -739,6 +739,51 @@ impl Store for PgStore {
         rows.iter().map(row_to_fetch_run).collect()
     }
 
+    async fn list_fetch_runs(
+        &self,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<FetchRun>, StoreError> {
+        let rows = sqlx::query(
+            "SELECT id, kind, started, finished, items, errors, partial \
+             FROM dp_fetch_runs ORDER BY started DESC LIMIT $1 OFFSET $2",
+        )
+        .bind(limit.max(0))
+        .bind(offset.max(0))
+        .fetch_all(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        rows.iter().map(row_to_fetch_run).collect()
+    }
+
+    async fn list_event_actor_rows_for_user_page(
+        &self,
+        user_id: Uuid,
+        offset: i64,
+        limit: i64,
+    ) -> Result<Vec<EventActorRow>, StoreError> {
+        // Stable order across pages so the streaming export emits
+        // events in deterministic chronological order even when two
+        // events share a `ts` (squash-merge + commit at the same
+        // instant) — break ties on the event id.
+        let rows = sqlx::query(
+            "SELECT ea.event_id, ea.user_id, ea.role, \
+                    e.org_id, e.repo_id, e.kind, e.ts \
+             FROM dp_event_actors ea \
+             JOIN dp_activity_events e ON e.id = ea.event_id \
+             WHERE ea.user_id = $1 \
+             ORDER BY e.ts ASC, ea.event_id ASC \
+             LIMIT $2 OFFSET $3",
+        )
+        .bind(user_id)
+        .bind(limit.max(0))
+        .bind(offset.max(0))
+        .fetch_all(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        rows.iter().map(row_to_event_actor_row).collect()
+    }
+
     async fn data_as_of(&self) -> Result<DataAsOf, StoreError> {
         // Three indexed aggregates dispatched as three small queries
         // rather than one CTE so the row decoders stay obvious. The

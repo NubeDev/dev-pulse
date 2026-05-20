@@ -39,7 +39,11 @@ pub mod error;
 pub mod reports;
 pub mod state;
 
-pub use admin::{admin_router, AdminState, RefreshQuery, RefreshResponse};
+pub use admin::{
+    admin_router, anonymise_user, export_user, list_runs, AdminState, ExportEvent, FetchRunDto,
+    MembershipDto, RefreshQuery, RefreshResponse, RunsQuery, UserExport, EXPORT_PAGE_SIZE,
+    RUNS_DEFAULT_LIMIT, RUNS_MAX_LIMIT,
+};
 pub use audit::Principal;
 pub use directory::{
     directory_router, list_orgs, list_teams, list_users, set_home_org, Ack, OrgDto, OrgFilter,
