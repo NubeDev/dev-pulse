@@ -8,8 +8,9 @@
 //! 3. Synchronous local `UPSERT` into `dp_issue_dates`. Any
 //!    failure here surfaces as 4xx / 5xx and the response carries
 //!    no mirror promise.
-//! 4. If the repo carries a `dp_repo_project_link` row, enqueue a
-//!    `mirror_dates` task into `dp_projectv2_mirror_tasks` AND
+//! 4. For every `dp_project_board_links` row attached to the
+//!    issue's project, enqueue a `mirror_dates` task into
+//!    `dp_projectv2_mirror_tasks` AND
 //!    spawn a best-effort backend call (`addProjectV2ItemById`
 //!    then `updateProjectV2ItemFieldValue`). Failures land on
 //!    `dp_issue_dates.mirror_error` and never block the response.
@@ -765,7 +766,6 @@ mod tests {
         issues: HashMap<Uuid, Issue>,
         installs: HashMap<Uuid, OrgAppInstall>,
         dates: HashMap<Uuid, IssueDates>,
-        links: HashMap<Uuid, RepoProjectLink>,
         tasks: Vec<ProjectV2MirrorTask>,
         audit: Vec<AuditEntry>,
         mirror_results: Vec<(Uuid, String)>, // (issue, "ok:NODE" | "err:MSG")
@@ -846,12 +846,6 @@ mod tests {
             };
             g.mirror_results.push((issue_id, label));
             Ok(())
-        }
-        async fn get_repo_project_link(
-            &self,
-            repo_id: Uuid,
-        ) -> Result<Option<RepoProjectLink>, StoreError> {
-            Ok(self.inner.lock().unwrap().links.get(&repo_id).cloned())
         }
         async fn enqueue_projectv2_mirror_task(
             &self,

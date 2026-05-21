@@ -479,33 +479,6 @@ export const PatchIssueDatesRequestSchema = z.object({
 });
 export type PatchIssueDatesRequest = z.infer<typeof PatchIssueDatesRequestSchema>;
 
-// --- §3.10 repo → Projects v2 link (admin pane) -----------------------------
-//
-// One row per (NubeIO repo, GitHub Projects v2 board). All four
-// `*_node_id` fields carry GraphQL global ids — the picker shells
-// them out of the live `projectsV2` envelope so the operator never
-// has to handcraft them. `created_by` / `*_at` are server-stamped.
-
-export const RepoProjectLinkDtoSchema = z.object({
-  repo_id: uuid,
-  project_node_id: z.string(),
-  start_field_node_id: z.string().nullable().optional(),
-  due_field_node_id: z.string().nullable().optional(),
-  created_by: uuid.nullable().optional(),
-  created_at: isoDateTime,
-  updated_at: isoDateTime,
-});
-export type RepoProjectLinkDto = z.infer<typeof RepoProjectLinkDtoSchema>;
-
-export const PutRepoProjectLinkRequestSchema = z.object({
-  project_node_id: z.string().min(1),
-  start_field_node_id: z.string().nullable().optional(),
-  due_field_node_id: z.string().nullable().optional(),
-});
-export type PutRepoProjectLinkRequest = z.infer<
-  typeof PutRepoProjectLinkRequestSchema
->;
-
 // --- Projects (linear-projects-v2.md §6 / §7.1) ----------------------------
 //
 // First-class `dp_projects` surface — cross-repo issue membership,
@@ -1457,70 +1430,6 @@ export class DevPulseApi {
     );
   }
 
-  // --- §3.10 admin: repo → Projects v2 board link --------------------
-  //
-  // The picker GET is best-effort — the server proxies a GraphQL
-  // query against the linked GitHub installation and returns the
-  // raw `projectsV2` envelope. We surface it as `unknown` so the
-  // page can render whatever fields GitHub returns without us
-  // having to re-validate every node id schema here.
-
-  /** `GET /repos/{id}/project-link` — 404 means no link configured. */
-  async getRepoProjectLink(repoId: string): Promise<RepoProjectLinkDto | null> {
-    try {
-      return await this.getJson(
-        `/repos/${encodeURIComponent(repoId)}/project-link`,
-        RepoProjectLinkDtoSchema,
-      );
-    } catch (e) {
-      if (e instanceof DpRestError && e.status === 404) return null;
-      throw e;
-    }
-  }
-
-  /** `PUT /repos/{id}/project-link` — upsert. Empty field strings
-   *  are normalised to `null` on the server. */
-  async putRepoProjectLink(
-    repoId: string,
-    body: PutRepoProjectLinkRequest,
-  ): Promise<RepoProjectLinkDto> {
-    return this.sendJson(
-      "PUT",
-      `/repos/${encodeURIComponent(repoId)}/project-link`,
-      body,
-      RepoProjectLinkDtoSchema,
-    );
-  }
-
-  /** `DELETE /repos/{id}/project-link` — 204 on success (also when
-   *  the row didn't exist; the route is idempotent). */
-  async deleteRepoProjectLink(repoId: string): Promise<void> {
-    try {
-      await this.sendNoContent(
-        "DELETE",
-        `/repos/${encodeURIComponent(repoId)}/project-link`,
-        undefined,
-      );
-    } catch (e) {
-      if (e instanceof DpRestError && e.status === 404) return;
-      throw e;
-    }
-  }
-
-  /** `GET /repos/{id}/projects` — picker payload. Returns the raw
-   *  `projectsV2` envelope GitHub sent so the admin pane can list
-   *  boards + their `dateFields`. Returns `null` on 503 (means
-   *  the deployment has no GraphQL transport wired and the operator
-   *  must paste node ids by hand). */
-  async getRepoProjects(repoId: string): Promise<unknown | null> {
-    const res = await this.client.fetch(
-      `${this.client.baseUrl}/repos/${encodeURIComponent(repoId)}/projects`,
-      { credentials: "include", headers: this.client.headers },
-    );
-    if (res.status === 503) return null;
-    if (!res.ok) throw await DpRestError.fromResponse(res);
-    return (await res.json()) as unknown;
-  }
 }
 
 // ---------------------------------------------------------------------------

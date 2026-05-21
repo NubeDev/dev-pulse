@@ -1126,8 +1126,8 @@ function IssueDatesEditor({ issueId }: { issueId: string }): JSX.Element {
       )}
       {/* SCOPE-PROJECTS §3.10 mirror status — three states, one
        *  line of microcopy each. Renders nothing when the issue's
-       *  repo has no `dp_repo_project_link` row yet (server returns
-       *  both fields null in that case). */}
+       *  project has no `dp_project_board_links` row yet (server
+       *  returns both fields null in that case). */}
       {update.isPending && !error && (
         <p
           className="text-xs text-muted-foreground"

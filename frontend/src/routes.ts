@@ -216,18 +216,14 @@ export type ReportTab = "user" | "team" | "org" | "home-org-split" | "leaderboar
  *  - `runs` (default): paginated fetch_runs log.
  *  - `refresh`       : operator-triggered reconciler tick + org scope.
  *  - `users`         : GDPR controls (anonymise + export).
- *  - `project-sync`  : §9.4 "advanced / paste node ids" escape
- *                      hatch — the legacy SCOPE-PROJECTS §3.10
- *                      per-repo board linker, demoted from the
- *                      primary surface once slice B of
- *                      `linear-projects-v2.md` shipped the
- *                      Link-a-board dialog. */
-export type AdminTab = "runs" | "refresh" | "users" | "project-sync";
+ *
+ *  The legacy SCOPE-PROJECTS §3.10 per-repo board linker
+ *  (`project-sync` / `projects` admin sub-tabs) is retired in stage
+ *  11 of `linear-projects-v2.md`: the primary Link-a-board surface
+ *  is the §6.4 dialog on each project detail page. */
+export type AdminTab = "runs" | "refresh" | "users";
 
-/** Parse `#/admin/...` → the active sub-tab. Defaults to `runs`.
- *  The legacy `/admin/projects` URL is honoured as an alias for
- *  `project-sync` so any deep links sitting in chat/bookmarks
- *  still land somewhere sensible after the §9.4 rename. */
+/** Parse `#/admin/...` → the active sub-tab. Defaults to `runs`. */
 export function adminTabOf(route: string): AdminTab {
   const path = route.replace(/^#/, "").replace(/^\/+/, "").split("/");
   if (path[0] !== "admin") return "runs";
@@ -236,9 +232,6 @@ export function adminTabOf(route: string): AdminTab {
       return "refresh";
     case "users":
       return "users";
-    case "project-sync":
-    case "projects":
-      return "project-sync";
     case "runs":
     case undefined:
     case "":

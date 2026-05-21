@@ -18,7 +18,6 @@ import { NotFoundPage } from "./components/not-found.jsx";
 import { AppShell } from "./layout/app-shell.jsx";
 import { IdentitiesPage } from "./account/identities-page.jsx";
 import { AdminUsersPage } from "./admin/users-page.jsx";
-import { ProjectsPage as AdminProjectsPage } from "./admin/projects-page.jsx";
 import { RefreshPage } from "./admin/refresh-page.jsx";
 import { RunsPage } from "./admin/runs-page.jsx";
 import { HomeOrgPage } from "./directory/home-org-page.jsx";
@@ -190,7 +189,5 @@ function AdminPane({ tab }: { tab: AdminTab }): JSX.Element {
       return <RefreshPage />;
     case "users":
       return <AdminUsersPage />;
-    case "project-sync":
-      return <AdminProjectsPage />;
   }
 }

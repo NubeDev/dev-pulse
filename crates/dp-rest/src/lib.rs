@@ -49,7 +49,6 @@ pub mod pins;
 pub mod project_issues;
 pub mod projects;
 pub mod reports;
-pub mod repo_project_link;
 pub mod repos;
 pub mod state;
 pub mod tags;
@@ -104,12 +103,6 @@ pub use issues_read::{
 pub use repos::{
     get_repo_sync_status, list_repos, repos_router, request_repo_sync, ListReposQuery,
     RepoListResponse, RepoSummaryDto, RepoSyncQueuedDto, RepoSyncStatusDto,
-};
-pub use repo_project_link::{
-    delete_repo_project_link, get_repo_project_link, list_repo_projects,
-    put_repo_project_link, repo_project_link_router, OctocrabProjectsPicker,
-    ProjectsPickerBackend, ProjectsPickerError, PutRepoProjectLinkRequest,
-    RepoProjectLinkDto, UnconfiguredProjectsPicker,
 };
 pub use openapi::DevPulseApi;
 pub use pins::{

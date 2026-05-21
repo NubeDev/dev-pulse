@@ -2779,16 +2779,12 @@ impl Store for PgStore {
         Ok(())
     }
 
-    // Note: `get_repo_project_link` / `upsert_repo_project_link` /
-    // `delete_repo_project_link` are intentionally NOT overridden on
-    // [`PgStore`]. Migration 0024 (`0024_drop_repo_project_link.sql`)
-    // dropped the backing `dp_repo_project_link` table when the
-    // project-scoped `dp_project_board_links` replacement landed in
-    // 0023. The trait defaults (None / Invalid / Ok-no-op) keep the
-    // §3.10 admin-pane REST handler compiling while it is wound
-    // down in a follow-up stage of this slice; surface code that
-    // needs board state must reach for `list_board_links` /
-    // `get_board_item` instead.
+    // Note: the legacy per-repo board link surface is retired —
+    // migration 0024 dropped the backing table, the dp-rest admin
+    // handler is gone (stage 11), and the trait no longer exposes
+    // get / upsert / delete for it. Project-scoped state lives on
+    // `dp_project_board_links` (migration 0023); reach for
+    // `list_board_links` / `get_board_item` instead.
 
     async fn set_issue_github_node_id(
         &self,

@@ -15,7 +15,7 @@ import { defineConfig, devices } from "@playwright/test";
  *   - logs in with the real seeded dev account (dev@dev.com /
  *     dev123456789, see Makefile + users.md) so the §3.10 issue
  *     date editor's mirror banner is exercised against the real
- *     `dp_issue_dates` + `dp_repo_project_link` schema.
+ *     `dp_issue_dates` + `dp_project_board_links` schema.
  *
  * Run with: `pnpm --filter dev-pulse-frontend exec playwright test \
  *   --config playwright.live.config.ts`

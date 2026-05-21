@@ -17,6 +17,69 @@
 
 ## 0. Progress log
 
+### 2026-05-21 — stage 11 cleanup + acceptance
+
+Final slice-B cleanup pass. With the §6.4 Link-a-board dialog
+and the §7.3 board-link CRUD live, every reference to the
+§3.10 per-repo linker was wound down:
+
+- Deleted `crates/dp-rest/src/repo_project_link.rs` (the
+  GET/PUT/DELETE `/repos/{id}/project-link` + GraphQL picker
+  admin surface) and its `pub use` / OpenAPI / state.rs
+  wiring. The dp-server router no longer mounts it.
+- Dropped the `get_repo_project_link` /
+  `upsert_repo_project_link` / `delete_repo_project_link`
+  default impls from the `dp_domain::store::Store` trait and
+  the matching no-op note from `PgStore`. The trait now only
+  exposes the project-scoped `dp_project_board_links` /
+  `dp_project_board_items` lanes (migration 0023).
+- Removed `ProjectsPickerBackend` / `OctocrabProjectsPicker` /
+  `UnconfiguredProjectsPicker` from dp-rest, dp-server and
+  the dev-pulse bin layer. The org-scoped picker
+  (`OctocrabOrgProjectsPicker`, §7.3) is now the only
+  Projects v2 picker the deployment wires.
+- Deleted `frontend/src/admin/projects-page.tsx`, the
+  `RepoProjectLinkDto` / `PutRepoProjectLinkRequest` schemas
+  and the `getRepoProjectLink` / `putRepoProjectLink` /
+  `deleteRepoProjectLink` / `getRepoProjects` methods from
+  `frontend/src/api/client.ts`. Dropped the `project-sync`
+  admin sub-tab (and its sidebar entry + legacy
+  `/admin/projects` alias) from `routes.ts` / `app-shell.tsx`
+  / `app.tsx`. No paste-node-id surface remains anywhere in
+  the UI.
+- Updated stale `dp_repo_project_link` references in
+  `crates/dp-rest/src/issue_dates.rs`,
+  `crates/dp-domain/src/issue_dates.rs`,
+  `frontend/src/workflow/issues-page.tsx`,
+  `frontend/playwright.live.config.ts` and
+  `frontend/tests/e2e/live.issue-dates.spec.ts` to point at
+  the project-scoped `dp_project_board_links` replacement.
+
+Gates:
+
+- `cargo check --workspace --all-targets` clean.
+- `UPDATE_OPENAPI_SNAPSHOT=1 cargo test --workspace` green;
+  the regenerated `crates/dp-rest/tests/openapi.snapshot.json`
+  is committed (-196 lines, no more
+  `get_repo_project_link` / `put_repo_project_link` /
+  `delete_repo_project_link` / `RepoProjectLinkDto` /
+  `PutRepoProjectLinkRequest` symbols).
+- `pnpm exec tsc --noEmit` clean.
+- `grep -r 'repo_project_link\|RepoProjectLinkDto\|PutRepoProjectLinkRequest' crates/ frontend/src`
+  returns hits only in migrations 0015 (the original
+  `CREATE TABLE`), 0022 / 0023 (narrative back-references)
+  and 0024 (the retirement `DROP TABLE`). No app code or
+  frontend source references remain.
+
+Deferrals carried forward to a follow-up job:
+
+- Reports `project_id` dimension (§10) — slice C.
+- Search-by-name on `#/projects` and quick-pick autocomplete
+  in `[+ Add to project]` — slice C.
+- Two-way mirror (GitHub → dev-pulse date pull-back) — the
+  `pull_back` task kind is reserved in the migration but no
+  worker / projection is shipped.
+
 ### 2026-05-21 — v1 design pitch (this document)
 
 Authored after the §3.10 mirror landed and the resulting UX was

@@ -31,7 +31,6 @@ import {
   IconUsers,
   IconUsersGroup,
   IconBriefcase,
-  IconChecklist,
   IconArchive,
   IconLayoutKanban,
   IconCircleDashed,
@@ -131,11 +130,6 @@ const NAV_MAIN: NavMainItem[] = [
       { title: "Runs", url: "#/admin/runs", icon: IconHistory },
       { title: "Refresh", url: "#/admin/refresh", icon: IconRefresh },
       { title: "Users", url: "#/admin/users", icon: IconUserCog },
-      // §9.4 — the legacy per-repo board linker has been demoted to
-      // an "advanced / paste node ids" escape hatch and renamed
-      // `Project sync` to clear the naming collision with the new
-      // top-level `Projects` section.
-      { title: "Project sync", url: "#/admin/project-sync", icon: IconChecklist },
     ],
   },
 ]
@@ -183,7 +177,6 @@ const ADMIN_TITLE: Record<string, string> = {
   runs: "Runs",
   refresh: "Refresh",
   users: "User GDPR",
-  "project-sync": "Project sync",
 }
 
 /** Normalise the hash route to the closest `NavMain` url so the

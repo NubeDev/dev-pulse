@@ -1,7 +1,7 @@
 /**
- * §6.4 Link-a-board dialog — replaces the per-repo
- * `#/admin/projects` linker as the primary surface for wiring a
- * dev-pulse Project to a GitHub Projects v2 board.
+ * §6.4 Link-a-board dialog — the primary (and now only) surface
+ * for wiring a dev-pulse Project to a GitHub Projects v2 board.
+ * Replaces the retired per-repo admin linker.
  *
  * Three controls only:
  *   - Board dropdown   ← `GET /orgs/{org_id}/projects-v2`
@@ -16,9 +16,9 @@
  * returns `null` (transport unconfigured, GraphQL 5xx, token has
  * no `project` scope) the dialog shows an explainer + an
  * `[Open GitHub project settings]` deep link and disables the
- * `[Link board]` button. The §9.4 admin escape hatch
- * (`#/admin/project-sync`) remains the only place a paste box
- * surfaces.
+ * `[Link board]` button. No paste box surfaces anywhere in the
+ * dev-pulse UI — the §9.4 admin escape hatch was retired in
+ * stage 11.
  *
  * On submit: POST `/projects/{id}/board-links` with the picker-
  * resolved title / url so the link row renders the right name

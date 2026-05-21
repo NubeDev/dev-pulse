@@ -84,9 +84,8 @@ use dp_fetcher::webhook::{self, WebhookMetrics, WebhookSecretSource, WebhookStat
 use dp_rest::{
     admin_router, app_permissions_router, board_links_router, directory_router, inbox_router,
     issue_dates_router, issues_read_router, issues_write_router, me_identities_router,
-    pins_router, project_issues_router, projects_router, repo_project_link_router,
-    repos_router, reports_router, tags_router, AdminState, AppState as RestAppState,
-    DevPulseApi,
+    pins_router, project_issues_router, projects_router, repos_router, reports_router,
+    tags_router, AdminState, AppState as RestAppState, DevPulseApi,
 };
 
 // Re-export so the bin layer (which doesn't depend on dp-rest
@@ -94,8 +93,8 @@ use dp_rest::{
 // SCOPE-PROJECTS §13.6 `[github.app]`.
 pub use dp_rest::{FetcherIssueWriter, GitHubAppConfig, IssueWriteBackend};
 pub use dp_rest::{
-    OctocrabOrgProjectsPicker, OctocrabProjectV2Mirror, OctocrabProjectsPicker,
-    OrgProjectsPickerBackend, ProjectV2MirrorBackend, ProjectsPickerBackend,
+    OctocrabOrgProjectsPicker, OctocrabProjectV2Mirror, OrgProjectsPickerBackend,
+    ProjectV2MirrorBackend,
 };
 use utoipa::OpenApi;
 use uuid::Uuid;
@@ -182,11 +181,6 @@ pub struct AppState {
     /// [`dp_rest::OctocrabProjectV2Mirror`] adapter so the date
     /// editor lands cards on the linked Projects v2 board.
     pub projectv2_mirror: Option<Arc<dyn ProjectV2MirrorBackend>>,
-    /// Optional Projects v2 picker backend. `None` leaves the
-    /// dp-rest default in place; the admin pane's
-    /// `GET /repos/{id}/projects` route returns 503 in that case
-    /// and the operator falls back to pasting node ids by hand.
-    pub projects_picker: Option<Arc<dyn ProjectsPickerBackend>>,
     /// Optional org-scoped Projects v2 picker backend used by the
     /// §6.4 link-a-board dialog (`GET /orgs/{org_id}/projects-v2`).
     /// `None` leaves the dp-rest default in place; the route then
@@ -257,7 +251,6 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
         github_app,
         issue_writer,
         projectv2_mirror,
-        projects_picker,
         org_projects_picker,
     } = state;
 
@@ -286,9 +279,6 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
         if let Some(m) = projectv2_mirror {
             s = s.with_projectv2_mirror(m);
         }
-        if let Some(p) = projects_picker {
-            s = s.with_projects_picker(p);
-        }
         if let Some(p) = org_projects_picker {
             s = s.with_org_projects_picker(p);
         }
@@ -309,9 +299,9 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
     // as the §7.1 CRUD spine.
     let project_issues = project_issues_router(rest_state.clone());
     // First-class Project ↔ GitHub Projects v2 board picker + link
-    // CRUD (linear-projects-v2.md §7.3). Replaces the admin-pane
-    // `repo_project_link` surface on the primary path; the §6.4
-    // dialog reads the picker and the §6.3 row reads the link list.
+    // CRUD (linear-projects-v2.md §7.3). Replaces the retired
+    // per-repo admin surface on the primary path; the §6.4 dialog
+    // reads the picker and the §6.3 row reads the link list.
     let board_links = board_links_router(rest_state.clone());
     let tags = tags_router(rest_state.clone());
     let repos = repos_router(rest_state.clone());
@@ -326,11 +316,6 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
     // synchronous and the mirror task is spawned and recorded
     // out-of-band on `dp_issue_dates.mirror_error`.
     let issue_dates = issue_dates_router(rest_state.clone());
-    // §3.10 admin — link a NubeIO repo to a Projects v2 board so
-    // the date editor's mirror has a target. CRUD on
-    // `dp_repo_project_link` plus a GraphQL-backed picker; gated
-    // on `(issues, write)` (same lane as the editor).
-    let repo_project_link = repo_project_link_router(rest_state.clone());
     let inbox = inbox_router(rest_state.clone());
     // §3.0 / §10 — `GET /me/identities`. Reads the same
     // `IdentityStore` `starter_auth_oauth` writes to on link /
@@ -358,7 +343,6 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
         .merge(issues_read)
         .merge(issues_write)
         .merge(issue_dates)
-        .merge(repo_project_link)
         .merge(inbox)
         .merge(me_identities)
         .merge(github_app_routes)

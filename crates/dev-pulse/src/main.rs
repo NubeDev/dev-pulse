@@ -745,20 +745,18 @@ async fn run_serve(matches: &ArgMatches) -> Result<()> {
         } else {
             None
         };
-    // -- Projects v2 mirror + picker (§3.10) ----------------------------
+    // -- Projects v2 mirror + org picker (§3.10 / linear-projects-v2 §7.3)
     //
     // Same PAT-mode gate as the issue writer above: a configured
-    // GitHub token wires the octocrab-backed mirror and picker
-    // adapters. Without a token, the dp-rest defaults
-    // (`UnconfiguredProjectV2Mirror` / `UnconfiguredProjectsPicker`)
-    // stay in place — the date editor commits locally but the
-    // best-effort mirror is skipped, and the admin pane's project
-    // chooser surfaces a 503 so the operator knows to wire a
-    // token. Reuses a sibling budget-shared `Client` so GraphQL
-    // traffic counts against the same local fuse as REST.
-    let (projectv2_mirror, projects_picker, org_projects_picker): (
+    // GitHub token wires the octocrab-backed mirror and the org-
+    // scoped picker the §6.4 Link-a-board dialog reads from. Without
+    // a token, the dp-rest defaults stay in place — the date editor
+    // commits locally but the best-effort mirror is skipped, and the
+    // dialog surfaces the `upstream_unavailable` hint. Reuses a
+    // sibling budget-shared `Client` so GraphQL traffic counts
+    // against the same local fuse as REST.
+    let (projectv2_mirror, org_projects_picker): (
         Option<Arc<dyn dp_server::ProjectV2MirrorBackend>>,
-        Option<Arc<dyn dp_server::ProjectsPickerBackend>>,
         Option<Arc<dyn dp_server::OrgProjectsPickerBackend>>,
     ) = if let Some(tok) = github_token.as_ref().filter(|t| !t.is_empty()) {
         let gql_client = dp_fetcher::client::Client::with_personal_token(
@@ -773,15 +771,12 @@ async fn run_serve(matches: &ArgMatches) -> Result<()> {
                 gql_client.clone(),
                 store.clone(),
             ))),
-            Some(Arc::new(dp_server::OctocrabProjectsPicker::new(
-                gql_client.clone(),
-            ))),
             Some(Arc::new(dp_server::OctocrabOrgProjectsPicker::new(
                 gql_client,
             ))),
         )
     } else {
-        (None, None, None)
+        (None, None)
     };
     let scheduler = Arc::new(dp_fetcher::reconciler::Scheduler::new(
         reconciler.clone(),
@@ -812,7 +807,6 @@ async fn run_serve(matches: &ArgMatches) -> Result<()> {
             github_app: Arc::new(cfg.github.app.clone()),
             issue_writer: issue_writer.clone(),
             projectv2_mirror: projectv2_mirror.clone(),
-            projects_picker: projects_picker.clone(),
             org_projects_picker: org_projects_picker.clone(),
         },
         auth: auth_state,

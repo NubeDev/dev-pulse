@@ -1258,42 +1258,6 @@ pub trait Store: Send + Sync {
         Ok(())
     }
 
-    /// Read the `dp_repo_project_link` row for a repo, or `None`
-    /// when the repo is not linked to a Projects v2 project.
-    async fn get_repo_project_link(
-        &self,
-        _repo_id: Uuid,
-    ) -> Result<Option<RepoProjectLink>, StoreError> {
-        Ok(None)
-    }
-
-    /// Upsert the `dp_repo_project_link` row for a repo. The admin
-    /// pane PUTs through this when an operator wires a NubeIO
-    /// repo to a GitHub Projects v2 board (project node id +
-    /// optional start / due field node ids). Default impl rejects
-    /// the call so fakes that haven't opted in fail loudly
-    /// instead of silently swallowing the write.
-    async fn upsert_repo_project_link(
-        &self,
-        _link: &RepoProjectLink,
-    ) -> Result<RepoProjectLink, StoreError> {
-        Err(StoreError::Invalid(
-            "repo project link not supported by this store".into(),
-        ))
-    }
-
-    /// Delete the `dp_repo_project_link` row for a repo. The
-    /// admin pane DELETE flows through here to unwire a repo
-    /// from its Projects v2 board (subsequent issue date edits
-    /// stay local-only). Default impl is a no-op so non-pg
-    /// fakes treat the call as "already unwired".
-    async fn delete_repo_project_link(
-        &self,
-        _repo_id: Uuid,
-    ) -> Result<(), StoreError> {
-        Ok(())
-    }
-
     /// Stamp `dp_issues.github_node_id` for an issue that was
     /// missing one at mirror time. Called by the §3.10 mirror
     /// adapter after a lazy `repository.issue(number)` GraphQL
