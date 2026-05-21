@@ -155,7 +155,7 @@ impl From<Issue> for IssueDto {
 /// that fail to resolve leave `repo_slug = None` rather than
 /// failing the whole request, matching the §14.3 contract that
 /// the slug is decorative.
-async fn attach_repo_slugs(
+pub(crate) async fn attach_repo_slugs(
     store: &dyn dp_domain::store::Store,
     dtos: &mut [IssueDto],
 ) -> Result<(), ApiError> {

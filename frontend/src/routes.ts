@@ -30,8 +30,63 @@ export type Section =
   | "directory"
   | "admin"
   | "workflow"
+  | "projects"
   | "account"
   | "login";
+
+/** §6.1 sidebar status filter for `#/projects?status=…`. The value
+ *  round-trips through copy-paste so a deep link to "Backlog" lands
+ *  the right §6.2 grouping. `null` ⇒ render every status (the §6.2
+ *  default landing view). */
+export type ProjectStatusRoute =
+  | "active"
+  | "backlog"
+  | "done"
+  | "archived";
+
+export function projectsStatusOf(route: string): ProjectStatusRoute | null {
+  const q = route.indexOf("?");
+  if (q < 0) return null;
+  const v = new URLSearchParams(route.slice(q + 1)).get("status");
+  switch (v) {
+    case "active":
+    case "backlog":
+    case "done":
+    case "archived":
+      return v;
+    default:
+      return null;
+  }
+}
+
+/** Build a `#/projects` URL with an optional status filter. */
+export function projectsRoute(status?: ProjectStatusRoute | null): string {
+  if (!status) return "#/projects";
+  return `#/projects?status=${status}`;
+}
+
+/** Parse `#/projects/{id}` → the project id (UUID), or `null` for
+ *  the list landing (`#/projects` / `#/projects?status=…`). The
+ *  detail page is opened by §6.3 once a project exists; slice B
+ *  uses it as the host for the Link-a-board dialog and the
+ *  per-link mirror status rows. */
+export function projectDetailIdOf(route: string): string | null {
+  const q = route.indexOf("?");
+  const pathPart = q < 0 ? route : route.slice(0, q);
+  const parts = pathPart.replace(/^#/, "").replace(/^\/+/, "").split("/");
+  if (parts[0] !== "projects") return null;
+  const id = parts[1];
+  if (!id) return null;
+  // Crude UUID guard — anything else falls back to the list page
+  // so a typo doesn't land in detail-with-no-data.
+  if (!/^[0-9a-fA-F-]{36}$/.test(id)) return null;
+  return id;
+}
+
+/** Build a `#/projects/{id}` URL. */
+export function projectDetailRoute(id: string): string {
+  return `#/projects/${id}`;
+}
 
 /** Sub-route under the account section
  *  (`linear-projects-idea.md` §10 multi-identity). Defaults to
@@ -161,9 +216,12 @@ export type ReportTab = "user" | "team" | "org" | "home-org-split" | "leaderboar
  *  - `runs` (default): paginated fetch_runs log.
  *  - `refresh`       : operator-triggered reconciler tick + org scope.
  *  - `users`         : GDPR controls (anonymise + export).
- *  - `projects`      : SCOPE-PROJECTS §3.10 repo → Projects v2 board
- *                      linker + field picker. */
-export type AdminTab = "runs" | "refresh" | "users" | "projects";
+ *
+ *  The legacy SCOPE-PROJECTS §3.10 per-repo board linker
+ *  (`project-sync` / `projects` admin sub-tabs) is retired in stage
+ *  11 of `linear-projects-v2.md`: the primary Link-a-board surface
+ *  is the §6.4 dialog on each project detail page. */
+export type AdminTab = "runs" | "refresh" | "users";
 
 /** Parse `#/admin/...` → the active sub-tab. Defaults to `runs`. */
 export function adminTabOf(route: string): AdminTab {
@@ -174,8 +232,6 @@ export function adminTabOf(route: string): AdminTab {
       return "refresh";
     case "users":
       return "users";
-    case "projects":
-      return "projects";
     case "runs":
     case undefined:
     case "":
@@ -273,6 +329,8 @@ export function sectionOf(route: string): Section {
       return "admin";
     case "workflow":
       return "workflow";
+    case "projects":
+      return "projects";
     case "account":
       return "account";
     case "reports":
@@ -304,6 +362,7 @@ export function isKnownRoute(route: string): boolean {
     head === "directory" ||
     head === "admin" ||
     head === "workflow" ||
+    head === "projects" ||
     head === "account"
   );
 }

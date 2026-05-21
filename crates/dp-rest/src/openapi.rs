@@ -96,6 +96,23 @@ async fn webhook_github_stub() {}
         crate::pins::add_pin,
         crate::pins::remove_pin,
         crate::pins::reorder_pins,
+        // Projects v2 CRUD (linear-projects-v2.md §7.1).
+        crate::projects::list_projects,
+        crate::projects::get_project,
+        crate::projects::create_project,
+        crate::projects::patch_project,
+        crate::projects::archive_project,
+        // Project ↔ issue membership (linear-projects-v2.md §7.2).
+        crate::project_issues::list_project_issues,
+        crate::project_issues::bulk_add_issues,
+        crate::project_issues::remove_project_issue,
+        crate::project_issues::get_project_for_issue,
+        // Project ↔ GitHub board mirror picker + link CRUD
+        // (linear-projects-v2.md §7.3).
+        crate::board_links::list_org_projects_v2,
+        crate::board_links::list_board_links,
+        crate::board_links::create_board_link,
+        crate::board_links::delete_board_link,
         // Tags (SCOPE-PROJECTS §7).
         crate::tags::list_tags,
         crate::tags::list_my_tags,
@@ -114,11 +131,6 @@ async fn webhook_github_stub() {}
         // Issue dates surface (§3.10).
         crate::issue_dates::patch_issue_dates,
         crate::issue_dates::get_issue_dates,
-        // Repo → Projects v2 link admin surface (§3.10).
-        crate::repo_project_link::get_repo_project_link,
-        crate::repo_project_link::put_repo_project_link,
-        crate::repo_project_link::delete_repo_project_link,
-        crate::repo_project_link::list_repo_projects,
         // Issue read surface — present since slice 1, registered
         // here in slice 2 so the OpenAPI document covers every
         // mounted handler.
@@ -172,6 +184,24 @@ async fn webhook_github_stub() {}
         crate::pins::AddPinRequest,
         crate::pins::PinKeyDto,
         crate::pins::ReorderRequest,
+        // Projects v2 CRUD (linear-projects-v2.md §7.1).
+        crate::projects::ProjectDto,
+        crate::projects::ProjectStatusDto,
+        crate::projects::ProjectListResponse,
+        crate::projects::CreateProjectRequest,
+        crate::projects::PatchProjectRequest,
+        crate::projects::ArchiveProjectRequest,
+        // Project ↔ issue membership (linear-projects-v2.md §7.2).
+        crate::project_issues::BulkAddIssuesRequest,
+        crate::project_issues::BulkAddResult,
+        crate::project_issues::BulkAddSkipDto,
+        // Project ↔ board mirror picker + link CRUD
+        // (linear-projects-v2.md §7.3).
+        crate::board_links::OrgProjectPickerDto,
+        crate::board_links::BoardPickerDto,
+        crate::board_links::DateFieldDto,
+        crate::board_links::BoardLinkDto,
+        crate::board_links::CreateBoardLinkRequest,
         // Tags.
         crate::tags::TagDto,
         crate::tags::TagScopeKindDto,
@@ -197,9 +227,6 @@ async fn webhook_github_stub() {}
         // Issue dates DTOs (§3.10).
         crate::issue_dates::PatchIssueDatesRequest,
         crate::issue_dates::IssueDatesDto,
-        // Repo → Projects v2 link DTOs (§3.10 admin).
-        crate::repo_project_link::RepoProjectLinkDto,
-        crate::repo_project_link::PutRepoProjectLinkRequest,
         crate::issues_read::IssueDto,
         crate::issues_read::IssueStateDto,
         crate::issues_read::IssueListResponse,
@@ -238,6 +265,7 @@ async fn webhook_github_stub() {}
         (name = "directory", description = "Operator-facing user / org / team listings + home-org flip."),
         (name = "admin",     description = "Operator-only surface: refresh, run-log, GDPR cascade + export."),
         (name = "pins",      description = "Per-user pinned repos / tags (SCOPE-PROJECTS §6)."),
+        (name = "projects",  description = "First-class projects surface (linear-projects-v2.md §7)."),
         (name = "tags",      description = "Cross-org home-grown tags (SCOPE-PROJECTS §7)."),
         (name = "github_app", description = "GitHub App install permission surface (SCOPE-PROJECTS §8.4, §13.6)."),
         (name = "identities", description = "Linked OAuth identities for the caller (linear-projects-idea.md §3.0 / §10)."),

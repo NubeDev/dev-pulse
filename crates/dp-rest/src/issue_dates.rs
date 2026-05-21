@@ -8,8 +8,9 @@
 //! 3. Synchronous local `UPSERT` into `dp_issue_dates`. Any
 //!    failure here surfaces as 4xx / 5xx and the response carries
 //!    no mirror promise.
-//! 4. If the repo carries a `dp_repo_project_link` row, enqueue a
-//!    `mirror_dates` task into `dp_projectv2_mirror_tasks` AND
+//! 4. For every `dp_project_board_links` row attached to the
+//!    issue's project, enqueue a `mirror_dates` task into
+//!    `dp_projectv2_mirror_tasks` AND
 //!    spawn a best-effort backend call (`addProjectV2ItemById`
 //!    then `updateProjectV2ItemFieldValue`). Failures land on
 //!    `dp_issue_dates.mirror_error` and never block the response.
@@ -40,8 +41,8 @@ use serde_json::json;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
+use dp_domain::board_link::BoardItemMirrorOutcome;
 use dp_domain::issue_dates::{IssueDates, ProjectV2MirrorTaskKind, RepoProjectLink};
-use dp_domain::store::IssueDatesMirrorOutcome;
 
 use crate::app_permissions::require_issues_write;
 use crate::audit::{self, Principal};
@@ -465,78 +466,128 @@ pub async fn patch_issue_dates(
     )
     .await?;
 
-    // §3.10 step 4 — best-effort mirror. Only fires when the repo
-    // is linked AND a real backend is wired (the default
-    // `UnconfiguredProjectV2Mirror` skips the spawn entirely so
-    // unconfigured deployments don't accrete `mirror_error` rows).
-    if let Some(link) = state.store.get_repo_project_link(repo.id).await.ok().flatten() {
-        // Enqueue the outbox row first — durable record the mirror
-        // *should* run, even if the spawned task is dropped.
-        // Best-effort: enqueue failure is logged and swallowed so
-        // the local save remains the source of truth.
-        if let Err(e) = state
+    // §7.4 step 4 — best-effort mirror fan-out across every board
+    // the issue's project links. Slice-B rewire of the §3.10 path:
+    // dev-pulse no longer keeps a per-repo board link; the mirror
+    // resolves the (single, per §4 `UNIQUE (issue_id)`) project
+    // for the issue and spawns one mirror round-trip per linked
+    // board. Per-board outcomes are recorded via
+    // [`Store::record_board_item_result`], which transactionally
+    // rolls success / failure up to the aggregate
+    // `dp_project_board_links.last_mirror_at` /
+    // `last_mirror_error` columns the §6.3 row surfaces.
+    //
+    // Local-first invariant unchanged: the local `dp_issue_dates`
+    // upsert has already committed and the response carries the
+    // canonical row; mirror failures land in the per-link
+    // aggregate, never on the synchronous response.
+    if let Some(project) = state.store.get_project_for_issue(id).await.ok().flatten() {
+        let links = state
             .store
-            .enqueue_projectv2_mirror_task(
-                id,
-                repo.id,
-                ProjectV2MirrorTaskKind::MirrorDates,
-                json!({
-                    "start_at": body.start_at,
-                    "due_at":   body.due_at,
-                }),
-            )
+            .list_board_links(project.id)
             .await
-        {
-            tracing::warn!(error = %e, issue_id = %id, "enqueue projectv2 mirror task failed");
-        }
-
-        // Spawn the GraphQL round-trip so the response returns
-        // immediately. Outcome is written back via
-        // record_issue_dates_mirror_result; never blocks.
-        let store = state.store.clone();
-        let backend = state.projectv2_mirror.clone();
-        let issue_node_id = issue_node_id(&issue);
-        let existing = dates.mirror_node_id.clone();
-        let start = body.start_at;
-        let due = body.due_at;
-        tokio::spawn(async move {
-            match backend
-                .mirror_dates(&link, &issue_node_id, existing.as_deref(), start, due)
+            .unwrap_or_default();
+        for link in links {
+            // Enqueue an outbox row per link — durable record the
+            // mirror should run, even if the spawned task is
+            // dropped. Best-effort: enqueue failure is logged and
+            // swallowed so the local save remains the source of
+            // truth.
+            if let Err(e) = state
+                .store
+                .enqueue_projectv2_mirror_task(
+                    id,
+                    repo.id,
+                    ProjectV2MirrorTaskKind::MirrorDates,
+                    json!({
+                        "start_at": body.start_at,
+                        "due_at":   body.due_at,
+                        "link_id":  link.id,
+                    }),
+                )
                 .await
             {
-                Ok(ok) => {
-                    if let Err(e) = store
-                        .record_issue_dates_mirror_result(
-                            id,
-                            IssueDatesMirrorOutcome::Success {
-                                node_id: &ok.item_node_id,
-                            },
-                        )
-                        .await
-                    {
-                        tracing::warn!(error = %e, issue_id = %id, "record mirror success failed");
-                    }
-                }
-                Err(MirrorError::Unconfigured) => {
-                    // No-op: backend declined; treat as if the
-                    // mirror never ran.
-                }
-                Err(e) => {
-                    let msg = e.to_string();
-                    if let Err(se) = store
-                        .record_issue_dates_mirror_result(
-                            id,
-                            IssueDatesMirrorOutcome::Failure { error: &msg },
-                        )
-                        .await
-                    {
-                        tracing::warn!(error = %se, issue_id = %id, "record mirror failure failed");
-                    }
-                }
+                tracing::warn!(error = %e, issue_id = %id, link_id = %link.id,
+                    "enqueue projectv2 mirror task failed");
             }
-        });
-    }
 
+            // Resolve the per-(link, issue) existing item id so the
+            // mirror updates the same Projects v2 card on every
+            // subsequent edit (no duplicate cards).
+            let existing_item = state
+                .store
+                .get_board_item(link.id, id)
+                .await
+                .ok()
+                .flatten()
+                .map(|i| i.item_node_id);
+            // The backend trait still takes a §3.10-shaped
+            // `RepoProjectLink` because the underlying GraphQL call
+            // only cares about `(project_node_id, start_field,
+            // due_field)`. Synthesise one per linked board — the
+            // `repo_id` field is meaningless on this code path and
+            // the backend never reads it.
+            let synthetic = RepoProjectLink {
+                repo_id: repo.id,
+                project_node_id: link.github_board_node_id.clone(),
+                start_field_node_id: link.start_field_node_id.clone(),
+                due_field_node_id: link.due_field_node_id.clone(),
+            };
+            let store = state.store.clone();
+            let backend = state.projectv2_mirror.clone();
+            let issue_node_id = issue_node_id(&issue);
+            let start = body.start_at;
+            let due = body.due_at;
+            let link_id = link.id;
+            tokio::spawn(async move {
+                match backend
+                    .mirror_dates(
+                        &synthetic,
+                        &issue_node_id,
+                        existing_item.as_deref(),
+                        start,
+                        due,
+                    )
+                    .await
+                {
+                    Ok(ok) => {
+                        if let Err(e) = store
+                            .record_board_item_result(
+                                link_id,
+                                id,
+                                BoardItemMirrorOutcome::Success {
+                                    item_node_id: &ok.item_node_id,
+                                },
+                            )
+                            .await
+                        {
+                            tracing::warn!(error = %e, issue_id = %id, link_id = %link_id,
+                                "record board item success failed");
+                        }
+                    }
+                    Err(MirrorError::Unconfigured) => {
+                        // Backend declined — treat as if the mirror
+                        // never ran. Don't surface a stale error
+                        // on the per-link aggregate.
+                    }
+                    Err(e) => {
+                        let msg = e.to_string();
+                        if let Err(se) = store
+                            .record_board_item_result(
+                                link_id,
+                                id,
+                                BoardItemMirrorOutcome::Failure { error: &msg },
+                            )
+                            .await
+                        {
+                            tracing::warn!(error = %se, issue_id = %id, link_id = %link_id,
+                                "record board item failure failed");
+                        }
+                    }
+                }
+            });
+        }
+    }
     Ok(Json(IssueDatesDto::from(dates)))
 }
 
@@ -696,7 +747,9 @@ mod tests {
     use dp_domain::issue_dates::ProjectV2MirrorTask;
     use dp_domain::org::Org;
     use dp_domain::repo::Repo;
-    use dp_domain::store::{Store, StoreError};
+    use dp_domain::board_link::{BoardItem, BoardLink};
+    use dp_domain::project::{Project, ProjectStatus};
+    use dp_domain::store::{IssueDatesMirrorOutcome, Store, StoreError};
     use std::collections::HashMap;
     use std::sync::Mutex;
     use tokio::sync::oneshot;
@@ -713,10 +766,15 @@ mod tests {
         issues: HashMap<Uuid, Issue>,
         installs: HashMap<Uuid, OrgAppInstall>,
         dates: HashMap<Uuid, IssueDates>,
-        links: HashMap<Uuid, RepoProjectLink>,
         tasks: Vec<ProjectV2MirrorTask>,
         audit: Vec<AuditEntry>,
         mirror_results: Vec<(Uuid, String)>, // (issue, "ok:NODE" | "err:MSG")
+        projects: HashMap<Uuid, Project>,
+        project_for_issue: HashMap<Uuid, Uuid>, // issue -> project
+        board_links: HashMap<Uuid, BoardLink>,  // id -> link
+        board_items: HashMap<(Uuid, Uuid), BoardItem>, // (link, issue) -> item
+        // (link_id, issue_id, "ok:NODE" | "err:MSG")
+        board_results: Vec<(Uuid, Uuid, String)>,
     }
 
     #[async_trait]
@@ -789,12 +847,6 @@ mod tests {
             g.mirror_results.push((issue_id, label));
             Ok(())
         }
-        async fn get_repo_project_link(
-            &self,
-            repo_id: Uuid,
-        ) -> Result<Option<RepoProjectLink>, StoreError> {
-            Ok(self.inner.lock().unwrap().links.get(&repo_id).cloned())
-        }
         async fn enqueue_projectv2_mirror_task(
             &self,
             issue_id: Uuid,
@@ -817,6 +869,79 @@ mod tests {
         }
         async fn record_audit_log(&self, e: &AuditEntry) -> Result<(), StoreError> {
             self.inner.lock().unwrap().audit.push(e.clone());
+            Ok(())
+        }
+        async fn get_project_for_issue(
+            &self,
+            issue_id: Uuid,
+        ) -> Result<Option<Project>, StoreError> {
+            let g = self.inner.lock().unwrap();
+            Ok(g.project_for_issue
+                .get(&issue_id)
+                .and_then(|pid| g.projects.get(pid).cloned()))
+        }
+        async fn list_board_links(
+            &self,
+            project_id: Uuid,
+        ) -> Result<Vec<BoardLink>, StoreError> {
+            Ok(self
+                .inner
+                .lock()
+                .unwrap()
+                .board_links
+                .values()
+                .filter(|l| l.project_id == project_id)
+                .cloned()
+                .collect())
+        }
+        async fn get_board_item(
+            &self,
+            link_id: Uuid,
+            issue_id: Uuid,
+        ) -> Result<Option<BoardItem>, StoreError> {
+            Ok(self
+                .inner
+                .lock()
+                .unwrap()
+                .board_items
+                .get(&(link_id, issue_id))
+                .cloned())
+        }
+        async fn record_board_item_result(
+            &self,
+            link_id: Uuid,
+            issue_id: Uuid,
+            outcome: BoardItemMirrorOutcome<'_>,
+        ) -> Result<(), StoreError> {
+            let mut g = self.inner.lock().unwrap();
+            let label = match outcome {
+                BoardItemMirrorOutcome::Success { item_node_id } => {
+                    g.board_items.insert(
+                        (link_id, issue_id),
+                        BoardItem {
+                            link_id,
+                            issue_id,
+                            item_node_id: item_node_id.to_string(),
+                            last_synced_at: Some(Utc::now()),
+                            last_error: None,
+                            created_at: Utc::now(),
+                            updated_at: Utc::now(),
+                        },
+                    );
+                    if let Some(link) = g.board_links.get_mut(&link_id) {
+                        link.last_mirror_at = Some(Utc::now());
+                        link.last_mirror_error = None;
+                    }
+                    format!("ok:{item_node_id}")
+                }
+                BoardItemMirrorOutcome::Failure { error } => {
+                    if let Some(link) = g.board_links.get_mut(&link_id) {
+                        link.last_mirror_error = Some(error.to_string());
+                    }
+                    format!("err:{error}")
+                }
+            };
+            g.board_results.push((link_id, issue_id, label));
             Ok(())
         }
         // Minimal stubs ------------------------------------------------
@@ -1143,22 +1268,60 @@ mod tests {
         assert_eq!(v["code"], "invalid_date_window");
     }
 
+    /// Seed a project owning `issue` plus a single board link. The
+    /// §7.4 mirror fan-out reads through `get_project_for_issue` →
+    /// `list_board_links` so a successful test path needs both
+    /// rows wired up.
+    fn seed_project_with_link(rig: &Rig) -> (Uuid, Uuid) {
+        let project_id = Uuid::new_v4();
+        let link_id = Uuid::new_v4();
+        let mut g = rig.store.inner.lock().unwrap();
+        g.projects.insert(
+            project_id,
+            Project {
+                id: project_id,
+                org_id: rig.org.id,
+                name: "P".into(),
+                description: None,
+                lead_user_id: None,
+                status: ProjectStatus::Active,
+                start_at: None,
+                due_at: None,
+                issue_count: 1,
+                closed_issue_count: 0,
+                created_by: Some(rig.principal.actor_user_id),
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                version: 1,
+            },
+        );
+        g.project_for_issue.insert(rig.issue.id, project_id);
+        g.board_links.insert(
+            link_id,
+            BoardLink {
+                id: link_id,
+                project_id,
+                github_board_node_id: "PVT_kw".into(),
+                github_board_title: Some("Rubix Roadmap".into()),
+                github_board_url: Some("https://github.com/orgs/acme/projects/12".into()),
+                github_board_cached_at: Some(Utc::now()),
+                start_field_node_id: Some("PVF_start".into()),
+                due_field_node_id: Some("PVF_due".into()),
+                status_field_node_id: None,
+                last_mirror_at: None,
+                last_mirror_error: None,
+                created_by: Some(rig.principal.actor_user_id),
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            },
+        );
+        (project_id, link_id)
+    }
+
     #[tokio::test]
-    async fn mirror_success_writes_node_id_back() {
+    async fn mirror_success_writes_item_id_and_clears_link_error() {
         let rig = build_rig();
-        // Link the repo so the mirror fires.
-        {
-            let mut g = rig.store.inner.lock().unwrap();
-            g.links.insert(
-                rig.repo.id,
-                RepoProjectLink {
-                    repo_id: rig.repo.id,
-                    project_node_id: "PVT_kw".into(),
-                    start_field_node_id: Some("PVF_start".into()),
-                    due_field_node_id: Some("PVF_due".into()),
-                },
-            );
-        }
+        let (_project_id, link_id) = seed_project_with_link(&rig);
         let (backend, done) = RecordingBackend::ok("PVTI_item_42");
         let now = Utc::now();
         let body = json!({ "start_at": now, "due_at": now + Duration::days(1) });
@@ -1172,32 +1335,28 @@ mod tests {
         // Yield so the spawned task's post-await store call runs.
         tokio::task::yield_now().await;
         let g = rig.store.inner.lock().unwrap();
-        assert_eq!(g.tasks.len(), 1);
+        assert_eq!(g.tasks.len(), 1, "one outbox row per linked board");
         assert_eq!(g.tasks[0].kind, ProjectV2MirrorTaskKind::MirrorDates);
-        assert_eq!(g.mirror_results.len(), 1);
-        assert!(g.mirror_results[0].1.starts_with("ok:PVTI_item_42"));
-        assert_eq!(
-            g.dates[&rig.issue.id].mirror_node_id.as_deref(),
-            Some("PVTI_item_42")
-        );
-        assert!(g.dates[&rig.issue.id].mirror_error.is_none());
+        assert_eq!(g.board_results.len(), 1);
+        let (link, issue, label) = &g.board_results[0];
+        assert_eq!(*link, link_id);
+        assert_eq!(*issue, rig.issue.id);
+        assert!(label.starts_with("ok:PVTI_item_42"));
+        let item = g
+            .board_items
+            .get(&(link_id, rig.issue.id))
+            .expect("board item persisted");
+        assert_eq!(item.item_node_id, "PVTI_item_42");
+        // Aggregate last_mirror_* rolled up on the link row.
+        let link_row = &g.board_links[&link_id];
+        assert!(link_row.last_mirror_at.is_some());
+        assert!(link_row.last_mirror_error.is_none());
     }
 
     #[tokio::test]
-    async fn mirror_failure_records_error_does_not_fail_response() {
+    async fn mirror_failure_records_per_link_error_does_not_fail_response() {
         let rig = build_rig();
-        {
-            let mut g = rig.store.inner.lock().unwrap();
-            g.links.insert(
-                rig.repo.id,
-                RepoProjectLink {
-                    repo_id: rig.repo.id,
-                    project_node_id: "PVT_kw".into(),
-                    start_field_node_id: Some("PVF_start".into()),
-                    due_field_node_id: Some("PVF_due".into()),
-                },
-            );
-        }
+        let (_project_id, link_id) = seed_project_with_link(&rig);
         let (backend, done) = RecordingBackend::err("field not found");
         let body = json!({ "due_at": Utc::now() });
         let (status, _) = send(
@@ -1209,9 +1368,10 @@ mod tests {
         done.await.unwrap();
         tokio::task::yield_now().await;
         let g = rig.store.inner.lock().unwrap();
-        assert!(g.mirror_results[0].1.contains("field not found"));
-        assert!(g.dates[&rig.issue.id]
-            .mirror_error
+        assert!(g.board_results[0].2.contains("field not found"));
+        let link_row = &g.board_links[&link_id];
+        assert!(link_row
+            .last_mirror_error
             .as_deref()
             .unwrap_or("")
             .contains("field not found"));

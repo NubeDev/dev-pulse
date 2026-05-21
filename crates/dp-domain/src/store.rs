@@ -1588,42 +1588,6 @@ pub trait Store: Send + Sync {
         Ok(())
     }
 
-    /// Read the `dp_repo_project_link` row for a repo, or `None`
-    /// when the repo is not linked to a Projects v2 project.
-    async fn get_repo_project_link(
-        &self,
-        _repo_id: Uuid,
-    ) -> Result<Option<RepoProjectLink>, StoreError> {
-        Ok(None)
-    }
-
-    /// Upsert the `dp_repo_project_link` row for a repo. The admin
-    /// pane PUTs through this when an operator wires a NubeIO
-    /// repo to a GitHub Projects v2 board (project node id +
-    /// optional start / due field node ids). Default impl rejects
-    /// the call so fakes that haven't opted in fail loudly
-    /// instead of silently swallowing the write.
-    async fn upsert_repo_project_link(
-        &self,
-        _link: &RepoProjectLink,
-    ) -> Result<RepoProjectLink, StoreError> {
-        Err(StoreError::Invalid(
-            "repo project link not supported by this store".into(),
-        ))
-    }
-
-    /// Delete the `dp_repo_project_link` row for a repo. The
-    /// admin pane DELETE flows through here to unwire a repo
-    /// from its Projects v2 board (subsequent issue date edits
-    /// stay local-only). Default impl is a no-op so non-pg
-    /// fakes treat the call as "already unwired".
-    async fn delete_repo_project_link(
-        &self,
-        _repo_id: Uuid,
-    ) -> Result<(), StoreError> {
-        Ok(())
-    }
-
     /// Stamp `dp_issues.github_node_id` for an issue that was
     /// missing one at mirror time. Called by the §3.10 mirror
     /// adapter after a lazy `repository.issue(number)` GraphQL
@@ -1659,6 +1623,274 @@ pub trait Store: Send + Sync {
         _max: i64,
     ) -> Result<Vec<ProjectV2MirrorTask>, StoreError> {
         Ok(Vec::new())
+    }
+
+    // ---- projects (linear-projects-v2.md slice A) ----------------
+
+    /// List projects matching `filter`, ordered for the §6.2 list
+    /// page: `status` ASC then `due_at ASC NULLS LAST` then `name`.
+    /// Default impl returns the empty vec so in-memory fakes that
+    /// don't care about projects stay quiet.
+    async fn list_projects(
+        &self,
+        _filter: &crate::project::ProjectListFilter,
+    ) -> Result<Vec<crate::project::Project>, StoreError> {
+        Ok(Vec::new())
+    }
+
+    /// Count projects matching `filter`. Used by the §6.1 sidebar
+    /// counts (`?count_only=1`). Default impl returns 0.
+    async fn count_projects(
+        &self,
+        _filter: &crate::project::ProjectListFilter,
+    ) -> Result<i64, StoreError> {
+        Ok(0)
+    }
+
+    /// Fetch a single project by id, or `None` when absent.
+    async fn get_project(
+        &self,
+        _id: Uuid,
+    ) -> Result<Option<crate::project::Project>, StoreError> {
+        Ok(None)
+    }
+
+    /// Insert a new project. The store assigns `id`, stamps
+    /// `created_at` / `updated_at`, initialises `version = 1`, and
+    /// zeroes the denormalised issue counts. Default impl rejects
+    /// the call so fakes that haven't opted in fail loudly rather
+    /// than silently swallowing the write.
+    async fn create_project(
+        &self,
+        _upsert: &crate::project::ProjectUpsert,
+    ) -> Result<crate::project::Project, StoreError> {
+        Err(StoreError::Invalid(
+            "projects not supported by this store".into(),
+        ))
+    }
+
+    /// Update a project under §8.2 CAS. `expected_version` matches
+    /// the row's current `version`; a mismatch returns
+    /// [`StoreError::Conflict`] and the caller surfaces it as a
+    /// 409. `created_by` is immutable per §9.2 and is therefore
+    /// not in the upsert payload's update path.
+    ///
+    /// `org_id` on the upsert is ignored on update — projects do
+    /// not move between orgs (v1: §4 — cross-org rollups are §10).
+    async fn update_project(
+        &self,
+        _id: Uuid,
+        _expected_version: i64,
+        _upsert: &crate::project::ProjectUpsert,
+    ) -> Result<crate::project::Project, StoreError> {
+        Err(StoreError::Invalid(
+            "projects not supported by this store".into(),
+        ))
+    }
+
+    /// Archive a project (§9.2 elevated op). Sets `status =
+    /// 'archived'`, bumps `version`, and stamps `updated_at`.
+    /// Idempotent — archiving an already-archived project returns
+    /// the row unchanged (no `version` bump). `expected_version`
+    /// CAS gate matches `update_project`.
+    async fn archive_project(
+        &self,
+        _id: Uuid,
+        _expected_version: i64,
+    ) -> Result<crate::project::Project, StoreError> {
+        Err(StoreError::Invalid(
+            "projects not supported by this store".into(),
+        ))
+    }
+
+    /// Attach a batch of issues to a project. CAS-gated on the
+    /// project's `version` (§7.2). Per-row outcomes flow back via
+    /// [`crate::project::ProjectIssueAddOutcome`]:
+    ///
+    /// * `added` — rows the store accepted; the project's
+    ///   `version`, `issue_count`, and `closed_issue_count` are
+    ///   updated to reflect the additions.
+    /// * `skipped` — rows refused because of the v1 `UNIQUE
+    ///   (issue_id)` constraint (already in another project), an
+    ///   unknown issue id, or a cross-org issue. The project's
+    ///   `version` is still bumped if at least one issue was
+    ///   added; otherwise it is unchanged.
+    ///
+    /// `expected_version` mismatch returns
+    /// [`StoreError::Conflict`].
+    async fn add_issues_to_project(
+        &self,
+        _project_id: Uuid,
+        _expected_version: i64,
+        _issue_ids: &[Uuid],
+        _actor: Option<Uuid>,
+    ) -> Result<crate::project::ProjectIssueAddOutcome, StoreError> {
+        Err(StoreError::Invalid(
+            "projects not supported by this store".into(),
+        ))
+    }
+
+    /// Detach an issue from a project. CAS-gated on the project's
+    /// `version`. Returns the post-removal `Project` row so the
+    /// caller can echo the new counts back to the UI. A no-op
+    /// remove (the issue is not currently in this project) is a
+    /// [`StoreError::NotFound`] — the REST layer collapses that to
+    /// 404 so retries are idempotent at the application boundary.
+    async fn remove_issue_from_project(
+        &self,
+        _project_id: Uuid,
+        _issue_id: Uuid,
+        _expected_version: i64,
+    ) -> Result<crate::project::Project, StoreError> {
+        Err(StoreError::Invalid(
+            "projects not supported by this store".into(),
+        ))
+    }
+
+    /// Resolve the (single, per the v1 `UNIQUE (issue_id)` rule)
+    /// project an issue is attached to, or `None` when the issue
+    /// is not in any project. Backs `GET /issues/{id}/project`
+    /// (§7.2) and the §6.5 detail-pane chip.
+    async fn get_project_for_issue(
+        &self,
+        _issue_id: Uuid,
+    ) -> Result<Option<crate::project::Project>, StoreError> {
+        Ok(None)
+    }
+
+    /// List the `dp_issues.id`s currently attached to a project.
+    /// Returned in `added_at ASC` order so the §6.3 issue list can
+    /// render a stable "first added" sort without a join through
+    /// `dp_issues`. The full issue rows come from the existing
+    /// [`Store::list_issues`] surface — this method only resolves
+    /// membership.
+    async fn list_issue_ids_for_project(
+        &self,
+        _project_id: Uuid,
+    ) -> Result<Vec<Uuid>, StoreError> {
+        Ok(Vec::new())
+    }
+
+    // ---- project ↔ board mirror (linear-projects-v2.md slice B) --
+
+    /// List every `dp_project_board_links` row for a project, in
+    /// `created_at ASC` order so the §6.3 "Linked GitHub boards"
+    /// block renders a stable order matching the link-now sequence.
+    /// Default impl returns the empty vec so fakes that don't care
+    /// about mirroring stay quiet.
+    async fn list_board_links(
+        &self,
+        _project_id: Uuid,
+    ) -> Result<Vec<crate::board_link::BoardLink>, StoreError> {
+        Ok(Vec::new())
+    }
+
+    /// Fetch a single board link by primary key, or `None` when
+    /// absent. Backs the §7.3 DELETE handler's existence check
+    /// (so a stale UI gets a clean 404 instead of an opaque error).
+    async fn get_board_link(
+        &self,
+        _id: Uuid,
+    ) -> Result<Option<crate::board_link::BoardLink>, StoreError> {
+        Ok(None)
+    }
+
+    /// Insert a new `dp_project_board_links` row. The store
+    /// assigns `id` and stamps `created_at` / `updated_at`. The
+    /// natural-key `(project_id, github_board_node_id)` UNIQUE
+    /// constraint surfaces a re-link of the same board as
+    /// [`StoreError::Conflict`] — callers translate that to 409
+    /// so the UI can render "already linked".
+    ///
+    /// Default impl rejects so fakes that haven't opted in fail
+    /// loudly instead of silently swallowing the write.
+    async fn create_board_link(
+        &self,
+        _upsert: &crate::board_link::BoardLinkUpsert,
+    ) -> Result<crate::board_link::BoardLink, StoreError> {
+        Err(StoreError::Invalid(
+            "board links not supported by this store".into(),
+        ))
+    }
+
+    /// Delete a board link. Cascades through to every
+    /// `dp_project_board_items` row under it (FK
+    /// `ON DELETE CASCADE`). A no-op delete (the link id does not
+    /// resolve) is [`StoreError::NotFound`] so retries are
+    /// idempotent at the application boundary.
+    async fn delete_board_link(
+        &self,
+        _id: Uuid,
+    ) -> Result<(), StoreError> {
+        Err(StoreError::NotFound {
+            entity: "board_link",
+            id: "<unsupported>".into(),
+        })
+    }
+
+    /// Refresh the cached `github_board_title` / `github_board_url`
+    /// / `github_board_cached_at` columns on a link row. Called by
+    /// the §7.3 picker on every read and by the nightly safety-net
+    /// job so renamed / deleted boards surface within 24h instead
+    /// of waiting on a user-visible read.
+    ///
+    /// Default impl is a no-op so non-pg fakes treat the call as
+    /// "cache already fresh".
+    async fn refresh_board_link_cache(
+        &self,
+        _id: Uuid,
+        _title: Option<&str>,
+        _url: Option<&str>,
+    ) -> Result<(), StoreError> {
+        Ok(())
+    }
+
+    /// List every `dp_project_board_items` row for one issue across
+    /// all of its (project's) linked boards. Backs the §6.5
+    /// detail-pane `SyncStatus` aggregate — one row per (link,
+    /// issue) outcome, so the UI can render
+    /// "N of N boards ✓ HH:mm:ss" with per-board disclosure.
+    async fn list_board_items_for_issue(
+        &self,
+        _issue_id: Uuid,
+    ) -> Result<Vec<crate::board_link::BoardItem>, StoreError> {
+        Ok(Vec::new())
+    }
+
+    /// Fetch the `dp_project_board_items` row for a (link, issue)
+    /// pair, or `None` when the pair has never been mirrored. The
+    /// mirror worker uses this to decide whether to issue
+    /// `addProjectV2ItemById` (no existing row) or
+    /// `updateProjectV2ItemFieldValue` against the stored
+    /// `item_node_id`.
+    async fn get_board_item(
+        &self,
+        _link_id: Uuid,
+        _issue_id: Uuid,
+    ) -> Result<Option<crate::board_link::BoardItem>, StoreError> {
+        Ok(None)
+    }
+
+    /// Record the outcome of one mirror attempt against a
+    /// (link, issue) pair. On success: upserts
+    /// `dp_project_board_items` with the returned `item_node_id`,
+    /// stamps `last_synced_at`, clears `last_error`, **and** rolls
+    /// the success up to `dp_project_board_links.last_mirror_at` /
+    /// clears `last_mirror_error`. On failure: writes `last_error`
+    /// on the item row (without changing `item_node_id`) and rolls
+    /// the failure up to `last_mirror_error` on the link.
+    ///
+    /// The upsert / aggregate roll-up runs in one transaction so
+    /// the §6.5 `SyncStatus` aggregate can never observe a
+    /// half-recorded state. Default impl is a no-op so non-pg
+    /// fakes treat the call as silently dropped.
+    async fn record_board_item_result(
+        &self,
+        _link_id: Uuid,
+        _issue_id: Uuid,
+        _outcome: crate::board_link::BoardItemMirrorOutcome<'_>,
+    ) -> Result<(), StoreError> {
+        Ok(())
     }
 }
 

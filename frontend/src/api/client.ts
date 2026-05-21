@@ -479,32 +479,117 @@ export const PatchIssueDatesRequestSchema = z.object({
 });
 export type PatchIssueDatesRequest = z.infer<typeof PatchIssueDatesRequestSchema>;
 
-// --- §3.10 repo → Projects v2 link (admin pane) -----------------------------
+// --- Projects (linear-projects-v2.md §6 / §7.1) ----------------------------
 //
-// One row per (NubeIO repo, GitHub Projects v2 board). All four
-// `*_node_id` fields carry GraphQL global ids — the picker shells
-// them out of the live `projectsV2` envelope so the operator never
-// has to handcraft them. `created_by` / `*_at` are server-stamped.
+// First-class `dp_projects` surface — cross-repo issue membership,
+// CAS via `version`, denormalised counts for the §6.1 sidebar and
+// §6.2 progress bar. Slice A ships read + write CRUD; the
+// board-link / mirror columns land in slice B (the DTO carries
+// `board_link_count` today as `0` so the wire shape is stable).
 
-export const RepoProjectLinkDtoSchema = z.object({
-  repo_id: uuid,
-  project_node_id: z.string(),
-  start_field_node_id: z.string().nullable().optional(),
-  due_field_node_id: z.string().nullable().optional(),
+export const ProjectStatusDtoSchema = z.enum([
+  "active",
+  "backlog",
+  "done",
+  "archived",
+]);
+export type ProjectStatusDto = z.infer<typeof ProjectStatusDtoSchema>;
+
+export const ProjectDtoSchema = z.object({
+  id: uuid,
+  org_id: uuid,
+  name: z.string(),
+  description: z.string().nullable().optional(),
+  lead_user_id: uuid.nullable().optional(),
+  status: ProjectStatusDtoSchema,
+  start_at: isoDateTime.nullable().optional(),
+  due_at: isoDateTime.nullable().optional(),
+  issue_count: z.number().int(),
+  closed_issue_count: z.number().int(),
+  board_link_count: z.number().int(),
+  version: z.number().int(),
   created_by: uuid.nullable().optional(),
   created_at: isoDateTime,
   updated_at: isoDateTime,
 });
-export type RepoProjectLinkDto = z.infer<typeof RepoProjectLinkDtoSchema>;
+export type ProjectDto = z.infer<typeof ProjectDtoSchema>;
 
-export const PutRepoProjectLinkRequestSchema = z.object({
-  project_node_id: z.string().min(1),
+export const ProjectListResponseSchema = z.object({
+  rows: z.array(ProjectDtoSchema),
+  total: z.number().int(),
+  limit: z.number().int(),
+  offset: z.number().int(),
+});
+export type ProjectListResponse = z.infer<typeof ProjectListResponseSchema>;
+
+/** Query params for `GET /projects`. `count_only=1` collapses the
+ *  envelope to `{ rows: [], total, limit: 0, offset }` — used by the
+ *  §6.1 sidebar so the per-status badges never drag full row
+ *  payloads over the wire. */
+export interface ListProjectsQuery {
+  org_id?: string;
+  status?: ProjectStatusDto;
+  q?: string;
+  limit?: number;
+  offset?: number;
+  count_only?: boolean;
+}
+
+// --- Board links (linear-projects-v2.md §7.3, slice B) --------------------
+//
+// Org-scoped GitHub Projects v2 board picker + per-project link
+// CRUD. Wire DTOs mirror `crates/dp-rest/src/board_links.rs` —
+// `OrgProjectPickerDto`, `BoardPickerDto`, `DateFieldDto`,
+// `BoardLinkDto`, `CreateBoardLinkRequest`. The picker is org-
+// scoped so it returns _every_ Projects v2 board visible to the
+// installation, not just the ones a single repo touches; the
+// dialog narrows by the project's own org.
+
+export const DateFieldDtoSchema = z.object({
+  node_id: z.string(),
+  name: z.string(),
+});
+export type DateFieldDto = z.infer<typeof DateFieldDtoSchema>;
+
+export const BoardPickerDtoSchema = z.object({
+  node_id: z.string(),
+  title: z.string(),
+  url: z.string().nullable().optional(),
+  number: z.number().int().nullable().optional(),
+  date_fields: z.array(DateFieldDtoSchema),
+});
+export type BoardPickerDto = z.infer<typeof BoardPickerDtoSchema>;
+
+export const OrgProjectPickerDtoSchema = z.object({
+  boards: z.array(BoardPickerDtoSchema),
+  fetched_at: isoDateTime,
+});
+export type OrgProjectPickerDto = z.infer<typeof OrgProjectPickerDtoSchema>;
+
+export const BoardLinkDtoSchema = z.object({
+  id: uuid,
+  project_id: uuid,
+  github_board_node_id: z.string(),
+  github_board_title: z.string().nullable().optional(),
+  github_board_url: z.string().nullable().optional(),
+  github_board_cached_at: isoDateTime.nullable().optional(),
+  start_field_node_id: z.string().nullable().optional(),
+  due_field_node_id: z.string().nullable().optional(),
+  last_mirror_at: isoDateTime.nullable().optional(),
+  last_mirror_error: z.string().nullable().optional(),
+  created_at: isoDateTime,
+  updated_at: isoDateTime,
+});
+export type BoardLinkDto = z.infer<typeof BoardLinkDtoSchema>;
+
+export const CreateBoardLinkRequestSchema = z.object({
+  github_board_node_id: z.string().min(1),
+  github_board_title: z.string().nullable().optional(),
+  github_board_url: z.string().nullable().optional(),
   start_field_node_id: z.string().nullable().optional(),
   due_field_node_id: z.string().nullable().optional(),
 });
-export type PutRepoProjectLinkRequest = z.infer<
-  typeof PutRepoProjectLinkRequestSchema
->;
+export type CreateBoardLinkRequest = z.infer<typeof CreateBoardLinkRequestSchema>;
 
 export const CreateCommentRequestSchema = z.object({
   expected_version: z.number().int(),
@@ -1281,6 +1366,42 @@ export class DevPulseApi {
     return this.getJson(`/repos${qs ? `?${qs}` : ""}`, RepoListResponseSchema);
   }
 
+  // --- projects (linear-projects-v2.md §7.1) ---------------------------
+
+  /** `GET /projects` — paginated project list. Pass
+   *  `{ count_only: true }` for the §6.1 sidebar's per-status
+   *  badge counts (server returns `{ rows: [], total, limit: 0,
+   *  offset }`, the wire-cheap shape the spec calls for). */
+  async listProjects(q: ListProjectsQuery = {}): Promise<ProjectListResponse> {
+    const params = new URLSearchParams();
+    if (q.org_id) params.set("org_id", q.org_id);
+    if (q.status) params.set("status", q.status);
+    if (q.q) params.set("q", q.q);
+    if (q.limit !== undefined) params.set("limit", String(q.limit));
+    if (q.offset !== undefined) params.set("offset", String(q.offset));
+    if (q.count_only) params.set("count_only", "1");
+    const qs = params.toString();
+    return this.getJson(
+      `/projects${qs ? `?${qs}` : ""}`,
+      ProjectListResponseSchema,
+    );
+  }
+
+  /** `GET /projects/{id}` — fetch one project. Returns `null` on
+   *  404 so the detail page can render a clean "not found" state
+   *  instead of a fetch error. */
+  async getProject(id: string): Promise<ProjectDto | null> {
+    try {
+      return await this.getJson(
+        `/projects/${encodeURIComponent(id)}`,
+        ProjectDtoSchema,
+      );
+    } catch (e) {
+      if (e instanceof DpRestError && e.status === 404) return null;
+      throw e;
+    }
+  }
+
   /** `GET /repos/{id}/metadata` — repo snapshot for the
    *  repo-activity dashboard. Returns `null` when the snapshot has
    *  not been recorded yet (the backend replies 404; the client
@@ -1294,6 +1415,83 @@ export class DevPulseApi {
       );
     } catch (e) {
       if (e instanceof DpRestError && e.status === 404) return null;
+      throw e;
+    }
+  }
+
+  // --- board links (linear-projects-v2.md §7.3, slice B) -----------
+
+  /** `GET /orgs/{org_id}/projects-v2` — normalized org-wide board
+   *  picker for the §6.4 Link-a-board dialog. Returns `null` when
+   *  the picker backend is unconfigured (HTTP 400
+   *  `upstream_unavailable`) so the dialog can fall through to the
+   *  "[Open GitHub project settings]" hint without ever showing
+   *  a node-id paste field on the primary path. */
+  async getOrgProjectsV2(
+    orgId: string,
+  ): Promise<OrgProjectPickerDto | null> {
+    try {
+      return await this.getJson(
+        `/orgs/${encodeURIComponent(orgId)}/projects-v2`,
+        OrgProjectPickerDtoSchema,
+      );
+    } catch (e) {
+      if (
+        e instanceof DpRestError &&
+        (e.code === "upstream_unavailable" ||
+          e.code === "github_validation_failed")
+      ) {
+        return null;
+      }
+      throw e;
+    }
+  }
+
+  /** `GET /projects/{id}/board-links` — list a project's linked
+   *  GitHub Projects v2 boards in `created_at ASC` order. Each row
+   *  carries `last_mirror_at` / `last_mirror_error` so the detail
+   *  page can render mirror status per link without a second
+   *  round-trip. */
+  async listBoardLinks(projectId: string): Promise<BoardLinkDto[]> {
+    return this.getJson(
+      `/projects/${encodeURIComponent(projectId)}/board-links`,
+      z.array(BoardLinkDtoSchema),
+    );
+  }
+
+  /** `POST /projects/{id}/board-links` — link a board to the
+   *  project. The natural-key `(project_id, github_board_node_id)`
+   *  UNIQUE constraint surfaces a re-link as `DpRestError` with
+   *  `status === 409` / `code === "board_already_linked"`. */
+  async createBoardLink(
+    projectId: string,
+    body: CreateBoardLinkRequest,
+  ): Promise<BoardLinkDto> {
+    return this.sendJson(
+      "POST",
+      `/projects/${encodeURIComponent(projectId)}/board-links`,
+      body,
+      BoardLinkDtoSchema,
+    );
+  }
+
+  /** `DELETE /projects/{id}/board-links/{link_id}` — unlink the
+   *  board. §9.2 elevation: caller must be the project's
+   *  `created_by`, its `lead_user_id`, or hold `(projects, admin)`;
+   *  surfaces as `DpRestError` with `status === 403` /
+   *  `code === "project_board_unlink_forbidden"` otherwise. */
+  async deleteBoardLink(
+    projectId: string,
+    linkId: string,
+  ): Promise<void> {
+    try {
+      await this.sendNoContent(
+        "DELETE",
+        `/projects/${encodeURIComponent(projectId)}/board-links/${encodeURIComponent(linkId)}`,
+        undefined,
+      );
+    } catch (e) {
+      if (e instanceof DpRestError && e.status === 404) return;
       throw e;
     }
   }
@@ -1457,70 +1655,6 @@ export class DevPulseApi {
     );
   }
 
-  // --- §3.10 admin: repo → Projects v2 board link --------------------
-  //
-  // The picker GET is best-effort — the server proxies a GraphQL
-  // query against the linked GitHub installation and returns the
-  // raw `projectsV2` envelope. We surface it as `unknown` so the
-  // page can render whatever fields GitHub returns without us
-  // having to re-validate every node id schema here.
-
-  /** `GET /repos/{id}/project-link` — 404 means no link configured. */
-  async getRepoProjectLink(repoId: string): Promise<RepoProjectLinkDto | null> {
-    try {
-      return await this.getJson(
-        `/repos/${encodeURIComponent(repoId)}/project-link`,
-        RepoProjectLinkDtoSchema,
-      );
-    } catch (e) {
-      if (e instanceof DpRestError && e.status === 404) return null;
-      throw e;
-    }
-  }
-
-  /** `PUT /repos/{id}/project-link` — upsert. Empty field strings
-   *  are normalised to `null` on the server. */
-  async putRepoProjectLink(
-    repoId: string,
-    body: PutRepoProjectLinkRequest,
-  ): Promise<RepoProjectLinkDto> {
-    return this.sendJson(
-      "PUT",
-      `/repos/${encodeURIComponent(repoId)}/project-link`,
-      body,
-      RepoProjectLinkDtoSchema,
-    );
-  }
-
-  /** `DELETE /repos/{id}/project-link` — 204 on success (also when
-   *  the row didn't exist; the route is idempotent). */
-  async deleteRepoProjectLink(repoId: string): Promise<void> {
-    try {
-      await this.sendNoContent(
-        "DELETE",
-        `/repos/${encodeURIComponent(repoId)}/project-link`,
-        undefined,
-      );
-    } catch (e) {
-      if (e instanceof DpRestError && e.status === 404) return;
-      throw e;
-    }
-  }
-
-  /** `GET /repos/{id}/projects` — picker payload. Returns the raw
-   *  `projectsV2` envelope GitHub sent so the admin pane can list
-   *  boards + their `dateFields`. Returns `null` on 503 (means
-   *  the deployment has no GraphQL transport wired and the operator
-   *  must paste node ids by hand). */
-  async getRepoProjects(repoId: string): Promise<unknown | null> {
-    const res = await this.client.fetch(
-      `${this.client.baseUrl}/repos/${encodeURIComponent(repoId)}/projects`,
-      { credentials: "include", headers: this.client.headers },
-    );
-    if (res.status === 503) return null;
-    if (!res.ok) throw await DpRestError.fromResponse(res);
-    return (await res.json()) as unknown;
-  }
 }
 
 // ---------------------------------------------------------------------------

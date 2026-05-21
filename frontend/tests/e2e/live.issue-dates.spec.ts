@@ -23,7 +23,7 @@
  *      "Save dates") round-trips through the live REST handler and
  *      the new value sticks after reload.
  *   5. The §3.10 mirror status microcopy renders in the expected
- *      lane: with no `dp_repo_project_link` row for the test repo,
+ *      lane: with no `dp_project_board_links` row for the test project,
  *      neither `issue-dates-mirror-synced` nor
  *      `issue-dates-mirror-error` should appear (server returns
  *      both `mirror_synced_at` and `mirror_error` null, by design).

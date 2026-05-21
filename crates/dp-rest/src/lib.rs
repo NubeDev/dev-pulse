@@ -35,6 +35,7 @@
 pub mod admin;
 pub mod app_permissions;
 pub mod audit;
+pub mod board_links;
 pub mod directory;
 pub mod error;
 pub mod inbox;
@@ -45,8 +46,9 @@ pub mod issues_write;
 pub mod me_identities;
 pub mod openapi;
 pub mod pins;
+pub mod project_issues;
+pub mod projects;
 pub mod reports;
-pub mod repo_project_link;
 pub mod repos;
 pub mod state;
 pub mod tags;
@@ -62,6 +64,13 @@ pub use app_permissions::{
     GitHubAppConfig,
 };
 pub use audit::Principal;
+pub use board_links::{
+    board_links_router, create_board_link, delete_board_link, list_board_links,
+    list_org_projects_v2, normalize_picker_envelope, BoardLinkDto, BoardPickerDto,
+    CreateBoardLinkRequest, DateFieldDto, OctocrabOrgProjectsPicker,
+    OrgProjectPickerDto, OrgProjectsPickerBackend, OrgProjectsPickerError,
+    UnconfiguredOrgProjectsPicker,
+};
 pub use directory::{
     directory_router, list_orgs, list_teams, list_users, set_home_org, Ack, OrgDto, OrgFilter,
     OrgRequired, SetHomeOrgRequest, TeamDto, UserDto,
@@ -101,16 +110,20 @@ pub use repos::{
     RepoPrSizeStatsDto, RepoReviewVelocityDto, RepoSummaryDto, RepoSyncQueuedDto,
     RepoSyncStatusDto, ReviewVelocityQuery,
 };
-pub use repo_project_link::{
-    delete_repo_project_link, get_repo_project_link, list_repo_projects,
-    put_repo_project_link, repo_project_link_router, OctocrabProjectsPicker,
-    ProjectsPickerBackend, ProjectsPickerError, PutRepoProjectLinkRequest,
-    RepoProjectLinkDto, UnconfiguredProjectsPicker,
-};
 pub use openapi::DevPulseApi;
 pub use pins::{
     add_pin, list_pins, pins_router, remove_pin, reorder_pins, AddPinRequest, PinDto, PinKeyDto,
     PinKindDto, ReorderRequest, PIN_CAP,
+};
+pub use projects::{
+    archive_project, create_project, get_project, list_projects, patch_project, projects_router,
+    ArchiveProjectRequest, CreateProjectRequest, ListProjectsQuery, PatchProjectRequest,
+    ProjectDto, ProjectListResponse, ProjectStatusDto,
+};
+pub use project_issues::{
+    bulk_add_issues, get_project_for_issue, list_project_issues, project_issues_router,
+    remove_project_issue, BulkAddIssuesRequest, BulkAddResult, BulkAddSkipDto,
+    ListProjectIssuesQuery, RemoveIssueQuery, BULK_ADD_ISSUE_CAP,
 };
 pub use reports::{
     freshness_report, home_org_split_report, issues_report, org_report, reports_router,

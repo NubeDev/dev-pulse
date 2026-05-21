@@ -18,7 +18,6 @@ import { NotFoundPage } from "./components/not-found.jsx";
 import { AppShell } from "./layout/app-shell.jsx";
 import { IdentitiesPage } from "./account/identities-page.jsx";
 import { AdminUsersPage } from "./admin/users-page.jsx";
-import { ProjectsPage as AdminProjectsPage } from "./admin/projects-page.jsx";
 import { RefreshPage } from "./admin/refresh-page.jsx";
 import { RunsPage } from "./admin/runs-page.jsx";
 import { HomeOrgPage } from "./directory/home-org-page.jsx";
@@ -35,12 +34,15 @@ import { UserReportPage } from "./reports/user-report-page.jsx";
 import { IssuesPage } from "./workflow/issues-page.jsx";
 import { ReposPage } from "./workflow/repos-page.jsx";
 import { TriagePage } from "./workflow/triage-page.jsx";
+import { ProjectsPage } from "./projects/projects-page.jsx";
+import { ProjectDetailPage } from "./projects/project-detail-page.jsx";
 import {
   accountTabOf,
   adminTabOf,
   directoryTabOf,
   isKnownRoute,
   isLoginRoute,
+  projectDetailIdOf,
   reportTabOf,
   sectionOf,
   useRoute,
@@ -108,7 +110,7 @@ function SectionPane({
   section,
   route,
 }: {
-  section: "reports" | "directory" | "admin" | "workflow" | "account";
+  section: "reports" | "directory" | "admin" | "workflow" | "projects" | "account";
   route: string;
 }): JSX.Element {
   switch (section) {
@@ -120,6 +122,10 @@ function SectionPane({
       return <AdminPane tab={adminTabOf(route)} />;
     case "workflow":
       return <WorkflowPane tab={workflowTabOf(route)} />;
+    case "projects": {
+      const id = projectDetailIdOf(route);
+      return id ? <ProjectDetailPage projectId={id} /> : <ProjectsPage />;
+    }
     case "account":
       return <AccountPane tab={accountTabOf(route)} />;
   }
@@ -183,7 +189,5 @@ function AdminPane({ tab }: { tab: AdminTab }): JSX.Element {
       return <RefreshPage />;
     case "users":
       return <AdminUsersPage />;
-    case "projects":
-      return <AdminProjectsPage />;
   }
 }

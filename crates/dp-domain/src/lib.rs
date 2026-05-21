@@ -24,6 +24,7 @@
 
 pub mod app_install;
 pub mod audit;
+pub mod board_link;
 pub mod event;
 pub mod fetch;
 pub mod freshness;
@@ -35,6 +36,7 @@ pub mod issue_mutation;
 pub mod membership;
 pub mod org;
 pub mod pin;
+pub mod project;
 pub mod repo;
 pub mod store;
 pub mod tag;
@@ -46,6 +48,7 @@ pub mod window;
 
 pub use app_install::{AppInstallPermissions, OrgAppInstall};
 pub use audit::AuditEntry;
+pub use board_link::{BoardItem, BoardItemMirrorOutcome, BoardLink, BoardLinkUpsert};
 pub use event::{ActivityEvent, ActorRole, EventActor, EventKind};
 pub use fetch::{FetchCursor, FetchRun, FetchRunKind, ResourceKind};
 pub use freshness::DataAsOf;
@@ -61,6 +64,10 @@ pub use issue_mutation::{IssueMutation, IssueMutationOp, IssueMutationResult};
 pub use membership::{Membership, MembershipRole};
 pub use org::Org;
 pub use pin::{Pin, PinKind, PIN_CAP};
+pub use project::{
+    Project, ProjectIssueAddOutcome, ProjectIssueAddSkip, ProjectListFilter, ProjectStatus,
+    ProjectUpsert,
+};
 pub use repo::{Repo, RepoMetadata};
 pub use store::{PendingRemoteIssue, Store, StoreError};
 pub use store::{IssueListFilter, RepoListFilter, DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT};

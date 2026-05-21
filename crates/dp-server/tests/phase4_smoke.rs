@@ -370,7 +370,7 @@ impl TestApp {
             github_app: std::sync::Arc::new(dp_rest::GitHubAppConfig::default()),
             issue_writer: None,
             projectv2_mirror: None,
-            projects_picker: None,
+            org_projects_picker: None,
         };
 
         let router = build(BuildConfig {

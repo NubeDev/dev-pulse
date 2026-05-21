@@ -96,8 +96,7 @@ pub struct ProjectV2MirrorTask {
     /// Target issue.
     pub issue_id: Uuid,
     /// Target repo (denormalised so the worker can resolve the
-    /// `dp_repo_project_link` row without joining back through
-    /// `dp_issues`).
+    /// board link without joining back through `dp_issues`).
     pub repo_id: Uuid,
     /// Closed-vocabulary task kind.
     pub kind: ProjectV2MirrorTaskKind,

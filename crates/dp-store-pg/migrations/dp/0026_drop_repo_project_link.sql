@@ -1,0 +1,34 @@
+-- 0026_drop_repo_project_link.sql  (linear-projects-v2.md §11 — slice B)
+--
+-- Retire the §3.10 per-repo Projects v2 link table. The replacement
+-- (`dp_project_board_links`, migration 0025) is project-scoped and
+-- many-to-many: a Project can link several GitHub boards and the
+-- mirror writes fan out across them.
+--
+-- The peer-review pass in linear-projects-v2.md §0 suggested a
+-- safety-rail rename to `_deprecated_dp_repo_project_link` with the
+-- physical drop deferred one release. Our deployment graph never
+-- shipped the §3.10 admin pane to non-internal operators (the §0
+-- progress log records this), so the rename buys no real safety —
+-- it would only leave dead rows for the next migration to chase
+-- down. We drop the table outright here.
+--
+-- Code impact:
+--
+--   * `PgStore::{get,upsert,delete}_repo_project_link` no longer
+--     have a backing table; the pg overrides for those trait
+--     methods are removed in the same change. The trait keeps the
+--     methods with their default impls (None / Invalid / Ok-no-op)
+--     so call sites in `dp-rest` continue to compile while the
+--     admin-pane REST surface is wound down in a follow-up stage
+--     of this slice.
+--   * `dp_issue_dates.mirror_node_id` / `mirror_synced_at` /
+--     `mirror_error` are *not* dropped here. The §3.10 mirror still
+--     owns `PATCH /issues/{id}/dates` until the slice-B mirror
+--     rewire fans out over `dp_project_board_items`; dropping those
+--     columns ahead of the rewire would strand the live mirror.
+--
+-- The drop is `IF EXISTS` so a re-run against a database that has
+-- already moved past 0026 is a no-op rather than a hard error —
+-- matches the pattern other slice-B migrations follow.
+DROP TABLE IF EXISTS dp_repo_project_link;

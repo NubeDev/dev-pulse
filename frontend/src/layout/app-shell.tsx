@@ -31,7 +31,11 @@ import {
   IconUsers,
   IconUsersGroup,
   IconBriefcase,
-  IconChecklist,
+  IconArchive,
+  IconLayoutKanban,
+  IconCircleDashed,
+  IconCircleCheck,
+  IconClipboardList,
 } from "@tabler/icons-react"
 import { useAuth } from "@nube/starter-ui-core/auth"
 
@@ -45,6 +49,7 @@ import { WritesBanner } from "../workflow/writes-banner.jsx"
 import {
   adminTabOf,
   directoryTabOf,
+  projectsStatusOf,
   reportTabOf,
   sectionOf,
   useRoute,
@@ -52,6 +57,7 @@ import {
   type Section,
 } from "../routes.js"
 import { useMyQueue } from "../workflow/use-workflow-data.js"
+import { useProjectCount } from "../projects/use-projects-data.js"
 import { Badge } from "@/components/ui/badge"
 const NAV_MAIN: NavMainItem[] = [
   {
@@ -83,6 +89,25 @@ const NAV_MAIN: NavMainItem[] = [
     ],
   },
   {
+    // `linear-projects-v2.md` §6.1 — top-level Projects section
+    // between Workflow and Directory. The four sub-items mirror the
+    // §6.1 mock: Active / Backlog / Done / Archived. Counts on the
+    // first three are wired live from `useProjectCount` (which fires
+    // `GET /projects?status=…&count_only=1`); Archived is collapsed
+    // and intentionally uncounted to keep the eye off it.
+    title: "Projects",
+    url: "#/projects",
+    icon: IconLayoutKanban,
+    accent: "var(--accent-reports)",
+    subTestId: "projects-subnav",
+    items: [
+      { title: "Active", url: "#/projects?status=active", icon: IconCircleDashed },
+      { title: "Backlog", url: "#/projects?status=backlog", icon: IconClipboardList },
+      { title: "Done", url: "#/projects?status=done", icon: IconCircleCheck },
+      { title: "Archived", url: "#/projects?status=archived", icon: IconArchive },
+    ],
+  },
+  {
     title: "Directory",
     url: "#/directory",
     icon: IconUsersGroup,
@@ -105,7 +130,6 @@ const NAV_MAIN: NavMainItem[] = [
       { title: "Runs", url: "#/admin/runs", icon: IconHistory },
       { title: "Refresh", url: "#/admin/refresh", icon: IconRefresh },
       { title: "Users", url: "#/admin/users", icon: IconUserCog },
-      { title: "Projects", url: "#/admin/projects", icon: IconChecklist },
     ],
   },
 ]
@@ -115,8 +139,16 @@ const SECTION_TITLE: Record<Section, string> = {
   directory: "Directory",
   admin: "Admin",
   workflow: "Workflow",
+  projects: "Projects",
   account: "Account",
   login: "Login",
+}
+
+const PROJECT_STATUS_TITLE: Record<string, string> = {
+  active: "Active",
+  backlog: "Backlog",
+  done: "Done",
+  archived: "Archived",
 }
 
 const WORKFLOW_TITLE: Record<string, string> = {
@@ -149,12 +181,23 @@ const ADMIN_TITLE: Record<string, string> = {
 
 /** Normalise the hash route to the closest `NavMain` url so the
  *  sidebar's active state highlights the right sub-item.
- *  `#/reports/user/abc` → `#/reports/user`, etc. */
+ *  `#/reports/user/abc` → `#/reports/user`, etc.
+ *
+ *  Projects is the one section whose sub-items are query-string-
+ *  scoped (`#/projects?status=active`) rather than path-scoped, so
+ *  we preserve the `status` filter here — otherwise every Projects
+ *  sub-item would always read "Active" as the active one. */
 function activeUrlFor(route: string): string {
-  const path = route.replace(/^#/, "").replace(/^\/+/, "").split("/")
+  const q = route.indexOf("?")
+  const pathPart = q < 0 ? route : route.slice(0, q)
+  const path = pathPart.replace(/^#/, "").replace(/^\/+/, "").split("/")
   const section = path[0] ?? ""
   const tab = path[1] ?? ""
   if (!section) return "#/reports"
+  if (section === "projects") {
+    const status = projectsStatusOf(route)
+    return status ? `#/projects?status=${status}` : "#/projects"
+  }
   if (!tab) return `#/${section}`
   return `#/${section}/${tab}`
 }
@@ -177,6 +220,13 @@ function titleFor(route: string): string {
     case "workflow": {
       const t = workflowTabOf(route)
       return `Workflow · ${WORKFLOW_TITLE[t] ?? t}`
+    }
+    case "projects": {
+      // §6.1 — `#/projects?status=active` → "Projects · Active",
+      // `#/projects` (no filter) → "Projects".
+      const status = projectsStatusOf(route)
+      if (!status) return "Projects"
+      return `Projects · ${PROJECT_STATUS_TITLE[status] ?? status}`
     }
     case "account":
       return "Account · Identities"
@@ -211,31 +261,86 @@ export function AppShell({ children }: AppShellProps): JSX.Element {
   // to render the sidebar in that case, so we read `total` defensively.
   const queueProbe = useMyQueue({ limit: 1, offset: 0 })
   const inboxCount = queueProbe.data?.total ?? 0
+
+  // `linear-projects-v2.md` §6.1 — live per-status counts on the
+  // Projects sidebar entry. Three count-only probes
+  // (`GET /projects?status=…&count_only=1`) — Archived is
+  // intentionally uncounted per spec. Each hook caches under its
+  // own key so a future create / archive mutation can selectively
+  // invalidate.
+  const activeProjects = useProjectCount("active")
+  const backlogProjects = useProjectCount("backlog")
+  const doneProjects = useProjectCount("done")
+
   const navMain = useMemo<NavMainItem[]>(
     () =>
       NAV_MAIN.map((item) => {
-        if (item.title !== "Workflow") return item
-        return {
-          ...item,
-          items: item.items?.map((sub) =>
-            sub.url === "#/workflow/triage" && inboxCount > 0
-              ? {
-                  ...sub,
-                  badge: (
-                    <Badge
-                      variant="secondary"
-                      className="h-5 min-w-5 justify-center px-1.5 text-[10px] font-semibold"
-                      data-testid="workflow-triage-inbox-badge"
-                    >
-                      {inboxCount > 99 ? "99+" : inboxCount}
-                    </Badge>
-                  ),
-                }
-              : sub,
-          ),
+        if (item.title === "Workflow") {
+          return {
+            ...item,
+            items: item.items?.map((sub) =>
+              sub.url === "#/workflow/triage" && inboxCount > 0
+                ? {
+                    ...sub,
+                    badge: (
+                      <Badge
+                        variant="secondary"
+                        className="h-5 min-w-5 justify-center px-1.5 text-[10px] font-semibold"
+                        data-testid="workflow-triage-inbox-badge"
+                      >
+                        {inboxCount > 99 ? "99+" : inboxCount}
+                      </Badge>
+                    ),
+                  }
+                : sub,
+            ),
+          }
         }
+        if (item.title === "Projects") {
+          // Map status -> live count. Archived stays uncounted per
+          // §6.1 — the eye should not be drawn to the archive bin.
+          const counts: Record<string, { value: number; testId: string }> = {
+            "#/projects?status=active": {
+              value: activeProjects.count,
+              testId: "projects-count-active",
+            },
+            "#/projects?status=backlog": {
+              value: backlogProjects.count,
+              testId: "projects-count-backlog",
+            },
+            "#/projects?status=done": {
+              value: doneProjects.count,
+              testId: "projects-count-done",
+            },
+          }
+          return {
+            ...item,
+            items: item.items?.map((sub) => {
+              const c = counts[sub.url]
+              if (!c || c.value <= 0) return sub
+              return {
+                ...sub,
+                badge: (
+                  <Badge
+                    variant="secondary"
+                    className="h-5 min-w-5 justify-center px-1.5 text-[10px] font-semibold"
+                    data-testid={c.testId}
+                  >
+                    {c.value > 99 ? "99+" : c.value}
+                  </Badge>
+                ),
+              }
+            }),
+          }
+        }
+        return item
       }),
-    [inboxCount],
+    [
+      inboxCount,
+      activeProjects.count,
+      backlogProjects.count,
+      doneProjects.count,
+    ],
   )
 
   return (
