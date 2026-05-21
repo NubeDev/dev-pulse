@@ -506,6 +506,62 @@ export type PutRepoProjectLinkRequest = z.infer<
   typeof PutRepoProjectLinkRequestSchema
 >;
 
+// --- Projects (linear-projects-v2.md §6 / §7.1) ----------------------------
+//
+// First-class `dp_projects` surface — cross-repo issue membership,
+// CAS via `version`, denormalised counts for the §6.1 sidebar and
+// §6.2 progress bar. Slice A ships read + write CRUD; the
+// board-link / mirror columns land in slice B (the DTO carries
+// `board_link_count` today as `0` so the wire shape is stable).
+
+export const ProjectStatusDtoSchema = z.enum([
+  "active",
+  "backlog",
+  "done",
+  "archived",
+]);
+export type ProjectStatusDto = z.infer<typeof ProjectStatusDtoSchema>;
+
+export const ProjectDtoSchema = z.object({
+  id: uuid,
+  org_id: uuid,
+  name: z.string(),
+  description: z.string().nullable().optional(),
+  lead_user_id: uuid.nullable().optional(),
+  status: ProjectStatusDtoSchema,
+  start_at: isoDateTime.nullable().optional(),
+  due_at: isoDateTime.nullable().optional(),
+  issue_count: z.number().int(),
+  closed_issue_count: z.number().int(),
+  board_link_count: z.number().int(),
+  version: z.number().int(),
+  created_by: uuid.nullable().optional(),
+  created_at: isoDateTime,
+  updated_at: isoDateTime,
+});
+export type ProjectDto = z.infer<typeof ProjectDtoSchema>;
+
+export const ProjectListResponseSchema = z.object({
+  rows: z.array(ProjectDtoSchema),
+  total: z.number().int(),
+  limit: z.number().int(),
+  offset: z.number().int(),
+});
+export type ProjectListResponse = z.infer<typeof ProjectListResponseSchema>;
+
+/** Query params for `GET /projects`. `count_only=1` collapses the
+ *  envelope to `{ rows: [], total, limit: 0, offset }` — used by the
+ *  §6.1 sidebar so the per-status badges never drag full row
+ *  payloads over the wire. */
+export interface ListProjectsQuery {
+  org_id?: string;
+  status?: ProjectStatusDto;
+  q?: string;
+  limit?: number;
+  offset?: number;
+  count_only?: boolean;
+}
+
 export const CreateCommentRequestSchema = z.object({
   expected_version: z.number().int(),
   body: z.string().min(1),
@@ -1159,6 +1215,27 @@ export class DevPulseApi {
     if (q.offset !== undefined) params.set("offset", String(q.offset));
     const qs = params.toString();
     return this.getJson(`/repos${qs ? `?${qs}` : ""}`, RepoListResponseSchema);
+  }
+
+  // --- projects (linear-projects-v2.md §7.1) ---------------------------
+
+  /** `GET /projects` — paginated project list. Pass
+   *  `{ count_only: true }` for the §6.1 sidebar's per-status
+   *  badge counts (server returns `{ rows: [], total, limit: 0,
+   *  offset }`, the wire-cheap shape the spec calls for). */
+  async listProjects(q: ListProjectsQuery = {}): Promise<ProjectListResponse> {
+    const params = new URLSearchParams();
+    if (q.org_id) params.set("org_id", q.org_id);
+    if (q.status) params.set("status", q.status);
+    if (q.q) params.set("q", q.q);
+    if (q.limit !== undefined) params.set("limit", String(q.limit));
+    if (q.offset !== undefined) params.set("offset", String(q.offset));
+    if (q.count_only) params.set("count_only", "1");
+    const qs = params.toString();
+    return this.getJson(
+      `/projects${qs ? `?${qs}` : ""}`,
+      ProjectListResponseSchema,
+    );
   }
 
   /** `POST /issues` — create. May throw `DpRestError` with

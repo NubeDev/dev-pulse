@@ -30,8 +30,40 @@ export type Section =
   | "directory"
   | "admin"
   | "workflow"
+  | "projects"
   | "account"
   | "login";
+
+/** §6.1 sidebar status filter for `#/projects?status=…`. The value
+ *  round-trips through copy-paste so a deep link to "Backlog" lands
+ *  the right §6.2 grouping. `null` ⇒ render every status (the §6.2
+ *  default landing view). */
+export type ProjectStatusRoute =
+  | "active"
+  | "backlog"
+  | "done"
+  | "archived";
+
+export function projectsStatusOf(route: string): ProjectStatusRoute | null {
+  const q = route.indexOf("?");
+  if (q < 0) return null;
+  const v = new URLSearchParams(route.slice(q + 1)).get("status");
+  switch (v) {
+    case "active":
+    case "backlog":
+    case "done":
+    case "archived":
+      return v;
+    default:
+      return null;
+  }
+}
+
+/** Build a `#/projects` URL with an optional status filter. */
+export function projectsRoute(status?: ProjectStatusRoute | null): string {
+  if (!status) return "#/projects";
+  return `#/projects?status=${status}`;
+}
 
 /** Sub-route under the account section
  *  (`linear-projects-idea.md` §10 multi-identity). Defaults to
@@ -273,6 +305,8 @@ export function sectionOf(route: string): Section {
       return "admin";
     case "workflow":
       return "workflow";
+    case "projects":
+      return "projects";
     case "account":
       return "account";
     case "reports":
@@ -304,6 +338,7 @@ export function isKnownRoute(route: string): boolean {
     head === "directory" ||
     head === "admin" ||
     head === "workflow" ||
+    head === "projects" ||
     head === "account"
   );
 }

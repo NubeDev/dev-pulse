@@ -35,6 +35,7 @@ import { UserReportPage } from "./reports/user-report-page.jsx";
 import { IssuesPage } from "./workflow/issues-page.jsx";
 import { ReposPage } from "./workflow/repos-page.jsx";
 import { TriagePage } from "./workflow/triage-page.jsx";
+import { ProjectsPage } from "./projects/projects-page.jsx";
 import {
   accountTabOf,
   adminTabOf,
@@ -108,7 +109,7 @@ function SectionPane({
   section,
   route,
 }: {
-  section: "reports" | "directory" | "admin" | "workflow" | "account";
+  section: "reports" | "directory" | "admin" | "workflow" | "projects" | "account";
   route: string;
 }): JSX.Element {
   switch (section) {
@@ -120,6 +121,8 @@ function SectionPane({
       return <AdminPane tab={adminTabOf(route)} />;
     case "workflow":
       return <WorkflowPane tab={workflowTabOf(route)} />;
+    case "projects":
+      return <ProjectsPage />;
     case "account":
       return <AccountPane tab={accountTabOf(route)} />;
   }
