@@ -96,6 +96,12 @@ async fn webhook_github_stub() {}
         crate::pins::add_pin,
         crate::pins::remove_pin,
         crate::pins::reorder_pins,
+        // Projects v2 CRUD (linear-projects-v2.md §7.1).
+        crate::projects::list_projects,
+        crate::projects::get_project,
+        crate::projects::create_project,
+        crate::projects::patch_project,
+        crate::projects::archive_project,
         // Tags (SCOPE-PROJECTS §7).
         crate::tags::list_tags,
         crate::tags::list_my_tags,
@@ -166,6 +172,13 @@ async fn webhook_github_stub() {}
         crate::pins::AddPinRequest,
         crate::pins::PinKeyDto,
         crate::pins::ReorderRequest,
+        // Projects v2 CRUD (linear-projects-v2.md §7.1).
+        crate::projects::ProjectDto,
+        crate::projects::ProjectStatusDto,
+        crate::projects::ProjectListResponse,
+        crate::projects::CreateProjectRequest,
+        crate::projects::PatchProjectRequest,
+        crate::projects::ArchiveProjectRequest,
         // Tags.
         crate::tags::TagDto,
         crate::tags::TagScopeKindDto,
@@ -224,6 +237,7 @@ async fn webhook_github_stub() {}
         (name = "directory", description = "Operator-facing user / org / team listings + home-org flip."),
         (name = "admin",     description = "Operator-only surface: refresh, run-log, GDPR cascade + export."),
         (name = "pins",      description = "Per-user pinned repos / tags (SCOPE-PROJECTS §6)."),
+        (name = "projects",  description = "First-class projects surface (linear-projects-v2.md §7)."),
         (name = "tags",      description = "Cross-org home-grown tags (SCOPE-PROJECTS §7)."),
         (name = "github_app", description = "GitHub App install permission surface (SCOPE-PROJECTS §8.4, §13.6)."),
         (name = "identities", description = "Linked OAuth identities for the caller (linear-projects-idea.md §3.0 / §10)."),

@@ -131,6 +131,29 @@ pub const BULK_INBOX_DONE: &str = "inbox.bulk_done";
 /// with `op = inbox_all`). Clears any snooze deadline.
 pub const BULK_INBOX_INBOX: &str = "inbox.bulk_inbox";
 
+/// `project.create` — `POST /projects` (linear-projects-v2.md §9.3).
+pub const PROJECT_CREATE: &str = "project.create";
+/// `project.update` — `PATCH /projects/{id}` (§9.3). Covers name /
+/// description / lead / status / start / due edits in one verb;
+/// the diff is recoverable from the row's `version` plus the
+/// pre-write snapshot stored elsewhere.
+pub const PROJECT_UPDATE: &str = "project.update";
+/// `project.archive` — `POST /projects/{id}/archive` (§9.3).
+/// Distinct from `project.update` so the audit log can answer
+/// "when was this project archived?" with one query.
+pub const PROJECT_ARCHIVE: &str = "project.archive";
+/// `project.issue.add` — one row per issue attached via
+/// `POST /projects/{id}/issues` (§7.2). Reserved for the
+/// stage-4 membership handler; pinned now so the vocabulary is
+/// closed before that handler lands.
+pub const PROJECT_ISSUE_ADD: &str = "project.issue.add";
+/// `project.issue.remove` — `DELETE /projects/{id}/issues/{issue_id}`.
+pub const PROJECT_ISSUE_REMOVE: &str = "project.issue.remove";
+/// `project.board.link` — `POST /projects/{id}/board-links` (slice B).
+pub const PROJECT_BOARD_LINK: &str = "project.board.link";
+/// `project.board.unlink` — `DELETE /projects/{id}/board-links/{link_id}`.
+pub const PROJECT_BOARD_UNLINK: &str = "project.board.unlink";
+
 /// `issue.pending_remote_timeout` — emitted by the §8.5 sweeper
 /// when a `dp_issues.pending_remote` flag has lingered past
 /// `issues.pending_remote_timeout_secs`. The audit target carries

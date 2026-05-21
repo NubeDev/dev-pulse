@@ -1168,6 +1168,260 @@
         }
       }
     },
+    "/projects": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "`GET /projects` — filtered, paginated list.",
+        "description": "* Defaults to `limit = 50`, capped at `MAX_LIST_LIMIT = 200`.\n* Pass `?count_only=1` for an empty-`rows` count-only envelope\n  (§6.1 sidebar).\n* Order: status (active → backlog → done → archived) then\n  `due_at ASC NULLS LAST` then `name`.",
+        "operationId": "list_projects",
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "query",
+            "description": "Restrict to one org.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "description": "Restrict to one status.",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/ProjectStatusDto"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Case-insensitive substring on name.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size (1..=200, default 50).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Page offset (default 0).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "count_only",
+            "in": "query",
+            "description": "If 1, returns count only with empty rows.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated project list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectListResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "`POST /projects` — create. Initialises `version = 1`,\n`issue_count = closed_issue_count = 0`, stamps `created_by`\nfrom the [`Principal`]. Audits [`audit::PROJECT_CREATE`].",
+        "operationId": "create_project",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateProjectRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Project created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure (name / dates)"
+          },
+          "409": {
+            "description": "Duplicate active project name in this org"
+          }
+        }
+      }
+    },
+    "/projects/{id}": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "`GET /projects/{id}` — single project, or `404` when absent.",
+        "operationId": "get_project",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Project row",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such project"
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "`PATCH /projects/{id}` — partial update under §8.2 CAS.",
+        "description": "* `expected_version` mismatch ⇒ `409 stale_project_version`.\n* Unknown id ⇒ `404 project_not_found`.\n* Per §9.2, `lead_user_id` mutation is an elevated op; v1\n  handler does not yet enforce the elevation (a follow-up\n  stage wires the lead-or-author check). The lane is reserved\n  so adding the gate is a one-line edit.\n* Audits [`audit::PROJECT_UPDATE`] after the row commits.",
+        "operationId": "patch_project",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchProjectRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Project updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure"
+          },
+          "404": {
+            "description": "No such project"
+          },
+          "409": {
+            "description": "Stale `expected_version`"
+          }
+        }
+      }
+    },
+    "/projects/{id}/archive": {
+      "post": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "`POST /projects/{id}/archive` — elevated archive op (§9.2).\nIdempotent: archiving an already-archived row echoes it back\nwithout bumping `version` or writing an audit row.",
+        "operationId": "archive_project",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArchiveProjectRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Archived (or already-archived no-op)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such project"
+          },
+          "409": {
+            "description": "Stale `expected_version`"
+          }
+        }
+      }
+    },
     "/reports/freshness": {
       "get": {
         "tags": [
@@ -2260,6 +2514,20 @@
           }
         }
       },
+      "ArchiveProjectRequest": {
+        "type": "object",
+        "description": "Body for `POST /projects/{id}/archive`. CAS-gated on the\nproject's current `version` (§9.2). The handler is idempotent —\narchiving an already-archived project echoes the row back\nwithout bumping `version`.",
+        "required": [
+          "expected_version"
+        ],
+        "properties": {
+          "expected_version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The `version` the caller observed."
+          }
+        }
+      },
       "BulkInboxOp": {
         "type": "string",
         "description": "Operation kind for [`BulkInboxRequest`]. One of mark-seen, snooze,\ndone, or restore-to-inbox — the four bulk actions the workbench\nexposes from the list header.",
@@ -2396,6 +2664,67 @@
             "type": "string",
             "format": "uuid",
             "description": "Echoed parent repo id."
+          }
+        }
+      },
+      "CreateProjectRequest": {
+        "type": "object",
+        "description": "Body for `POST /projects`. `status` is optional — when omitted\nthe server defaults to [`ProjectStatusDto::Active`] (§6.2 \"Status\ndefaults to `active`\"). `created_by` is filled from the\n[`Principal`], not the body.",
+        "required": [
+          "org_id",
+          "name"
+        ],
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional markdown description."
+          },
+          "due_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Optional planned due."
+          },
+          "lead_user_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Optional initial lead user."
+          },
+          "name": {
+            "type": "string",
+            "description": "Project name."
+          },
+          "org_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Parent org."
+          },
+          "start_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Optional planned start."
+          },
+          "status": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ProjectStatusDto",
+                "description": "Optional initial status; defaults to `active`."
+              }
+            ]
           }
         }
       },
@@ -3155,6 +3484,69 @@
         ],
         "description": "Body for PATCH `/issues/{id}`."
       },
+      "PatchProjectRequest": {
+        "type": "object",
+        "description": "Body for `PATCH /projects/{id}`. Carries the §8.2\n`expected_version` plus the merged-in field set. Fields that\nare omitted are left untouched — the store layer takes a full\nupsert payload, so the handler reads the current row and\noverlays the partial body. This keeps the wire shape narrow\nwithout leaking the upsert's \"all fields required\" shape.",
+        "required": [
+          "expected_version"
+        ],
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "New description; pass `null` explicitly to clear by sending\n`{\"description\": null}` (we cannot distinguish that from\n\"missing\" with `#[serde(default)]`, so today the only way\nto clear is via PATCH with `description: null` interpreted\nin the handler — see [`patch_project`])."
+          },
+          "due_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "New due instant. `Some(None)` clears."
+          },
+          "expected_version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The `version` the caller observed; the server CASes against\nthis and surfaces a `stale_project_version` 409 on mismatch."
+          },
+          "lead_user_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "New lead. `None` ⇒ leave unchanged. `Some(None)` ⇒ clear.\nMutating this is an elevated op per §9.2; v1 handler does\nnot yet check the elevation but the lane is wired so the\nfollow-up that ships lead-or-author resolution can land\nthe check without a wire change."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "New name (optional)."
+          },
+          "start_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "New start instant. `Some(None)` clears."
+          },
+          "status": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ProjectStatusDto",
+                "description": "New status."
+              }
+            ]
+          }
+        }
+      },
       "PinDto": {
         "type": "object",
         "description": "One row in `GET /me/pins`. Hydration of `target_id` to a full\nrepo / tag payload is a follow-up stage — for now the client\njoins against `/orgs`, `/repos`, `/tags` itself.",
@@ -3211,6 +3603,155 @@
         "enum": [
           "repo",
           "tag"
+        ]
+      },
+      "ProjectDto": {
+        "type": "object",
+        "description": "One row of `GET /projects` and the body shape for the\nsingle-row endpoints. Mirrors `linear-projects-v2.md` §7.1.",
+        "required": [
+          "id",
+          "org_id",
+          "name",
+          "status",
+          "issue_count",
+          "closed_issue_count",
+          "board_link_count",
+          "version",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "board_link_count": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Count of `dp_project_board_links` rows attached to this\nproject. Slice A returns `0` (the link table lands in\nslice B); the DTO carries the field now so clients can\nrely on a stable shape."
+          },
+          "closed_issue_count": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Denormalised count of attached issues whose `dp_issues.state\n= 'closed'`. Drives the §6.2 progress bar."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "First-write timestamp."
+          },
+          "created_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Author (`dp_users.id`). Immutable per §9.2. `None` when the\noriginal author was pseudonymised."
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional markdown description."
+          },
+          "due_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Planned due instant, UTC. `None` when unset."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Primary key."
+          },
+          "issue_count": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Denormalised membership count (§7.1 footnote)."
+          },
+          "lead_user_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Lead user. Drives default visibility and `Mentioned` filter\ntargets. Mutating this field is an elevated op (§9.2)."
+          },
+          "name": {
+            "type": "string",
+            "description": "Project name (case-insensitively unique within org for\nnon-archived rows, §8 partial index)."
+          },
+          "org_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Parent org."
+          },
+          "start_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Planned start instant, UTC. `None` when unset."
+          },
+          "status": {
+            "$ref": "#/components/schemas/ProjectStatusDto",
+            "description": "Lifecycle state."
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Last accepted mutation."
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "§8.2 CAS counter. PATCH / archive callers echo this back\nas `expected_version`; a mismatch ⇒ 409 conflict."
+          }
+        }
+      },
+      "ProjectListResponse": {
+        "type": "object",
+        "description": "Paginated envelope mirroring [`crate::issues_read::IssueListResponse`].\n`rows` is omitted when the caller passes `?count_only=1` and the\nenvelope collapses to `{ total, limit, offset, rows: [] }` — the\nsidebar (§6.1) uses this to render counts without dragging the\nfull row payload over the wire.",
+        "required": [
+          "rows",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Echoed limit (always `0` when `count_only = 1`)."
+          },
+          "offset": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Echoed offset."
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProjectDto"
+            },
+            "description": "Projects on this page, ordered per §6.2 (status → due → name)."
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Total matching the filter, ignoring pagination."
+          }
+        }
+      },
+      "ProjectStatusDto": {
+        "type": "string",
+        "description": "Wire form of [`ProjectStatus`]. Lowercase to mirror the SQL\nCHECK vocabulary and the §6.1 sidebar labels.",
+        "enum": [
+          "active",
+          "backlog",
+          "done",
+          "archived"
         ]
       },
       "PutRepoProjectLinkRequest": {
@@ -3984,6 +4525,10 @@
     {
       "name": "pins",
       "description": "Per-user pinned repos / tags (SCOPE-PROJECTS §6)."
+    },
+    {
+      "name": "projects",
+      "description": "First-class projects surface (linear-projects-v2.md §7)."
     },
     {
       "name": "tags",

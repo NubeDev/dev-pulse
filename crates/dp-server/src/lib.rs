@@ -84,7 +84,7 @@ use dp_fetcher::webhook::{self, WebhookMetrics, WebhookSecretSource, WebhookStat
 use dp_rest::{
     admin_router, app_permissions_router, directory_router, inbox_router, issue_dates_router,
     issues_read_router, issues_write_router, me_identities_router, pins_router,
-    repo_project_link_router, repos_router,
+    projects_router, repo_project_link_router, repos_router,
     reports_router, tags_router, AdminState, AppState as RestAppState, DevPulseApi,
 };
 
@@ -288,6 +288,10 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
     let reports = reports_router(rest_state.clone());
     let directory = directory_router(rest_state.clone());
     let pins = pins_router(rest_state.clone());
+    // First-class Projects v2 CRUD (linear-projects-v2.md §7.1).
+    // Slice A: list / get / create / patch / archive. Membership
+    // (§7.2) and board picker (§7.3) land in later stages.
+    let projects = projects_router(rest_state.clone());
     let tags = tags_router(rest_state.clone());
     let repos = repos_router(rest_state.clone());
     let issues_read = issues_read_router(rest_state.clone());
@@ -325,6 +329,7 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
         .merge(reports)
         .merge(directory)
         .merge(pins)
+        .merge(projects)
         .merge(tags)
         .merge(repos)
         .merge(issues_read)

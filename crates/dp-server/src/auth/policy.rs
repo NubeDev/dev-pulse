@@ -143,6 +143,15 @@ pub fn register_dev_pulse_resources(registry: &StaticRegistry) {
          create / rename / delete / assignment.",
     ));
     registry.register_spec(ResourceSpec::from_static(
+        "projects",
+        &["read", "write"],
+        Ownership::None,
+        "Projects",
+        "First-class projects surface (linear-projects-v2.md §7). `read` covers \
+         `GET /projects` and `GET /projects/{id}`; `write` covers create / patch / \
+         archive (§7.1) plus future membership (§7.2) and board-link (§7.3) verbs.",
+    ));
+    registry.register_spec(ResourceSpec::from_static(
         "identities",
         &["read"],
         Ownership::None,

@@ -45,6 +45,7 @@ pub mod issues_write;
 pub mod me_identities;
 pub mod openapi;
 pub mod pins;
+pub mod projects;
 pub mod reports;
 pub mod repo_project_link;
 pub mod repos;
@@ -105,6 +106,11 @@ pub use openapi::DevPulseApi;
 pub use pins::{
     add_pin, list_pins, pins_router, remove_pin, reorder_pins, AddPinRequest, PinDto, PinKeyDto,
     PinKindDto, ReorderRequest, PIN_CAP,
+};
+pub use projects::{
+    archive_project, create_project, get_project, list_projects, patch_project, projects_router,
+    ArchiveProjectRequest, CreateProjectRequest, ListProjectsQuery, PatchProjectRequest,
+    ProjectDto, ProjectListResponse, ProjectStatusDto,
 };
 pub use reports::{
     freshness_report, home_org_split_report, issues_report, org_report, reports_router,
