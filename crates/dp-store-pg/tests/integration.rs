@@ -858,3 +858,228 @@ async fn upsert_team_dedupes_on_org_and_github_id() {
     assert_eq!(t2.slug, "platform");
     assert_eq!(t2.name, "Platform");
 }
+
+// ---------- identities (users.md §4 Slice A) ----------------------
+
+/// Backfill from migration 0019 attaches one primary identity per
+/// existing dp-user; `list_identities_for_user` finds it; the
+/// `find_user_by_github_user_id` reverse-lookup agrees with
+/// `get_user_by_github_id`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Docker or DP_TEST_DATABASE_URL"]
+async fn identities_backfill_visible_via_store() {
+    use dp_domain::identity::VerifiedVia;
+
+    let f = fixture().await;
+    let s = f.store();
+
+    // Seeding via upsert_user happens *after* migrations, so the
+    // 0019 backfill SELECT saw an empty `dp_users`. We have to
+    // exercise link_identity here for any rows to exist.
+    let alice = seed_user(s, 1001, "alice").await;
+
+    s.link_identity(&dp_domain::identity::UserIdentity {
+        user_id: alice.id,
+        github_user_id: 1001,
+        github_login: "alice".into(),
+        is_primary: true,
+        linked_at: chrono::Utc::now(),
+        verified_via: VerifiedVia::Oauth,
+    })
+    .await
+    .unwrap();
+
+    let rows = s.list_identities_for_user(alice.id).await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert!(rows[0].is_primary);
+    assert_eq!(rows[0].github_login, "alice");
+    assert_eq!(rows[0].verified_via, VerifiedVia::Oauth);
+
+    let by_gh = s.find_user_by_github_user_id(1001).await.unwrap();
+    assert_eq!(by_gh.unwrap().id, alice.id);
+
+    assert!(s.find_user_by_github_user_id(9999).await.unwrap().is_none());
+}
+
+/// Linking a second identity keeps the first primary unless the
+/// caller asks otherwise; `set_primary_identity` flips atomically.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Docker or DP_TEST_DATABASE_URL"]
+async fn link_then_set_primary_flips_atomically() {
+    use dp_domain::identity::{UserIdentity, VerifiedVia};
+
+    let f = fixture().await;
+    let s = f.store();
+    let alice = seed_user(s, 2001, "alice").await;
+
+    s.link_identity(&UserIdentity {
+        user_id: alice.id,
+        github_user_id: 2001,
+        github_login: "alice".into(),
+        is_primary: true,
+        linked_at: chrono::Utc::now(),
+        verified_via: VerifiedVia::Oauth,
+    })
+    .await
+    .unwrap();
+
+    // Second identity: caller passes is_primary = false → stays
+    // secondary even though it's freshly linked.
+    s.link_identity(&UserIdentity {
+        user_id: alice.id,
+        github_user_id: 2002,
+        github_login: "alice-oncall".into(),
+        is_primary: false,
+        linked_at: chrono::Utc::now(),
+        verified_via: VerifiedVia::Oauth,
+    })
+    .await
+    .unwrap();
+
+    let rows = s.list_identities_for_user(alice.id).await.unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].github_user_id, 2001);
+    assert!(rows[0].is_primary);
+    assert!(!rows[1].is_primary);
+
+    // Promote the oncall identity. The previous primary must drop
+    // to FALSE in the same transaction.
+    s.set_primary_identity(alice.id, 2002).await.unwrap();
+    let rows = s.list_identities_for_user(alice.id).await.unwrap();
+    let alice_primary = rows.iter().find(|r| r.is_primary).unwrap();
+    assert_eq!(alice_primary.github_user_id, 2002);
+    assert_eq!(rows.iter().filter(|r| r.is_primary).count(), 1);
+}
+
+/// Claim conflict: linking a github_user_id already owned by
+/// another dp-user must surface `StoreError::Conflict` (the REST
+/// layer maps this to HTTP 409 + IDENTITY_CLAIM_CONFLICT audit).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Docker or DP_TEST_DATABASE_URL"]
+async fn link_identity_rejects_cross_user_claim() {
+    use dp_domain::identity::{UserIdentity, VerifiedVia};
+
+    let f = fixture().await;
+    let s = f.store();
+    let alice = seed_user(s, 3001, "alice").await;
+    let bob = seed_user(s, 3002, "bob").await;
+
+    s.link_identity(&UserIdentity {
+        user_id: alice.id,
+        github_user_id: 3001,
+        github_login: "alice".into(),
+        is_primary: true,
+        linked_at: chrono::Utc::now(),
+        verified_via: VerifiedVia::Oauth,
+    })
+    .await
+    .unwrap();
+
+    let err = s
+        .link_identity(&UserIdentity {
+            user_id: bob.id,
+            github_user_id: 3001, // already claimed by alice
+            github_login: "alice".into(),
+            is_primary: false,
+            linked_at: chrono::Utc::now(),
+            verified_via: VerifiedVia::Oauth,
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(err, StoreError::Conflict(_)), "got: {err:?}");
+}
+
+/// Unlink rules: cannot remove the last identity, cannot remove
+/// the current primary. Removing a non-primary secondary works.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Docker or DP_TEST_DATABASE_URL"]
+async fn unlink_identity_enforces_last_and_primary_rules() {
+    use dp_domain::identity::{UserIdentity, VerifiedVia};
+
+    let f = fixture().await;
+    let s = f.store();
+    let alice = seed_user(s, 4001, "alice").await;
+
+    s.link_identity(&UserIdentity {
+        user_id: alice.id,
+        github_user_id: 4001,
+        github_login: "alice".into(),
+        is_primary: true,
+        linked_at: chrono::Utc::now(),
+        verified_via: VerifiedVia::Oauth,
+    })
+    .await
+    .unwrap();
+
+    // Last-identity rule.
+    let err = s.unlink_identity(alice.id, 4001).await.unwrap_err();
+    assert!(matches!(err, StoreError::Invalid(_)), "got: {err:?}");
+
+    s.link_identity(&UserIdentity {
+        user_id: alice.id,
+        github_user_id: 4002,
+        github_login: "alice-oncall".into(),
+        is_primary: false,
+        linked_at: chrono::Utc::now(),
+        verified_via: VerifiedVia::Oauth,
+    })
+    .await
+    .unwrap();
+
+    // Primary rule.
+    let err = s.unlink_identity(alice.id, 4001).await.unwrap_err();
+    assert!(matches!(err, StoreError::Invalid(_)), "primary-rule, got: {err:?}");
+
+    // Non-primary unlinks cleanly.
+    s.unlink_identity(alice.id, 4002).await.unwrap();
+    let rows = s.list_identities_for_user(alice.id).await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].github_user_id, 4001);
+}
+
+/// OAuth `state` nonce: create, consume, double-consume is None,
+/// expired sweep removes the row.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Docker or DP_TEST_DATABASE_URL"]
+async fn identity_link_pending_round_trip() {
+    use dp_domain::identity::IdentityLinkPending;
+
+    let f = fixture().await;
+    let s = f.store();
+    let alice = seed_user(s, 5001, "alice").await;
+
+    let nonce = Uuid::new_v4();
+    let now = chrono::Utc::now();
+    s.create_identity_link_pending(&IdentityLinkPending {
+        nonce,
+        dp_user_id: alice.id,
+        session_id: "sess-1".into(),
+        created_at: now,
+        expires_at: now + chrono::Duration::minutes(5),
+    })
+    .await
+    .unwrap();
+
+    let consumed = s.consume_identity_link_pending(nonce).await.unwrap();
+    let row = consumed.expect("nonce should exist on first consume");
+    assert_eq!(row.dp_user_id, alice.id);
+    assert_eq!(row.session_id, "sess-1");
+
+    // Second consume must be None — single-use.
+    assert!(s.consume_identity_link_pending(nonce).await.unwrap().is_none());
+
+    // Expired-sweep deletes only past-deadline rows.
+    let nonce2 = Uuid::new_v4();
+    s.create_identity_link_pending(&IdentityLinkPending {
+        nonce: nonce2,
+        dp_user_id: alice.id,
+        session_id: "sess-2".into(),
+        created_at: now - chrono::Duration::hours(1),
+        expires_at: now - chrono::Duration::minutes(30),
+    })
+    .await
+    .unwrap();
+    let purged = s.purge_expired_identity_link_pending(now).await.unwrap();
+    assert!(purged >= 1);
+    assert!(s.consume_identity_link_pending(nonce2).await.unwrap().is_none());
+}

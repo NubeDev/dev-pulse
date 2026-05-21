@@ -717,11 +717,68 @@ async fn run_serve(matches: &ArgMatches) -> Result<()> {
     }
     let reconciler = build_reconciler(
         store.clone(),
-        github_token,
+        github_token.clone(),
         &cfg.github.base_url,
         budget,
     )
     .context("build reconciler")?;
+    // -- issue-write backend (SCOPE-PROJECTS §8) -----------------------
+    //
+    // PAT mode: when an operator armed `github.token_ref`, wire a
+    // FetcherIssueWriter against a second budget-shared Client so
+    // the §8 issue mutation surface (PATCH /issues/{id}, POST
+    // /issues/{id}/comments, PATCH /issues/{id}/dates) can round-
+    // trip to GitHub. Without a token the default
+    // `UnconfiguredIssueWriter` stays in place and every mutation
+    // returns 502 — matching the read-side dormancy.
+    let issue_writer: Option<Arc<dyn dp_server::IssueWriteBackend>> =
+        if let Some(tok) = github_token.as_ref().filter(|t| !t.is_empty()) {
+            let writer_client = dp_fetcher::client::Client::with_personal_token(
+                SecretString::from(tok.clone()),
+                &cfg.github.base_url,
+            )
+            .map_err(|e| anyhow!("build github writer client: {e}"))?
+            .with_budget(budget);
+            Some(Arc::new(dp_server::FetcherIssueWriter::new(Arc::new(
+                writer_client,
+            ))))
+        } else {
+            None
+        };
+    // -- Projects v2 mirror + picker (§3.10) ----------------------------
+    //
+    // Same PAT-mode gate as the issue writer above: a configured
+    // GitHub token wires the octocrab-backed mirror and picker
+    // adapters. Without a token, the dp-rest defaults
+    // (`UnconfiguredProjectV2Mirror` / `UnconfiguredProjectsPicker`)
+    // stay in place — the date editor commits locally but the
+    // best-effort mirror is skipped, and the admin pane's project
+    // chooser surfaces a 503 so the operator knows to wire a
+    // token. Reuses a sibling budget-shared `Client` so GraphQL
+    // traffic counts against the same local fuse as REST.
+    let (projectv2_mirror, projects_picker): (
+        Option<Arc<dyn dp_server::ProjectV2MirrorBackend>>,
+        Option<Arc<dyn dp_server::ProjectsPickerBackend>>,
+    ) = if let Some(tok) = github_token.as_ref().filter(|t| !t.is_empty()) {
+        let gql_client = dp_fetcher::client::Client::with_personal_token(
+            SecretString::from(tok.clone()),
+            &cfg.github.base_url,
+        )
+        .map_err(|e| anyhow!("build github graphql client: {e}"))?
+        .with_budget(budget);
+        let gql_client = Arc::new(gql_client);
+        (
+            Some(Arc::new(dp_server::OctocrabProjectV2Mirror::new(
+                gql_client.clone(),
+                store.clone(),
+            ))),
+            Some(Arc::new(dp_server::OctocrabProjectsPicker::new(
+                gql_client,
+            ))),
+        )
+    } else {
+        (None, None)
+    };
     let scheduler = Arc::new(dp_fetcher::reconciler::Scheduler::new(
         reconciler.clone(),
         Duration::from_secs(cfg.scheduler.tick_interval_secs),
@@ -749,6 +806,9 @@ async fn run_serve(matches: &ArgMatches) -> Result<()> {
             // (flag on, no slug), which matches §13.6 step 1
             // ("default `true` in new deployments").
             github_app: Arc::new(cfg.github.app.clone()),
+            issue_writer: issue_writer.clone(),
+            projectv2_mirror: projectv2_mirror.clone(),
+            projects_picker: projects_picker.clone(),
         },
         auth: auth_state,
         oauth: oauth_state,

@@ -57,6 +57,7 @@ import {
   IconKeyboard,
   IconList,
   IconMoon,
+  IconRotateClockwise,
   IconSparkles,
   IconUser,
   IconUsers,
@@ -96,6 +97,7 @@ import {
   useRepoList,
   useSetInboxState,
   useTags,
+  useToggleIssueState,
 } from "./use-workflow-data.js";
 
 const PAGE_SIZE = 100;
@@ -284,6 +286,7 @@ export function TriagePage(): JSX.Element {
 
   const markSeen = useMarkInboxSeen();
   const setInboxState = useSetInboxState();
+  const toggleState = useToggleIssueState();
   const bulkInbox = useBulkInbox();
 
   // ----- Multi-select + bulk-action state (slice 2 §3.8) --------------
@@ -477,11 +480,19 @@ export function TriagePage(): JSX.Element {
         case "e": {
           const r = rows[cursor];
           if (r) {
-            setInboxState.mutate({
-              issueId: r.id,
-              status: "done",
-              snoozed_until: null,
-            });
+            const nextState = r.state === "closed" ? "open" : "closed";
+            toggleState.mutate(
+              { id: r.id, version: r.version, state: nextState },
+              {
+                onSuccess: () => {
+                  setInboxState.mutate({
+                    issueId: r.id,
+                    status: nextState === "closed" ? "done" : "inbox",
+                    snoozed_until: null,
+                  });
+                },
+              },
+            );
           }
           e.preventDefault();
           break;
@@ -1042,18 +1053,47 @@ export function TriagePage(): JSX.Element {
                   <Button
                     variant="ghost"
                     size="icon"
-                    title="Mark done (e)"
-                    data-testid="triage-row-done"
+                    title={
+                      row.state === "closed"
+                        ? "Reopen issue"
+                        : "Mark done (e) — closes on GitHub"
+                    }
+                    data-testid={
+                      row.state === "closed"
+                        ? "triage-row-reopen"
+                        : "triage-row-done"
+                    }
                     onClick={(e) => {
                       e.stopPropagation();
-                      setInboxState.mutate({
-                        issueId: row.id,
-                        status: "done",
-                        snoozed_until: null,
-                      });
+                      const nextState =
+                        row.state === "closed" ? "open" : "closed";
+                      toggleState.mutate(
+                        {
+                          id: row.id,
+                          version: row.version,
+                          state: nextState,
+                        },
+                        {
+                          onSuccess: () => {
+                            // Mirror the GH transition into the
+                            // per-user inbox: closing dismisses
+                            // the row (status = done); reopening
+                            // brings it back to default Inbox.
+                            setInboxState.mutate({
+                              issueId: row.id,
+                              status: nextState === "closed" ? "done" : "inbox",
+                              snoozed_until: null,
+                            });
+                          },
+                        },
+                      );
                     }}
                   >
-                    <IconCheck className="size-4" />
+                    {row.state === "closed" ? (
+                      <IconRotateClockwise className="size-4" />
+                    ) : (
+                      <IconCheck className="size-4" />
+                    )}
                   </Button>
                 </span>
               </li>

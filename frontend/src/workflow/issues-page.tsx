@@ -38,6 +38,7 @@ import {
   IconInbox,
   IconKeyboard,
   IconRefresh,
+  IconRotateClockwise,
   IconX,
 } from "@tabler/icons-react";
 
@@ -78,6 +79,8 @@ import {
 } from "../components/table.jsx";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import MDEditor from "@uiw/react-md-editor";
+import { useTheme } from "@kit/theme";
 
 import { api, type IssueDto, type ListIssuesQuery } from "../api/client.js";
 import { Markdown } from "../components/markdown.jsx";
@@ -100,6 +103,7 @@ import {
   useMarkInboxSeen,
   useMyQueue,
   useSetInboxState,
+  useToggleIssueState,
   useUpdateIssue,
   useUpdateIssueDates,
   writesUnavailableOrg,
@@ -172,6 +176,50 @@ function useRepoLookup(repoId: string | null) {
   });
 }
 
+/**
+ * Markdown body editor — toolbar-driven WYSIWYG-ish input backed by
+ * `@uiw/react-md-editor`. We disable its built-in live preview (we
+ * already render Preview in a sibling tab via our own `Markdown`
+ * component) so the toolbar is the value-add: bold / italic /
+ * headings / list / link / code with keyboard shortcuts and
+ * selection-aware insertions.
+ *
+ * Theme follows the app's `useTheme` (light/dark/system) so the
+ * editor's CSS variables (`--color-canvas-default` etc.) match the
+ * surrounding card chrome.
+ */
+function MarkdownBodyEditor({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (next: string) => void;
+}): JSX.Element {
+  const { theme } = useTheme();
+  // `theme` can be "system" — resolve by sniffing the root `dark`
+  // class the kit's theme provider already toggles, falling back to
+  // `prefers-color-scheme` so the editor matches on first render
+  // before the kit has hydrated.
+  const colorMode =
+    theme === "dark" ||
+    (theme === "system" &&
+      typeof document !== "undefined" &&
+      document.documentElement.classList.contains("dark"))
+      ? "dark"
+      : "light";
+  return (
+    <div data-color-mode={colorMode} data-testid="markdown-editor">
+      <MDEditor
+        value={value}
+        onChange={(v) => onChange(v ?? "")}
+        preview="edit"
+        height={320}
+        visibleDragbar={false}
+      />
+    </div>
+  );
+}
+
 export function IssuesPage(): JSX.Element {
   const route = useRoute();
   const parsed = useMemo(() => parseQuery(route), [route]);
@@ -209,6 +257,7 @@ export function IssuesPage(): JSX.Element {
 
   const markSeen = useMarkInboxSeen();
   const setInboxState = useSetInboxState();
+  const toggleState = useToggleIssueState();
 
   const goTo = (next: Partial<IssuesPageQuery>): void => {
     navigate(buildRoute({ ...parsed, ...next, offset: 0 }, selectedIssueId));
@@ -568,18 +617,44 @@ export function IssuesPage(): JSX.Element {
                       <Button
                         variant="ghost"
                         size="icon"
-                        title="Mark done"
-                        data-testid="issues-row-done"
+                        title={
+                          row.state === "closed"
+                            ? "Reopen issue"
+                            : "Mark done — closes on GitHub"
+                        }
+                        data-testid={
+                          row.state === "closed"
+                            ? "issues-row-reopen"
+                            : "issues-row-done"
+                        }
                         onClick={(e) => {
                           e.stopPropagation();
-                          setInboxState.mutate({
-                            issueId: row.id,
-                            status: "done",
-                            snoozed_until: null,
-                          });
+                          const nextState =
+                            row.state === "closed" ? "open" : "closed";
+                          toggleState.mutate(
+                            {
+                              id: row.id,
+                              version: row.version,
+                              state: nextState,
+                            },
+                            {
+                              onSuccess: () => {
+                                setInboxState.mutate({
+                                  issueId: row.id,
+                                  status:
+                                    nextState === "closed" ? "done" : "inbox",
+                                  snoozed_until: null,
+                                });
+                              },
+                            },
+                          );
                         }}
                       >
-                        <IconCheck className="size-4" />
+                        {row.state === "closed" ? (
+                          <IconRotateClockwise className="size-4" />
+                        ) : (
+                          <IconCheck className="size-4" />
+                        )}
                       </Button>
                     </div>
                   </TableCell>
@@ -871,11 +946,7 @@ function IssueFormBody({
               )}
             </TabsContent>
             <TabsContent value="edit">
-              <Textarea
-                value={body}
-                onChange={(e) => setBody(e.target.value)}
-                rows={10}
-              />
+              <MarkdownBodyEditor value={body} onChange={setBody} />
             </TabsContent>
           </Tabs>
         </div>
@@ -1053,15 +1124,51 @@ function IssueDatesEditor({ issueId }: { issueId: string }): JSX.Element {
           {error}
         </p>
       )}
-      {dates.data?.mirror_error && !error && (
+      {/* SCOPE-PROJECTS §3.10 mirror status — three states, one
+       *  line of microcopy each. Renders nothing when the issue's
+       *  repo has no `dp_repo_project_link` row yet (server returns
+       *  both fields null in that case). */}
+      {update.isPending && !error && (
         <p
           className="text-xs text-muted-foreground"
+          data-testid="issue-dates-mirror-pending"
+        >
+          Syncing to Projects v2…
+        </p>
+      )}
+      {!update.isPending &&
+        !error &&
+        dates.data?.mirror_error == null &&
+        dates.data?.mirror_synced_at && (
+          <p
+            className="text-xs text-muted-foreground"
+            data-testid="issue-dates-mirror-synced"
+          >
+            Synced {formatMirrorClock(dates.data.mirror_synced_at)}
+          </p>
+        )}
+      {!update.isPending && !error && dates.data?.mirror_error && (
+        <p
+          className="text-xs text-destructive"
           data-testid="issue-dates-mirror-error"
         >
-          Saved locally. Projects v2 mirror failed: {dates.data.mirror_error}
+          Sync failed: {dates.data.mirror_error}
         </p>
       )}
     </form>
   );
+}
+
+/** Render an ISO-8601 instant as a `HH:mm:ss` wall-clock in the
+ *  viewer's local time. Used by the §3.10 mirror status footnote;
+ *  swallows parse errors so a malformed server value never blanks
+ *  the editor. */
+function formatMirrorClock(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  const ss = String(d.getSeconds()).padStart(2, "0");
+  return `${hh}:${mm}:${ss}`;
 }
 

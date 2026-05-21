@@ -27,6 +27,7 @@ pub mod audit;
 pub mod event;
 pub mod fetch;
 pub mod freshness;
+pub mod identity;
 pub mod inbox;
 pub mod issue;
 pub mod issue_dates;
@@ -48,6 +49,9 @@ pub use audit::AuditEntry;
 pub use event::{ActivityEvent, ActorRole, EventActor, EventKind};
 pub use fetch::{FetchCursor, FetchRun, FetchRunKind, ResourceKind};
 pub use freshness::DataAsOf;
+pub use identity::{
+    IdentityLinkPending, IdentityLinkRejection, MembershipIdentity, UserIdentity, VerifiedVia,
+};
 pub use inbox::{InboxIssueRow, InboxStatus, UserIssueState};
 pub use issue::{Issue, IssueState, IssueUpsert, IssueUpsertOutcome, RepoSummary};
 pub use issue_dates::{

@@ -85,6 +85,20 @@ pub struct GitHubAppConfig {
     /// (§13.6 "Revisit if").
     #[serde(default = "default_request_issues_write")]
     pub request_issues_write: bool,
+    /// When `true`, the deployment is running with a PAT-backed
+    /// [`crate::issues_write::IssueWriteBackend`] rather than a
+    /// per-org GitHub App install — there are no `OrgAppInstall`
+    /// records to consult. The write-gate skips the per-org
+    /// install check and returns `Ok(())` as long as
+    /// [`Self::request_issues_write`] is on; the PAT itself is
+    /// the authorisation. Default `false` so production App-mode
+    /// deployments keep their fail-closed guarantee.
+    ///
+    /// The §13.6 banner still renders rows when this is on, but
+    /// every row reports `writes_available = true` so the UI
+    /// doesn't nag for an App install that isn't expected.
+    #[serde(default)]
+    pub pat_mode: bool,
     /// GitHub App slug used to build the `manage_url` deep-link
     /// the §13.6 banner offers as a copy-able admin link. Format:
     /// `https://github.com/organizations/<org>/settings/installations/<install>/permissions`
@@ -109,6 +123,7 @@ impl Default for GitHubAppConfig {
     fn default() -> Self {
         Self {
             request_issues_write: true,
+            pat_mode: false,
             slug: None,
         }
     }
@@ -247,6 +262,13 @@ pub async fn require_issues_write(
             manage_url: None,
         });
     }
+    // PAT-mode bypass: when the deployment is running on a
+    // personal access token the per-org install record does not
+    // exist (no App is installed); the PAT itself authorises the
+    // write. Skip the install check entirely.
+    if cfg.pat_mode {
+        return Ok(());
+    }
     let install = store.get_org_app_install(org.id).await?;
     match install {
         Some(i) if i.allows_issues_write() => Ok(()),
@@ -367,7 +389,8 @@ pub async fn list_app_install_banner(
         };
         let install = state.store.get_org_app_install(org.id).await?;
         let writes_available = state.github_app.request_issues_write
-            && install.as_ref().is_some_and(|i| i.allows_issues_write());
+            && (state.github_app.pat_mode
+                || install.as_ref().is_some_and(|i| i.allows_issues_write()));
         let manage_url = install
             .as_ref()
             .and_then(|i| state.github_app.manage_url(&org.login, i.installation_id));
@@ -621,6 +644,7 @@ mod tests {
         };
         let cfg = GitHubAppConfig {
             request_issues_write: false,
+            pat_mode: false,
             slug: Some("dev-pulse".into()),
         };
         let err = require_issues_write(&store, &cfg, &org())
@@ -709,6 +733,7 @@ mod tests {
 
         let off = app_manifest_permissions(&GitHubAppConfig {
             request_issues_write: false,
+            pat_mode: false,
             slug: None,
         });
         assert!(off.default_permissions.get("issues").is_none());

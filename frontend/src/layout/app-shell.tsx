@@ -31,6 +31,7 @@ import {
   IconUsers,
   IconUsersGroup,
   IconBriefcase,
+  IconChecklist,
 } from "@tabler/icons-react"
 import { useAuth } from "@nube/starter-ui-core/auth"
 
@@ -104,6 +105,7 @@ const NAV_MAIN: NavMainItem[] = [
       { title: "Runs", url: "#/admin/runs", icon: IconHistory },
       { title: "Refresh", url: "#/admin/refresh", icon: IconRefresh },
       { title: "Users", url: "#/admin/users", icon: IconUserCog },
+      { title: "Projects", url: "#/admin/projects", icon: IconChecklist },
     ],
   },
 ]

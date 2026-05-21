@@ -479,6 +479,33 @@ export const PatchIssueDatesRequestSchema = z.object({
 });
 export type PatchIssueDatesRequest = z.infer<typeof PatchIssueDatesRequestSchema>;
 
+// --- §3.10 repo → Projects v2 link (admin pane) -----------------------------
+//
+// One row per (NubeIO repo, GitHub Projects v2 board). All four
+// `*_node_id` fields carry GraphQL global ids — the picker shells
+// them out of the live `projectsV2` envelope so the operator never
+// has to handcraft them. `created_by` / `*_at` are server-stamped.
+
+export const RepoProjectLinkDtoSchema = z.object({
+  repo_id: uuid,
+  project_node_id: z.string(),
+  start_field_node_id: z.string().nullable().optional(),
+  due_field_node_id: z.string().nullable().optional(),
+  created_by: uuid.nullable().optional(),
+  created_at: isoDateTime,
+  updated_at: isoDateTime,
+});
+export type RepoProjectLinkDto = z.infer<typeof RepoProjectLinkDtoSchema>;
+
+export const PutRepoProjectLinkRequestSchema = z.object({
+  project_node_id: z.string().min(1),
+  start_field_node_id: z.string().nullable().optional(),
+  due_field_node_id: z.string().nullable().optional(),
+});
+export type PutRepoProjectLinkRequest = z.infer<
+  typeof PutRepoProjectLinkRequestSchema
+>;
+
 export const CreateCommentRequestSchema = z.object({
   expected_version: z.number().int(),
   body: z.string().min(1),
@@ -1177,7 +1204,10 @@ export class DevPulseApi {
     );
   }
 
-  /** `POST /issues/{id}/comments` — same CAS contract. */
+  /** `POST /issues/{id}/comments` — same CAS contract. Returns
+   *  the fresh `IssueDto` post-comment so the UI's `comment_count`
+   *  / `updated_at` / `version` advance without a follow-up GET
+   *  (server does a best-effort GitHub re-fetch on our behalf). */
   async commentOnIssue(id: string, req: CreateCommentRequest): Promise<IssueDto> {
     return this.sendJson(
       "POST",
@@ -1185,6 +1215,86 @@ export class DevPulseApi {
       req,
       IssueDtoSchema,
     );
+  }
+
+  /** `POST /issues/{id}/refresh` — fire-and-forget lazy resync.
+   *  The server re-fetches the issue from GitHub, projects the
+   *  payload through the regular ingest path, and returns the
+   *  post-upsert row. Safe to call unconditionally on issue open:
+   *  the route falls back to the stored row when no GitHub backend
+   *  is wired, so it never 5xx's the UI. */
+  async refreshIssue(id: string): Promise<IssueDto> {
+    return this.sendJson(
+      "POST",
+      `/issues/${encodeURIComponent(id)}/refresh`,
+      undefined,
+      IssueDtoSchema,
+    );
+  }
+
+  // --- §3.10 admin: repo → Projects v2 board link --------------------
+  //
+  // The picker GET is best-effort — the server proxies a GraphQL
+  // query against the linked GitHub installation and returns the
+  // raw `projectsV2` envelope. We surface it as `unknown` so the
+  // page can render whatever fields GitHub returns without us
+  // having to re-validate every node id schema here.
+
+  /** `GET /repos/{id}/project-link` — 404 means no link configured. */
+  async getRepoProjectLink(repoId: string): Promise<RepoProjectLinkDto | null> {
+    try {
+      return await this.getJson(
+        `/repos/${encodeURIComponent(repoId)}/project-link`,
+        RepoProjectLinkDtoSchema,
+      );
+    } catch (e) {
+      if (e instanceof DpRestError && e.status === 404) return null;
+      throw e;
+    }
+  }
+
+  /** `PUT /repos/{id}/project-link` — upsert. Empty field strings
+   *  are normalised to `null` on the server. */
+  async putRepoProjectLink(
+    repoId: string,
+    body: PutRepoProjectLinkRequest,
+  ): Promise<RepoProjectLinkDto> {
+    return this.sendJson(
+      "PUT",
+      `/repos/${encodeURIComponent(repoId)}/project-link`,
+      body,
+      RepoProjectLinkDtoSchema,
+    );
+  }
+
+  /** `DELETE /repos/{id}/project-link` — 204 on success (also when
+   *  the row didn't exist; the route is idempotent). */
+  async deleteRepoProjectLink(repoId: string): Promise<void> {
+    try {
+      await this.sendNoContent(
+        "DELETE",
+        `/repos/${encodeURIComponent(repoId)}/project-link`,
+        undefined,
+      );
+    } catch (e) {
+      if (e instanceof DpRestError && e.status === 404) return;
+      throw e;
+    }
+  }
+
+  /** `GET /repos/{id}/projects` — picker payload. Returns the raw
+   *  `projectsV2` envelope GitHub sent so the admin pane can list
+   *  boards + their `dateFields`. Returns `null` on 503 (means
+   *  the deployment has no GraphQL transport wired and the operator
+   *  must paste node ids by hand). */
+  async getRepoProjects(repoId: string): Promise<unknown | null> {
+    const res = await this.client.fetch(
+      `${this.client.baseUrl}/repos/${encodeURIComponent(repoId)}/projects`,
+      { credentials: "include", headers: this.client.headers },
+    );
+    if (res.status === 503) return null;
+    if (!res.ok) throw await DpRestError.fromResponse(res);
+    return (await res.json()) as unknown;
   }
 }
 

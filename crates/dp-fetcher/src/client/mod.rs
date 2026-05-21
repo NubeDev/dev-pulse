@@ -732,6 +732,395 @@ impl Client {
         let path = format!("/repos/{owner}/{repo}/labels/{label_name}");
         self.get_conditional(&path, None).await
     }
+
+    // ---- issue write surface (SCOPE-PROJECTS §8) --------------------
+    //
+    // The §8 mutation handlers in dp-rest call into these methods
+    // between the §8.2 step-5 CAS and the step-7 commit. We keep
+    // the GitHub I/O behind the same `Client` chokepoint as the
+    // read surface so the local request budget covers writes too —
+    // a runaway tick that opens / patches issues should still trip
+    // `BudgetExhausted` rather than slipping past the fuse.
+    //
+    // Each method translates octocrab's `Result<_>` into the
+    // narrow [`GhWriteError`] split (validation vs upstream) the
+    // dp-rest writer adapter wants. The split is the same shape as
+    // `dp_rest::IssueWriteError` so the adapter is one-to-one.
+
+    /// `POST /repos/{owner}/{repo}/issues`. Returns the
+    /// GitHub-assigned issue number on success.
+    pub async fn gh_create_issue(
+        &self,
+        owner: &str,
+        repo: &str,
+        title: &str,
+        body: Option<&str>,
+    ) -> Result<i64, GhWriteError> {
+        self.check_and_count_budget()?;
+        let handler = self.inner.issues(owner, repo);
+        let mut builder = handler.create(title);
+        if let Some(b) = body {
+            builder = builder.body(b);
+        }
+        let issue = builder.send().await.map_err(map_octocrab_write_err)?;
+        Ok(issue.number as i64)
+    }
+
+    /// `PATCH /repos/{owner}/{repo}/issues/{number}`. Forwards
+    /// every `Some(_)` field of [`IssueRemotePatch`] to GitHub.
+    ///
+    /// Returns the GitHub-side issue payload (`serde_json::Value`)
+    /// so the caller can hand it to
+    /// [`crate::worker::handlers::parse_issue_upsert`] and refresh
+    /// the local `dp_issues` row immediately — without waiting for
+    /// the next webhook / reconciler tick. The shape matches
+    /// `/repos/{owner}/{repo}/issues/{number}` exactly.
+    pub async fn gh_update_issue(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: i64,
+        patch: &IssueRemotePatch,
+    ) -> Result<serde_json::Value, GhWriteError> {
+        self.check_and_count_budget()?;
+        let handler = self.inner.issues(owner, repo);
+        let mut builder = handler.update(number as u64);
+        if let Some(t) = patch.title.as_deref() {
+            builder = builder.title(t);
+        }
+        if let Some(b) = patch.body.as_deref() {
+            builder = builder.body(b);
+        }
+        if let Some(state) = patch.state.as_deref() {
+            let st = match state {
+                "open" => octocrab::models::IssueState::Open,
+                "closed" => octocrab::models::IssueState::Closed,
+                other => {
+                    return Err(GhWriteError::Validation(format!(
+                        "invalid issue state {other:?}; expected \"open\" or \"closed\""
+                    )));
+                }
+            };
+            builder = builder.state(st);
+        }
+        if let Some(labels) = patch.labels.as_deref() {
+            builder = builder.labels(labels);
+        }
+        if let Some(assignees) = patch.assignees.as_deref() {
+            builder = builder.assignees(assignees);
+        }
+        let issue = builder.send().await.map_err(map_octocrab_write_err)?;
+        serde_json::to_value(issue).map_err(|e| {
+            GhWriteError::Upstream(format!(
+                "serialize updated issue payload from github: {e}"
+            ))
+        })
+    }
+
+    /// `POST /repos/{owner}/{repo}/issues/{number}/comments`.
+    pub async fn gh_create_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: i64,
+        body: &str,
+    ) -> Result<(), GhWriteError> {
+        self.check_and_count_budget()?;
+        self.inner
+            .issues(owner, repo)
+            .create_comment(number as u64, body)
+            .await
+            .map_err(map_octocrab_write_err)?;
+        Ok(())
+    }
+
+    /// `GET /repos/{owner}/{repo}/issues/{number}` — single-issue
+    /// refetch used by the §13.7 lazy resync path. Returns the raw
+    /// GitHub payload as a `serde_json::Value` so the caller can
+    /// hand it to [`crate::worker::handlers::parse_issue_upsert`]
+    /// and upsert without waiting for the next webhook /
+    /// reconciler tick — closing the "open issue, see staleness"
+    /// gap when the issue was changed on GitHub since the last
+    /// reconciler pass.
+    pub async fn gh_get_issue(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: i64,
+    ) -> Result<serde_json::Value, GhWriteError> {
+        self.check_and_count_budget()?;
+        let issue = self
+            .inner
+            .issues(owner, repo)
+            .get(number as u64)
+            .await
+            .map_err(map_octocrab_write_err)?;
+        serde_json::to_value(issue).map_err(|e| {
+            GhWriteError::Upstream(format!(
+                "serialize fetched issue payload from github: {e}"
+            ))
+        })
+    }
+
+    // ---- Projects v2 GraphQL mirror (§3.10) --------------------------
+    //
+    // The §3.10 `PATCH /issues/{id}/dates` handler enqueues a
+    // best-effort mirror task; the dp-rest octocrab adapter calls
+    // through these methods to land start / due dates on the linked
+    // GitHub Projects v2 board. Every call counts against the same
+    // local budget so a runaway date editor cannot bypass the fuse
+    // by funneling through GraphQL.
+    //
+    // GraphQL replies are JSON `{ data, errors }` envelopes; the
+    // helpers below project the `data` lane on success and lift the
+    // `errors[]` text into [`GhWriteError::Validation`] on failure
+    // so the surface is the same as the REST writers.
+
+    /// Generic GraphQL POST against `/graphql`. Returns the parsed
+    /// `data` value on success, or a `GhWriteError` carrying:
+    ///
+    ///   * The concatenated `errors[].message` text on a GraphQL
+    ///     error envelope (200 + non-empty `errors`).
+    ///   * The transport / 5xx description otherwise.
+    pub async fn gh_graphql(
+        &self,
+        query: &str,
+        variables: serde_json::Value,
+    ) -> Result<serde_json::Value, GhWriteError> {
+        self.check_and_count_budget()?;
+        let body = serde_json::json!({ "query": query, "variables": variables });
+        let resp: serde_json::Value = self
+            .inner
+            .graphql(&body)
+            .await
+            .map_err(map_octocrab_write_err)?;
+        if let Some(errs) = resp.get("errors").and_then(|v| v.as_array()) {
+            if !errs.is_empty() {
+                // Concatenate messages so the adapter has the full
+                // story when stamping `dp_issue_dates.mirror_error`.
+                let msg = errs
+                    .iter()
+                    .filter_map(|e| e.get("message").and_then(|m| m.as_str()))
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                return Err(GhWriteError::Validation(msg));
+            }
+        }
+        resp.get("data").cloned().ok_or_else(|| {
+            GhWriteError::Upstream("graphql response missing `data`".into())
+        })
+    }
+
+    /// `addProjectV2ItemById(projectId, contentId)` — links an
+    /// issue to a Projects v2 board. Idempotent on the GitHub
+    /// side: a second call with the same `contentId` returns the
+    /// pre-existing item id rather than creating a duplicate
+    /// card. The §3.10 mirror still persists the returned id so
+    /// the next edit skips this call.
+    pub async fn gh_projectv2_add_item(
+        &self,
+        project_node_id: &str,
+        content_node_id: &str,
+    ) -> Result<String, GhWriteError> {
+        let query = r#"
+            mutation AddItem($project: ID!, $content: ID!) {
+              addProjectV2ItemById(input: {projectId: $project, contentId: $content}) {
+                item { id }
+              }
+            }
+        "#;
+        let vars = serde_json::json!({
+            "project": project_node_id,
+            "content": content_node_id,
+        });
+        let data = self.gh_graphql(query, vars).await?;
+        data.get("addProjectV2ItemById")
+            .and_then(|v| v.get("item"))
+            .and_then(|v| v.get("id"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .ok_or_else(|| {
+                GhWriteError::Upstream(
+                    "graphql addProjectV2ItemById missing item.id".into(),
+                )
+            })
+    }
+
+    /// `updateProjectV2ItemFieldValue` for a `date` field. Pass
+    /// `None` to clear the value — the mirror lifts a local
+    /// `null` start / due straight through so a cleared local
+    /// row drops the Projects v2 card date too.
+    pub async fn gh_projectv2_update_date_field(
+        &self,
+        project_node_id: &str,
+        item_node_id: &str,
+        field_node_id: &str,
+        date: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<(), GhWriteError> {
+        let query = r#"
+            mutation SetDate($project: ID!, $item: ID!, $field: ID!, $value: Date) {
+              updateProjectV2ItemFieldValue(
+                input: {projectId: $project, itemId: $item, fieldId: $field, value: {date: $value}}
+              ) { projectV2Item { id } }
+            }
+        "#;
+        // GraphQL `Date` scalar is `YYYY-MM-DD`. We render the UTC
+        // calendar date — the §3.10 picker writes T00:00:00Z /
+        // T23:59:59Z instants so this collapses cleanly.
+        let value_json = match date {
+            Some(d) => serde_json::Value::String(d.format("%Y-%m-%d").to_string()),
+            None => serde_json::Value::Null,
+        };
+        let vars = serde_json::json!({
+            "project": project_node_id,
+            "item":    item_node_id,
+            "field":   field_node_id,
+            "value":   value_json,
+        });
+        let _ = self.gh_graphql(query, vars).await?;
+        Ok(())
+    }
+
+    /// `repository(owner, name) { issue(number) { id } }` — the
+    /// lazy fallback the mirror adapter calls when an issue row
+    /// pre-dates the 0021 migration (no `dp_issues.github_node_id`
+    /// yet). One round-trip per affected row, then the result is
+    /// stamped back via
+    /// [`Store::set_issue_github_node_id`][dp_domain::store::Store::set_issue_github_node_id]
+    /// so subsequent mirrors are free.
+    pub async fn gh_resolve_issue_node_id(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: i64,
+    ) -> Result<String, GhWriteError> {
+        let query = r#"
+            query IssueId($owner: String!, $name: String!, $number: Int!) {
+              repository(owner: $owner, name: $name) {
+                issue(number: $number) { id }
+              }
+            }
+        "#;
+        let vars = serde_json::json!({
+            "owner":  owner,
+            "name":   repo,
+            "number": number,
+        });
+        let data = self.gh_graphql(query, vars).await?;
+        data.get("repository")
+            .and_then(|v| v.get("issue"))
+            .and_then(|v| v.get("id"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .ok_or_else(|| {
+                GhWriteError::Upstream(
+                    "graphql repository.issue.id missing in response".into(),
+                )
+            })
+    }
+
+    /// `repository(owner, name) { projectsV2(first: 50) { … } }`
+    /// — used by the admin pane to surface a project picker
+    /// without forcing the operator to paste raw node ids. Each
+    /// project also lists its fields so the UI can wire start /
+    /// due in one step.
+    pub async fn gh_list_repo_projectv2(
+        &self,
+        owner: &str,
+        repo: &str,
+    ) -> Result<serde_json::Value, GhWriteError> {
+        let query = r#"
+            query RepoProjects($owner: String!, $name: String!) {
+              repository(owner: $owner, name: $name) {
+                projectsV2(first: 50) {
+                  nodes {
+                    id
+                    title
+                    number
+                    url
+                    closed
+                    fields(first: 50) {
+                      nodes {
+                        ... on ProjectV2FieldCommon { id name dataType }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+        "#;
+        let vars = serde_json::json!({ "owner": owner, "name": repo });
+        let data = self.gh_graphql(query, vars).await?;
+        Ok(data
+            .get("repository")
+            .and_then(|v| v.get("projectsV2"))
+            .cloned()
+            .unwrap_or(serde_json::json!({"nodes": []})))
+    }
+
+    /// Internal: shared budget check used by every dispatch path.
+    /// Increments the counter only after the fuse passes so a
+    /// blown budget reports the pre-call value.
+    fn check_and_count_budget(&self) -> Result<(), GhWriteError> {
+        if let Some(max) = self.max_requests {
+            let made = self.requests_made.load(Ordering::SeqCst);
+            if made >= max {
+                return Err(GhWriteError::Upstream(format!(
+                    "local request budget exhausted: made {made} of max {max}"
+                )));
+            }
+        }
+        let _ = self.requests_made.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+/// Field set the §8 mutation handler hands to
+/// [`Client::gh_update_issue`]. Only `Some(_)` lanes are forwarded
+/// to GitHub.
+#[derive(Debug, Clone, Default)]
+pub struct IssueRemotePatch {
+    /// New title.
+    pub title: Option<String>,
+    /// New body.
+    pub body: Option<String>,
+    /// `"open"` / `"closed"`. Any other string surfaces as
+    /// [`GhWriteError::Validation`] without dispatching the HTTP
+    /// call — GitHub only accepts these two values.
+    pub state: Option<String>,
+    /// Replacement label set.
+    pub labels: Option<Vec<String>>,
+    /// Replacement assignee logins.
+    pub assignees: Option<Vec<String>>,
+}
+
+/// Error split surfaced by the §8 write methods. Mirrors
+/// `dp_rest::IssueWriteError` so the dp-rest adapter is a
+/// one-to-one mapping.
+#[derive(Debug, thiserror::Error)]
+pub enum GhWriteError {
+    /// GitHub returned 4xx (most commonly 422 validation).
+    #[error("github validation: {0}")]
+    Validation(String),
+    /// 5xx, transport, JSON parse, or local budget exhausted.
+    #[error("github upstream: {0}")]
+    Upstream(String),
+}
+
+fn map_octocrab_write_err(e: octocrab::Error) -> GhWriteError {
+    use octocrab::Error as O;
+    match &e {
+        O::GitHub { source, .. } => {
+            let status = source.status_code.as_u16();
+            let msg = source.message.clone();
+            if (400..500).contains(&status) {
+                GhWriteError::Validation(format!("status {status}: {msg}"))
+            } else {
+                GhWriteError::Upstream(format!("status {status}: {msg}"))
+            }
+        }
+        _ => GhWriteError::Upstream(e.to_string()),
+    }
 }
 
 fn transport<E: std::fmt::Display>(e: E) -> ClientError {

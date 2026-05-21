@@ -160,8 +160,10 @@ export type ReportTab = "user" | "team" | "org" | "home-org-split" | "leaderboar
 /** Sub-route under the admin section — drives the admin sub-nav.
  *  - `runs` (default): paginated fetch_runs log.
  *  - `refresh`       : operator-triggered reconciler tick + org scope.
- *  - `users`         : GDPR controls (anonymise + export). */
-export type AdminTab = "runs" | "refresh" | "users";
+ *  - `users`         : GDPR controls (anonymise + export).
+ *  - `projects`      : SCOPE-PROJECTS §3.10 repo → Projects v2 board
+ *                      linker + field picker. */
+export type AdminTab = "runs" | "refresh" | "users" | "projects";
 
 /** Parse `#/admin/...` → the active sub-tab. Defaults to `runs`. */
 export function adminTabOf(route: string): AdminTab {
@@ -172,6 +174,8 @@ export function adminTabOf(route: string): AdminTab {
       return "refresh";
     case "users":
       return "users";
+    case "projects":
+      return "projects";
     case "runs":
     case undefined:
     case "":

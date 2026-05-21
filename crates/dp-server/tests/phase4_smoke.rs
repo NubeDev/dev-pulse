@@ -368,6 +368,9 @@ impl TestApp {
             // the App permission surface, so the default config
             // (request_issues_write = true, no slug) is fine.
             github_app: std::sync::Arc::new(dp_rest::GitHubAppConfig::default()),
+            issue_writer: None,
+            projectv2_mirror: None,
+            projects_picker: None,
         };
 
         let router = build(BuildConfig {

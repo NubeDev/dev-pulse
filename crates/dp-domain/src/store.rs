@@ -166,6 +166,118 @@ pub trait Store: Send + Sync {
     /// integrity holds.
     async fn pseudonymise_user(&self, id: Uuid) -> Result<(), StoreError>;
 
+    // ---- identities (users.md §4 Slice A) ------------------------
+    //
+    // Every method has a default impl so the many in-memory `Store`
+    // fakes in the workspace keep compiling. Production behavior
+    // lives on `PgStore`; tests that care about the identity
+    // surface override on a per-fake basis.
+
+    /// List every GitHub identity claimed by `user_id`, primary
+    /// first then by `linked_at DESC`. Empty vec when the user has
+    /// no identities (`identity_set_empty` is enforced at the
+    /// principal layer, not here).
+    async fn list_identities_for_user(
+        &self,
+        _user_id: Uuid,
+    ) -> Result<Vec<crate::identity::UserIdentity>, StoreError> {
+        Ok(vec![])
+    }
+
+    /// Look up the dp-user that owns `github_user_id`. Returns
+    /// `Ok(None)` when the GitHub identity is not claimed by
+    /// anyone in dev-pulse.
+    async fn find_user_by_github_user_id(
+        &self,
+        _github_user_id: i64,
+    ) -> Result<Option<crate::user::User>, StoreError> {
+        Ok(None)
+    }
+
+    /// Reserve an OAuth `state` nonce for a link round-trip. The
+    /// caller is expected to redirect to GitHub with the returned
+    /// nonce as the `state` query parameter.
+    async fn create_identity_link_pending(
+        &self,
+        _pending: &crate::identity::IdentityLinkPending,
+    ) -> Result<(), StoreError> {
+        Err(StoreError::Backend(
+            "identity link pending not implemented by this backend".into(),
+        ))
+    }
+
+    /// Atomically look up + delete a pending row by nonce. Returns
+    /// `Ok(None)` when the nonce is unknown or already consumed —
+    /// the REST handler treats both as `IdentityLinkRejection::
+    /// NonceInvalid`.
+    async fn consume_identity_link_pending(
+        &self,
+        _nonce: Uuid,
+    ) -> Result<Option<crate::identity::IdentityLinkPending>, StoreError> {
+        Ok(None)
+    }
+
+    /// Delete every `dp_identity_link_pending` row past its
+    /// `expires_at`. Returns the number of rows removed. Intended
+    /// to be called from a periodic GC sweep; the OAuth callback
+    /// also rejects expired rows on the read path so missing the
+    /// sweep degrades to wasted disk, not security.
+    async fn purge_expired_identity_link_pending(
+        &self,
+        _now: DateTime<Utc>,
+    ) -> Result<u64, StoreError> {
+        Ok(0)
+    }
+
+    /// Link a GitHub identity to a dp-user. Implementations must
+    /// enforce the "identity belongs to at most one dp-user" rule
+    /// and return [`StoreError::Conflict`] (mapped to HTTP 409 +
+    /// audit `IDENTITY_CLAIM_CONFLICT`) when another dp-user
+    /// already owns `github_user_id`. If the user has no other
+    /// identities, the new row must be stamped `is_primary = true`
+    /// in the same transaction so the
+    /// `dp_user_identities_primary_idx` invariant holds.
+    async fn link_identity(
+        &self,
+        _identity: &crate::identity::UserIdentity,
+    ) -> Result<crate::identity::UserIdentity, StoreError> {
+        Err(StoreError::Backend(
+            "link_identity not implemented by this backend".into(),
+        ))
+    }
+
+    /// Unlink an identity. Implementations must reject (return
+    /// [`StoreError::Invalid`]) if removing the row would leave
+    /// the dp-user with zero identities, or if the row is the
+    /// current primary (the caller must `set_primary_identity` to
+    /// another row first). ON DELETE CASCADE drops the
+    /// `dp_membership_identities` rows; the implementation is
+    /// responsible for collapsing now-unprovenanced
+    /// `dp_memberships` in the same transaction.
+    async fn unlink_identity(
+        &self,
+        _user_id: Uuid,
+        _github_user_id: i64,
+    ) -> Result<(), StoreError> {
+        Err(StoreError::Backend(
+            "unlink_identity not implemented by this backend".into(),
+        ))
+    }
+
+    /// Flip the primary flag to `(user_id, github_user_id)`. Done
+    /// in one transaction so no reader observes two primary rows
+    /// for the same user. Returns [`StoreError::NotFound`] if the
+    /// identity is not owned by `user_id`.
+    async fn set_primary_identity(
+        &self,
+        _user_id: Uuid,
+        _github_user_id: i64,
+    ) -> Result<(), StoreError> {
+        Err(StoreError::Backend(
+            "set_primary_identity not implemented by this backend".into(),
+        ))
+    }
+
     // ---- orgs / teams / repos ------------------------------------
 
     /// Upsert org by `github_id`.
@@ -369,6 +481,7 @@ pub trait Store: Send + Sync {
             assignees: upsert.assignees.clone(),
             milestone: upsert.milestone.clone(),
             version: 1,
+            github_node_id: upsert.github_node_id.clone(),
             updated_at: upsert.updated_at,
         };
         Ok((issue, IssueUpsertOutcome::Skipped))
@@ -1152,6 +1265,47 @@ pub trait Store: Send + Sync {
         _repo_id: Uuid,
     ) -> Result<Option<RepoProjectLink>, StoreError> {
         Ok(None)
+    }
+
+    /// Upsert the `dp_repo_project_link` row for a repo. The admin
+    /// pane PUTs through this when an operator wires a NubeIO
+    /// repo to a GitHub Projects v2 board (project node id +
+    /// optional start / due field node ids). Default impl rejects
+    /// the call so fakes that haven't opted in fail loudly
+    /// instead of silently swallowing the write.
+    async fn upsert_repo_project_link(
+        &self,
+        _link: &RepoProjectLink,
+    ) -> Result<RepoProjectLink, StoreError> {
+        Err(StoreError::Invalid(
+            "repo project link not supported by this store".into(),
+        ))
+    }
+
+    /// Delete the `dp_repo_project_link` row for a repo. The
+    /// admin pane DELETE flows through here to unwire a repo
+    /// from its Projects v2 board (subsequent issue date edits
+    /// stay local-only). Default impl is a no-op so non-pg
+    /// fakes treat the call as "already unwired".
+    async fn delete_repo_project_link(
+        &self,
+        _repo_id: Uuid,
+    ) -> Result<(), StoreError> {
+        Ok(())
+    }
+
+    /// Stamp `dp_issues.github_node_id` for an issue that was
+    /// missing one at mirror time. Called by the §3.10 mirror
+    /// adapter after a lazy `repository.issue(number)` GraphQL
+    /// resolve so the next mirror skips the lookup. Default
+    /// impl is a no-op — the trait does not require stores to
+    /// persist the cache, the mirror just re-resolves each time.
+    async fn set_issue_github_node_id(
+        &self,
+        _issue_id: Uuid,
+        _node_id: &str,
+    ) -> Result<(), StoreError> {
+        Ok(())
     }
 
     /// Enqueue a `dp_projectv2_mirror_tasks` row. Best-effort by

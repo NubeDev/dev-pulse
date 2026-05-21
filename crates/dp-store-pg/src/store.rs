@@ -29,6 +29,7 @@ use dp_domain::audit::AuditEntry;
 use dp_domain::event::{ActivityEvent, ActorRole, EventActor};
 use dp_domain::fetch::{FetchCursor, FetchRun, FetchRunKind, ResourceKind};
 use dp_domain::freshness::DataAsOf;
+use dp_domain::identity::{IdentityLinkPending, UserIdentity, VerifiedVia};
 use dp_domain::inbox::{InboxIssueRow, InboxStatus, UserIssueState};
 use dp_domain::membership::Membership;
 use dp_domain::org::Org;
@@ -128,6 +129,35 @@ fn row_to_user(r: &sqlx::postgres::PgRow) -> Result<User, StoreError> {
         email: r.try_get("email").map_err(map_sqlx)?,
         name: r.try_get("name").map_err(map_sqlx)?,
         deleted_at: r.try_get("deleted_at").map_err(map_sqlx)?,
+    })
+}
+
+fn row_to_user_identity(
+    r: &sqlx::postgres::PgRow,
+) -> Result<UserIdentity, StoreError> {
+    let via_text: String = r.try_get("verified_via").map_err(map_sqlx)?;
+    let verified_via = VerifiedVia::from_str(&via_text).ok_or_else(|| {
+        StoreError::Invalid(format!("unknown verified_via: {via_text}"))
+    })?;
+    Ok(UserIdentity {
+        user_id: r.try_get("user_id").map_err(map_sqlx)?,
+        github_user_id: r.try_get("github_user_id").map_err(map_sqlx)?,
+        github_login: r.try_get("github_login").map_err(map_sqlx)?,
+        is_primary: r.try_get("is_primary").map_err(map_sqlx)?,
+        linked_at: r.try_get("linked_at").map_err(map_sqlx)?,
+        verified_via,
+    })
+}
+
+fn row_to_identity_link_pending(
+    r: &sqlx::postgres::PgRow,
+) -> Result<IdentityLinkPending, StoreError> {
+    Ok(IdentityLinkPending {
+        nonce: r.try_get("nonce").map_err(map_sqlx)?,
+        dp_user_id: r.try_get("dp_user_id").map_err(map_sqlx)?,
+        session_id: r.try_get("session_id").map_err(map_sqlx)?,
+        created_at: r.try_get("created_at").map_err(map_sqlx)?,
+        expires_at: r.try_get("expires_at").map_err(map_sqlx)?,
     })
 }
 
@@ -241,6 +271,7 @@ fn row_to_issue(r: &sqlx::postgres::PgRow) -> Result<Issue, StoreError> {
         assignees,
         milestone: r.try_get("milestone").map_err(map_sqlx)?,
         version: r.try_get("version").map_err(map_sqlx)?,
+        github_node_id: r.try_get("github_node_id").map_err(map_sqlx)?,
         updated_at: r.try_get("updated_at").map_err(map_sqlx)?,
     })
 }
@@ -494,6 +525,322 @@ impl Store for PgStore {
         if result.rows_affected() == 0 {
             return Err(not_found("user", id));
         }
+        Ok(())
+    }
+
+    // ---- identities (users.md §4 Slice A) --------------------------
+
+    async fn list_identities_for_user(
+        &self,
+        user_id: Uuid,
+    ) -> Result<Vec<UserIdentity>, StoreError> {
+        // Primary first, then newest link first. Ties on linked_at
+        // break by github_user_id for a deterministic order under
+        // CI fixture clock skew.
+        let rows = sqlx::query(
+            "SELECT user_id, github_user_id, github_login, is_primary, \
+                    linked_at, verified_via \
+             FROM dp_user_identities \
+             WHERE user_id = $1 \
+             ORDER BY is_primary DESC, linked_at DESC, github_user_id ASC",
+        )
+        .bind(user_id)
+        .fetch_all(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        rows.iter().map(row_to_user_identity).collect()
+    }
+
+    async fn find_user_by_github_user_id(
+        &self,
+        github_user_id: i64,
+    ) -> Result<Option<User>, StoreError> {
+        let row = sqlx::query(
+            "SELECT u.id, u.github_id, u.login, u.email, u.name, u.deleted_at \
+             FROM dp_user_identities i \
+             JOIN dp_users u ON u.id = i.user_id \
+             WHERE i.github_user_id = $1 AND u.deleted_at IS NULL",
+        )
+        .bind(github_user_id)
+        .fetch_optional(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        match row {
+            Some(r) => row_to_user(&r).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    async fn create_identity_link_pending(
+        &self,
+        pending: &IdentityLinkPending,
+    ) -> Result<(), StoreError> {
+        sqlx::query(
+            "INSERT INTO dp_identity_link_pending \
+                 (nonce, dp_user_id, session_id, created_at, expires_at) \
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(pending.nonce)
+        .bind(pending.dp_user_id)
+        .bind(&pending.session_id)
+        .bind(pending.created_at)
+        .bind(pending.expires_at)
+        .execute(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        Ok(())
+    }
+
+    async fn consume_identity_link_pending(
+        &self,
+        nonce: Uuid,
+    ) -> Result<Option<IdentityLinkPending>, StoreError> {
+        // RETURNING on DELETE atomically reads + removes the row
+        // so a replayed callback cannot consume the same nonce twice.
+        let row = sqlx::query(
+            "DELETE FROM dp_identity_link_pending \
+             WHERE nonce = $1 \
+             RETURNING nonce, dp_user_id, session_id, created_at, expires_at",
+        )
+        .bind(nonce)
+        .fetch_optional(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        match row {
+            Some(r) => Ok(Some(row_to_identity_link_pending(&r)?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn purge_expired_identity_link_pending(
+        &self,
+        now: DateTime<Utc>,
+    ) -> Result<u64, StoreError> {
+        let result = sqlx::query(
+            "DELETE FROM dp_identity_link_pending WHERE expires_at < $1",
+        )
+        .bind(now)
+        .execute(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        Ok(result.rows_affected())
+    }
+
+    async fn link_identity(
+        &self,
+        identity: &UserIdentity,
+    ) -> Result<UserIdentity, StoreError> {
+        // One transaction so the "first identity is primary"
+        // promotion and the insert can never tear: a concurrent
+        // writer either sees zero rows (and also becomes primary)
+        // or sees the new row.
+        let mut tx = self.pool.sqlx().begin().await.map_err(map_sqlx)?;
+
+        // Ensure the target dp-user actually exists; the FK would
+        // catch this too but the NotFound is friendlier.
+        let user_exists: Option<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM dp_users WHERE id = $1 AND deleted_at IS NULL",
+        )
+        .bind(identity.user_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(map_sqlx)?;
+        if user_exists.is_none() {
+            return Err(not_found("user", identity.user_id));
+        }
+
+        // Reject if any other dp-user already claims this
+        // github_user_id. We surface a Conflict so the handler can
+        // emit IDENTITY_CLAIM_CONFLICT + HTTP 409. (The UNIQUE
+        // constraint also catches this on INSERT; checking here
+        // makes the error path deterministic regardless of which
+        // dp-user wins the race.)
+        let claimed_by: Option<Uuid> = sqlx::query_scalar(
+            "SELECT user_id FROM dp_user_identities WHERE github_user_id = $1",
+        )
+        .bind(identity.github_user_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(map_sqlx)?;
+        if let Some(owner) = claimed_by {
+            if owner != identity.user_id {
+                return Err(StoreError::Conflict(format!(
+                    "github_user_id {} is already claimed by another dp-user",
+                    identity.github_user_id
+                )));
+            }
+        }
+
+        // The first identity for a user is always primary, even
+        // if the caller passed `is_primary = false`. Otherwise we
+        // honour the caller's choice; if they pass `true` we flip
+        // every other row for the user to FALSE first to keep the
+        // partial unique index happy.
+        let existing_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM dp_user_identities WHERE user_id = $1",
+        )
+        .bind(identity.user_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(map_sqlx)?;
+        let effective_primary = identity.is_primary || existing_count == 0;
+        if effective_primary && existing_count > 0 {
+            sqlx::query(
+                "UPDATE dp_user_identities SET is_primary = FALSE \
+                 WHERE user_id = $1 AND is_primary",
+            )
+            .bind(identity.user_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(map_sqlx)?;
+        }
+
+        let row = sqlx::query(
+            "INSERT INTO dp_user_identities \
+                 (user_id, github_user_id, github_login, is_primary, \
+                  linked_at, verified_via) \
+             VALUES ($1, $2, $3, $4, $5, $6) \
+             ON CONFLICT (user_id, github_user_id) DO UPDATE SET \
+                 github_login = EXCLUDED.github_login, \
+                 verified_via = EXCLUDED.verified_via \
+             RETURNING user_id, github_user_id, github_login, is_primary, \
+                       linked_at, verified_via",
+        )
+        .bind(identity.user_id)
+        .bind(identity.github_user_id)
+        .bind(&identity.github_login)
+        .bind(effective_primary)
+        .bind(identity.linked_at)
+        .bind(identity.verified_via.as_str())
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(map_sqlx)?;
+
+        let out = row_to_user_identity(&row)?;
+        tx.commit().await.map_err(map_sqlx)?;
+        Ok(out)
+    }
+
+    async fn unlink_identity(
+        &self,
+        user_id: Uuid,
+        github_user_id: i64,
+    ) -> Result<(), StoreError> {
+        let mut tx = self.pool.sqlx().begin().await.map_err(map_sqlx)?;
+
+        // Snapshot the row so we can return a useful error and so
+        // we know whether it was primary before the delete.
+        let row: Option<(bool,)> = sqlx::query_as(
+            "SELECT is_primary FROM dp_user_identities \
+             WHERE user_id = $1 AND github_user_id = $2 FOR UPDATE",
+        )
+        .bind(user_id)
+        .bind(github_user_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(map_sqlx)?;
+        let Some((is_primary,)) = row else {
+            return Err(not_found("identity", github_user_id));
+        };
+
+        // Last identity rule: refuse to leave the user with zero
+        // rows. The principal stamper would 401 them on the next
+        // request otherwise, which is worse than a clean 4xx here.
+        let remaining: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM dp_user_identities WHERE user_id = $1",
+        )
+        .bind(user_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(map_sqlx)?;
+        if remaining <= 1 {
+            return Err(StoreError::Invalid(
+                "cannot unlink the last identity for a user".into(),
+            ));
+        }
+        if is_primary {
+            return Err(StoreError::Invalid(
+                "cannot unlink the primary identity; set another primary first"
+                    .into(),
+            ));
+        }
+
+        sqlx::query(
+            "DELETE FROM dp_user_identities \
+             WHERE user_id = $1 AND github_user_id = $2",
+        )
+        .bind(user_id)
+        .bind(github_user_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_sqlx)?;
+
+        // CASCADE has dropped `dp_membership_identities` rows for
+        // this `github_user_id`. Collapse any `dp_memberships`
+        // rows the user can no longer reach via *any* remaining
+        // identity, so the §3.0.2.b invariant holds at commit time.
+        sqlx::query(
+            "DELETE FROM dp_memberships m \
+             WHERE m.user_id = $1 \
+               AND NOT EXISTS ( \
+                   SELECT 1 FROM dp_membership_identities mi \
+                   WHERE mi.user_id = m.user_id AND mi.org_id = m.org_id \
+               )",
+        )
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_sqlx)?;
+
+        tx.commit().await.map_err(map_sqlx)?;
+        Ok(())
+    }
+
+    async fn set_primary_identity(
+        &self,
+        user_id: Uuid,
+        github_user_id: i64,
+    ) -> Result<(), StoreError> {
+        let mut tx = self.pool.sqlx().begin().await.map_err(map_sqlx)?;
+
+        let exists: Option<Uuid> = sqlx::query_scalar(
+            "SELECT user_id FROM dp_user_identities \
+             WHERE user_id = $1 AND github_user_id = $2",
+        )
+        .bind(user_id)
+        .bind(github_user_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(map_sqlx)?;
+        if exists.is_none() {
+            return Err(not_found("identity", github_user_id));
+        }
+
+        // Demote the current primary, then promote the target. PG
+        // would briefly see two `is_primary = TRUE` rows for the
+        // same user inside the transaction except the partial
+        // unique index is checked at statement end; doing the
+        // demote first keeps the index happy on both deferred and
+        // immediate constraint modes.
+        sqlx::query(
+            "UPDATE dp_user_identities SET is_primary = FALSE \
+             WHERE user_id = $1 AND is_primary",
+        )
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_sqlx)?;
+        sqlx::query(
+            "UPDATE dp_user_identities SET is_primary = TRUE \
+             WHERE user_id = $1 AND github_user_id = $2",
+        )
+        .bind(user_id)
+        .bind(github_user_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_sqlx)?;
+
+        tx.commit().await.map_err(map_sqlx)?;
         Ok(())
     }
 
@@ -777,7 +1124,8 @@ impl Store for PgStore {
         let assignees_json = labels_or_assignees_json(&filter.assignees);
         let rows = sqlx::query(
             "SELECT id, org_id, repo_id, github_id, number, title, body, state,
-                    labels, assignees, milestone, version, updated_at
+                    labels, assignees, milestone, version,
+                    github_node_id, updated_at
              FROM dp_issues
              WHERE ($1::uuid IS NULL OR repo_id = $1)
                AND ($2::uuid IS NULL OR org_id  = $2)
@@ -860,7 +1208,8 @@ impl Store for PgStore {
     async fn get_issue(&self, id: Uuid) -> Result<Option<Issue>, StoreError> {
         let row = sqlx::query(
             "SELECT id, org_id, repo_id, github_id, number, title, body, state,
-                    labels, assignees, milestone, version, updated_at
+                    labels, assignees, milestone, version,
+                    github_node_id, updated_at
              FROM dp_issues WHERE id = $1",
         )
         .bind(id)
@@ -877,7 +1226,8 @@ impl Store for PgStore {
     ) -> Result<Option<Issue>, StoreError> {
         let row = sqlx::query(
             "SELECT id, org_id, repo_id, github_id, number, title, body, state,
-                    labels, assignees, milestone, version, updated_at
+                    labels, assignees, milestone, version,
+                    github_node_id, updated_at
              FROM dp_issues WHERE repo_id = $1 AND number = $2",
         )
         .bind(repo_id)
@@ -923,11 +1273,11 @@ impl Store for PgStore {
             "INSERT INTO dp_issues (
                  id, org_id, repo_id, github_id, number, title, body, state,
                  labels, assignees, milestone, author, state_reason,
-                 created_at, updated_at, closed_at, version
+                 created_at, updated_at, closed_at, version, github_node_id
              ) VALUES (
                  $1, $2, $3, $4, $5, $6, $7, $8,
                  $9, $10, $11, $12, $13,
-                 $14, $15, $16, 1
+                 $14, $15, $16, 1, $18
              )
              ON CONFLICT (repo_id, number) DO UPDATE SET
                  title        = EXCLUDED.title,
@@ -943,7 +1293,14 @@ impl Store for PgStore {
                  -- github_id stays put — once we learn an issue's
                  -- numeric id, it never changes (transfers move
                  -- the number, not the id).
-                 version      = dp_issues.version + 1
+                 version      = dp_issues.version + 1,
+                 -- §3.10 — opportunistic backfill: a row that
+                 -- pre-dates migration 0021 has NULL here; the
+                 -- first webhook / reconciler payload after the
+                 -- migration carries `node_id`, populating the
+                 -- column so the Projects v2 mirror can skip
+                 -- the lazy GraphQL lookup on the next save.
+                 github_node_id = COALESCE(EXCLUDED.github_node_id, dp_issues.github_node_id)
              WHERE
                  (dp_issues.pending_remote = FALSE
                   OR dp_issues.pending_remote_at IS NULL
@@ -951,7 +1308,8 @@ impl Store for PgStore {
                  AND EXCLUDED.updated_at > dp_issues.updated_at
              RETURNING
                  id, org_id, repo_id, github_id, number, title, body, state,
-                 labels, assignees, milestone, version, updated_at,
+                 labels, assignees, milestone, version,
+                 github_node_id, updated_at,
                  (xmax = 0) AS inserted",
         )
         .bind(new_id)
@@ -971,6 +1329,7 @@ impl Store for PgStore {
         .bind(upsert.updated_at)
         .bind(upsert.closed_at)
         .bind(pending_remote_window.num_seconds())
+        .bind(upsert.github_node_id.as_deref())
         .fetch_optional(self.pool.sqlx())
         .await
         .map_err(map_sqlx)?;
@@ -994,7 +1353,8 @@ impl Store for PgStore {
         // always receives the *current* local row.
         let existing = sqlx::query(
             "SELECT id, org_id, repo_id, github_id, number, title, body, state,
-                    labels, assignees, milestone, version, updated_at,
+                    labels, assignees, milestone, version,
+                    github_node_id, updated_at,
                     pending_remote, pending_remote_at
              FROM dp_issues
              WHERE repo_id = $1 AND number = $2",
@@ -1048,7 +1408,8 @@ impl Store for PgStore {
         //   * status <> 'snoozed' OR snoozed_until < now()  — active snoozes hide
         let rows = sqlx::query(
             "SELECT i.id, i.org_id, i.repo_id, i.github_id, i.number, i.title, i.body,
-                    i.state, i.labels, i.assignees, i.milestone, i.version, i.updated_at,
+                    i.state, i.labels, i.assignees, i.milestone, i.version,
+                    i.github_node_id, i.updated_at,
                     COALESCE(s.last_seen_version, 0)            AS last_seen_version,
                     COALESCE(s.status, 'inbox')                 AS inbox_status,
                     s.snoozed_until                             AS snoozed_until
@@ -2436,6 +2797,71 @@ impl Store for PgStore {
             })
         })
         .transpose()?)
+    }
+
+    async fn upsert_repo_project_link(
+        &self,
+        link: &RepoProjectLink,
+    ) -> Result<RepoProjectLink, StoreError> {
+        let row = sqlx::query(
+            r#"INSERT INTO dp_repo_project_link
+                   (repo_id, project_node_id, start_field_node_id, due_field_node_id,
+                    created_at, updated_at)
+               VALUES ($1, $2, $3, $4, now(), now())
+               ON CONFLICT (repo_id) DO UPDATE SET
+                   project_node_id      = EXCLUDED.project_node_id,
+                   start_field_node_id  = EXCLUDED.start_field_node_id,
+                   due_field_node_id    = EXCLUDED.due_field_node_id,
+                   updated_at           = now()
+               RETURNING repo_id, project_node_id, start_field_node_id, due_field_node_id"#,
+        )
+        .bind(link.repo_id)
+        .bind(&link.project_node_id)
+        .bind(link.start_field_node_id.as_deref())
+        .bind(link.due_field_node_id.as_deref())
+        .fetch_one(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        Ok(RepoProjectLink {
+            repo_id: row.try_get("repo_id").map_err(map_sqlx)?,
+            project_node_id: row.try_get("project_node_id").map_err(map_sqlx)?,
+            start_field_node_id: row.try_get("start_field_node_id").map_err(map_sqlx)?,
+            due_field_node_id: row.try_get("due_field_node_id").map_err(map_sqlx)?,
+        })
+    }
+
+    async fn delete_repo_project_link(
+        &self,
+        repo_id: Uuid,
+    ) -> Result<(), StoreError> {
+        sqlx::query(r#"DELETE FROM dp_repo_project_link WHERE repo_id = $1"#)
+            .bind(repo_id)
+            .execute(self.pool.sqlx())
+            .await
+            .map_err(map_sqlx)?;
+        Ok(())
+    }
+
+    async fn set_issue_github_node_id(
+        &self,
+        issue_id: Uuid,
+        node_id: &str,
+    ) -> Result<(), StoreError> {
+        // Only stamp when currently NULL — the column is immutable
+        // once known. A racing webhook upsert that observes the
+        // same value is a harmless no-op.
+        sqlx::query(
+            r#"UPDATE dp_issues
+                  SET github_node_id = $2
+                WHERE id = $1
+                  AND github_node_id IS NULL"#,
+        )
+        .bind(issue_id)
+        .bind(node_id)
+        .execute(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        Ok(())
     }
 
     async fn enqueue_projectv2_mirror_task(

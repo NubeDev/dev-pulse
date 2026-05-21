@@ -46,6 +46,7 @@ pub mod me_identities;
 pub mod openapi;
 pub mod pins;
 pub mod reports;
+pub mod repo_project_link;
 pub mod repos;
 pub mod state;
 pub mod tags;
@@ -76,14 +77,14 @@ pub use issues::{
     sweep_pending_remote_timeouts, AcquireOutcome, AcquiredSlot, SweepReport,
 };
 pub use issue_dates::{
-    get_issue_dates, issue_dates_router, patch_issue_dates, IssueDatesDto, MirrorDatesOk,
-    MirrorError,
+    get_issue_dates, issue_dates_router, patch_issue_dates, IssueDatesDto,
+    IssueNodeIdRef, MirrorDatesOk, MirrorError, OctocrabProjectV2Mirror,
     PatchIssueDatesRequest, ProjectV2MirrorBackend, UnconfiguredProjectV2Mirror,
 };
 pub use issues_write::{
     create_comment, create_issue, issues_write_router, patch_issue, CreateCommentRequest,
-    CreateIssueRequest, CreateIssueResponse, IssuePatch, IssueWriteBackend, IssueWriteError,
-    PatchIssueRequest, UnconfiguredIssueWriter,
+    CreateIssueRequest, CreateIssueResponse, FetcherIssueWriter, IssuePatch, IssueWriteBackend,
+    IssueWriteError, PatchIssueRequest, UnconfiguredIssueWriter,
 };
 pub use issues_read::{
     get_issue_by_id, get_issue_by_number, get_issue_timeline, issues_read_router, list_issues,
@@ -93,6 +94,12 @@ pub use issues_read::{
 pub use repos::{
     get_repo_sync_status, list_repos, repos_router, request_repo_sync, ListReposQuery,
     RepoListResponse, RepoSummaryDto, RepoSyncQueuedDto, RepoSyncStatusDto,
+};
+pub use repo_project_link::{
+    delete_repo_project_link, get_repo_project_link, list_repo_projects,
+    put_repo_project_link, repo_project_link_router, OctocrabProjectsPicker,
+    ProjectsPickerBackend, ProjectsPickerError, PutRepoProjectLinkRequest,
+    RepoProjectLinkDto, UnconfiguredProjectsPicker,
 };
 pub use openapi::DevPulseApi;
 pub use pins::{

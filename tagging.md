@@ -33,6 +33,18 @@ What's **missing** for this proposal:
 - A `repo_topic` fetch (we get issue labels, not repo topics).
 - A sync pipeline for tag ↔ GitHub-label / GitHub-topic.
 
+> **Sibling slice — coordinate, don't collide.** The Projects v2
+> dates mirror (`/memories/session/projectv2-mirror-plan.md`,
+> migration `0021_issue_github_node_id.sql` already shipped) is
+> the other outbound write surface landing around the same time.
+> Both work flows through the same fetcher worker loop and the
+> same `(issues, write)` permission gate. Land Projects v2 first;
+> the §5 reconcilers here then plug into a worker loop whose
+> pacing primitives (per-repo concurrency cap, error grouping) are
+> already proven by the dates mirror. Do **not** run the two slices
+> in parallel — they share `crates/dp-fetcher/src/worker/*` and
+> `crates/dp-rest/src/state.rs`.
+
 ---
 
 ## 2. What "sync with GitHub" actually means
@@ -109,8 +121,10 @@ that's all the UI needs to render `key=team` chips.
 
 ## 4. Schema changes
 
-One new migration, e.g. `0019_tag_sync.sql` (next odd slot for the
-projects-issues track per `STAGE-1-COORDINATION.md`).
+One new migration, e.g. `0023_tag_sync.sql` (next odd slot for the
+projects-issues track per `STAGE-1-COORDINATION.md` — `0019` is
+taken by user identities, `0021` by the Projects v2 mirror's
+`dp_issues.github_node_id`).
 
 ### 4.1 `dp_tags` additions
 
@@ -524,7 +538,7 @@ same follow-up that ships the prune command.
 
 ## 8. Rollout order
 
-1. Migration `0019_tag_sync.sql` — all schema (§4 + §7.1 + §7.2 + §7.3).
+1. Migration `0023_tag_sync.sql` — all schema (§4 + §7.1 + §7.2 + §7.3).
    No code paths flipped yet.
 2. Wire `kind/key/value/sync_mode/color_source` into `Tag` domain +
    DTO. Backfill verified by a one-shot script asserting

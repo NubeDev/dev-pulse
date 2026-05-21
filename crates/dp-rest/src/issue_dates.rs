@@ -100,7 +100,7 @@ pub trait ProjectV2MirrorBackend: Send + Sync + 'static {
     async fn mirror_dates(
         &self,
         link: &RepoProjectLink,
-        issue_node_id: &str,
+        issue_node_id: &IssueNodeIdRef,
         existing_item_node_id: Option<&str>,
         start_at: Option<DateTime<Utc>>,
         due_at: Option<DateTime<Utc>>,
@@ -120,12 +120,204 @@ impl ProjectV2MirrorBackend for UnconfiguredProjectV2Mirror {
     async fn mirror_dates(
         &self,
         _: &RepoProjectLink,
-        _: &str,
+        _: &IssueNodeIdRef,
         _: Option<&str>,
         _: Option<DateTime<Utc>>,
         _: Option<DateTime<Utc>>,
     ) -> Result<MirrorDatesOk, MirrorError> {
         Err(MirrorError::Unconfigured)
+    }
+}
+
+/// Production [`ProjectV2MirrorBackend`] backed by the dp-fetcher
+/// octocrab client. Sits in parallel with
+/// [`crate::issues_write::FetcherIssueWriter`] — same dependency
+/// shape (a budget-shared [`dp_fetcher::client::Client`]), same
+/// thin error-mapping discipline.
+///
+/// The adapter owns an `Arc<dyn Store>` so it can:
+///
+///   * Resolve `(repo_id) -> (org.login, repo.name)` when an
+///     issue row pre-dates the 0021 `github_node_id` migration
+///     and needs a lazy `repository.issue(number)` lookup.
+///   * Stamp the resolved node id back via
+///     [`Store::set_issue_github_node_id`][dp_domain::store::Store::set_issue_github_node_id]
+///     so subsequent mirrors skip the lookup.
+///
+/// Errors from the fetcher are mapped one-to-one into
+/// [`MirrorError`], with one extra discrimination: a `Validation`
+/// carrying the verbatim GitHub "Resource not accessible by
+/// personal access token" / `FORBIDDEN` text is reshaped into a
+/// `GraphQl` error prefixed with a clear remediation hint so the
+/// `dp_issue_dates.mirror_error` column the UI surfaces tells the
+/// operator exactly what to fix.
+pub struct OctocrabProjectV2Mirror {
+    client: Arc<dp_fetcher::client::Client>,
+    store: Arc<dyn dp_domain::store::Store>,
+}
+
+impl OctocrabProjectV2Mirror {
+    /// Construct from a ready-to-use fetcher client and a store
+    /// handle. The bin layer already builds the fetcher client
+    /// for [`crate::issues_write::FetcherIssueWriter`]; the
+    /// mirror reuses the same handle so the local request budget
+    /// covers GraphQL mutations too.
+    pub fn new(
+        client: Arc<dp_fetcher::client::Client>,
+        store: Arc<dyn dp_domain::store::Store>,
+    ) -> Self {
+        Self { client, store }
+    }
+}
+
+impl std::fmt::Debug for OctocrabProjectV2Mirror {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OctocrabProjectV2Mirror").finish_non_exhaustive()
+    }
+}
+
+/// Translate a [`dp_fetcher::client::GhWriteError`] into a
+/// [`MirrorError`], with PAT-scope FORBIDDEN replies surfaced as
+/// a clear remediation hint. The text rendered here lands on
+/// `dp_issue_dates.mirror_error` and is shown in the date editor.
+fn map_mirror_err(e: dp_fetcher::client::GhWriteError) -> MirrorError {
+    use dp_fetcher::client::GhWriteError as G;
+    match e {
+        G::Validation(msg) => {
+            // GitHub returns `FORBIDDEN` / "Resource not
+            // accessible by personal access token" when the
+            // operator's classic PAT lacks the `project` scope or
+            // when a fine-grained token has no Projects v2
+            // permission. The operator can fix this in 30s on
+            // github.com so call it out explicitly.
+            let lower = msg.to_lowercase();
+            if lower.contains("forbidden")
+                || lower.contains("resource not accessible")
+                || lower.contains("not accessible by personal access token")
+            {
+                MirrorError::GraphQl(format!(
+                    "PAT lacks 'project' scope (or fine-grained \
+                     'Projects: Read and Write'): {msg}"
+                ))
+            } else {
+                MirrorError::GraphQl(msg)
+            }
+        }
+        G::Upstream(msg) => MirrorError::Transport(msg),
+    }
+}
+
+#[async_trait]
+impl ProjectV2MirrorBackend for OctocrabProjectV2Mirror {
+    async fn mirror_dates(
+        &self,
+        link: &RepoProjectLink,
+        issue_node_id: &IssueNodeIdRef,
+        existing_item_node_id: Option<&str>,
+        start_at: Option<DateTime<Utc>>,
+        due_at: Option<DateTime<Utc>>,
+    ) -> Result<MirrorDatesOk, MirrorError> {
+        // Step 1 — resolve the GitHub content node id. Cached on
+        // `dp_issues.github_node_id` for post-0021 rows; lazy
+        // GraphQL lookup + cache-back for older rows.
+        let content_node_id: String = match issue_node_id {
+            IssueNodeIdRef::Known { node_id } => node_id.clone(),
+            IssueNodeIdRef::Unresolved {
+                issue_id,
+                repo_id,
+                number,
+            } => {
+                let repo = self
+                    .store
+                    .get_repo(*repo_id)
+                    .await
+                    .map_err(|e| MirrorError::Transport(e.to_string()))?
+                    .ok_or_else(|| {
+                        MirrorError::GraphQl(format!(
+                            "repo {repo_id} vanished before lazy node-id resolve"
+                        ))
+                    })?;
+                let org = self
+                    .store
+                    .get_org(repo.org_id)
+                    .await
+                    .map_err(|e| MirrorError::Transport(e.to_string()))?
+                    .ok_or_else(|| {
+                        MirrorError::GraphQl(format!(
+                            "org {} vanished before lazy node-id resolve",
+                            repo.org_id
+                        ))
+                    })?;
+                let resolved = self
+                    .client
+                    .gh_resolve_issue_node_id(&org.login, &repo.name, *number)
+                    .await
+                    .map_err(map_mirror_err)?;
+                // Cache-back: stamp the resolved id so the next
+                // mirror skips the lookup. Best-effort — a write
+                // failure here is logged and swallowed so the
+                // mirror still proceeds.
+                if let Err(e) = self
+                    .store
+                    .set_issue_github_node_id(*issue_id, &resolved)
+                    .await
+                {
+                    tracing::warn!(
+                        target: "dp_rest::issue_dates",
+                        error = %e,
+                        issue_id = %issue_id,
+                        "set_issue_github_node_id cache-back failed",
+                    );
+                }
+                resolved
+            }
+        };
+
+        // Step 2 — resolve the Projects v2 *item* id. Reuse the
+        // existing card when we already mirrored this issue;
+        // otherwise issue `addProjectV2ItemById`. The mutation is
+        // idempotent on the GitHub side but we still record the
+        // returned id so we skip the call on the next edit.
+        let item_node_id = match existing_item_node_id {
+            Some(id) => id.to_string(),
+            None => self
+                .client
+                .gh_projectv2_add_item(&link.project_node_id, &content_node_id)
+                .await
+                .map_err(map_mirror_err)?,
+        };
+
+        // Step 3 — push the date fields. The handler passes
+        // `None` to clear; per §3.10 we forward the null so a
+        // local clear lands on Projects v2 instead of leaving a
+        // stale value. Each lane is independent: a project that
+        // does not configure a start field skips that mutation.
+        if let Some(field) = link.start_field_node_id.as_deref() {
+            self.client
+                .gh_projectv2_update_date_field(
+                    &link.project_node_id,
+                    &item_node_id,
+                    field,
+                    start_at,
+                )
+                .await
+                .map_err(map_mirror_err)?;
+        }
+        if let Some(field) = link.due_field_node_id.as_deref() {
+            self.client
+                .gh_projectv2_update_date_field(
+                    &link.project_node_id,
+                    &item_node_id,
+                    field,
+                    due_at,
+                )
+                .await
+                .map_err(map_mirror_err)?;
+        }
+
+        Ok(MirrorDatesOk {
+            item_node_id,
+        })
     }
 }
 
@@ -392,14 +584,65 @@ pub async fn get_issue_dates(
 }
 
 /// The Projects v2 GraphQL surface needs an *issue* node id
-/// (`I_...`), not the numeric `dp_issues.github_id`. We do not
-/// currently persist the node id on `dp_issues`, so for now we
-/// derive a stable placeholder from `(repo.github_id, number)` —
-/// real backends will resolve via `repository(node_id=...){
-/// issue(number) }` on first call. The string is opaque to the
-/// store and to the handler; only the backend interprets it.
-fn issue_node_id(i: &dp_domain::issue::Issue) -> String {
-    format!("issue:{}:{}", i.repo_id, i.number)
+/// (`I_...`), not the numeric `dp_issues.github_id`. Two paths:
+///
+///   1. The 0021 migration adds `dp_issues.github_node_id` and
+///      the fetcher populates it on every webhook / backfill
+///      ingest, so issues sighted after the migration deploy
+///      have the id locally. We hand it to the mirror adapter
+///      verbatim.
+///   2. Rows that pre-date the migration carry `None` here.
+///      The mirror adapter falls back to a one-shot
+///      `repository.issue(number)` GraphQL lookup and stamps the
+///      result back via
+///      [`Store::set_issue_github_node_id`][dp_domain::store::Store::set_issue_github_node_id],
+///      so the lazy path is taken at most once per row.
+///
+/// Returns either the cached node id or the `(repo_id, number)`
+/// pair the adapter uses to resolve it. The handler does *not*
+/// resolve the repo identity here — the adapter owns the
+/// `Store` handle it needs for `get_repo` and for stamping the
+/// resolved id.
+fn issue_node_id(i: &dp_domain::issue::Issue) -> IssueNodeIdRef {
+    match i.github_node_id.as_deref() {
+        Some(node) => IssueNodeIdRef::Known {
+            node_id: node.to_string(),
+        },
+        None => IssueNodeIdRef::Unresolved {
+            issue_id: i.id,
+            repo_id: i.repo_id,
+            number: i.number,
+        },
+    }
+}
+
+/// What the handler hands to the mirror backend so it can either
+/// use the cached GitHub node id directly or resolve it lazily.
+/// Public so production backends in the bin layer can match on
+/// it; the in-process fakes the tests use ignore the
+/// `Unresolved` arm (their fixture rows always carry a node id).
+#[derive(Debug, Clone)]
+pub enum IssueNodeIdRef {
+    /// Cached on `dp_issues.github_node_id`; the adapter passes
+    /// it straight through to `addProjectV2ItemById`.
+    Known {
+        /// GitHub GraphQL node id (`I_...`).
+        node_id: String,
+    },
+    /// Row pre-dates migration 0021. The adapter resolves the
+    /// id via `repository(owner, name) { issue(number) { id } }`
+    /// and stamps it back so subsequent mirrors are free.
+    Unresolved {
+        /// `dp_issues.id` — the adapter uses this as the key
+        /// for `set_issue_github_node_id` after a successful
+        /// resolve.
+        issue_id: Uuid,
+        /// `dp_issues.repo_id` — the adapter joins back to
+        /// `dp_repos`/`dp_orgs` for the GraphQL `owner` / `name`.
+        repo_id: Uuid,
+        /// `dp_issues.number` for the `issue(number:)` lookup.
+        number: i64,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -741,13 +984,19 @@ mod tests {
         async fn mirror_dates(
             &self,
             _link: &RepoProjectLink,
-            issue_node_id: &str,
+            issue_node_id: &IssueNodeIdRef,
             existing_item_node_id: Option<&str>,
             start_at: Option<DateTime<Utc>>,
             due_at: Option<DateTime<Utc>>,
         ) -> Result<MirrorDatesOk, MirrorError> {
+            let seen_node = match issue_node_id {
+                IssueNodeIdRef::Known { node_id } => node_id.clone(),
+                IssueNodeIdRef::Unresolved { issue_id, .. } => {
+                    format!("unresolved:{issue_id}")
+                }
+            };
             *self.seen.lock().unwrap() = Some((
-                issue_node_id.to_string(),
+                seen_node,
                 existing_item_node_id.map(str::to_string),
                 start_at,
                 due_at,
@@ -801,6 +1050,7 @@ mod tests {
             assignees: vec![],
             milestone: None,
             version: 1,
+            github_node_id: Some("I_kwTEST".into()),
             updated_at: Utc::now(),
         };
         {

@@ -20,6 +20,9 @@ use starter_auth_oauth::IdentityStore;
 use crate::app_permissions::GitHubAppConfig;
 use crate::issue_dates::{ProjectV2MirrorBackend, UnconfiguredProjectV2Mirror};
 use crate::issues_write::{IssueWriteBackend, UnconfiguredIssueWriter};
+use crate::repo_project_link::{
+    ProjectsPickerBackend, UnconfiguredProjectsPicker,
+};
 
 /// Application state shared across every dp-rest handler.
 #[derive(Clone)]
@@ -57,6 +60,13 @@ pub struct AppState {
     /// the best-effort enqueue / spawn entirely; the local
     /// upsert remains authoritative.
     pub projectv2_mirror: Arc<dyn ProjectV2MirrorBackend>,
+    /// Projects v2 picker backend used by
+    /// `GET /repos/{id}/projects` to surface a project + field
+    /// chooser in the admin pane. The default —
+    /// [`UnconfiguredProjectsPicker`] — returns a 503 so the
+    /// UI can degrade to a paste-node-id text field when no
+    /// GraphQL transport is wired.
+    pub projects_picker: Arc<dyn ProjectsPickerBackend>,
     /// OAuth identity store handle. The `/me/identities` surface
     /// (§3.0 / §10) reads through it to project the viewer's
     /// linked third-party identities for the Account → Identities
@@ -79,6 +89,7 @@ impl AppState {
             issue_writer: Arc::new(UnconfiguredIssueWriter),
             scheduler: None,
             projectv2_mirror: Arc::new(UnconfiguredProjectV2Mirror),
+            projects_picker: Arc::new(UnconfiguredProjectsPicker),
             identity_store: None,
         }
     }
@@ -90,6 +101,19 @@ impl AppState {
         mirror: Arc<dyn ProjectV2MirrorBackend>,
     ) -> Self {
         self.projectv2_mirror = mirror;
+        self
+    }
+
+    /// Override the Projects v2 picker backend used by
+    /// `GET /repos/{id}/projects`. Bin layer wires this with the
+    /// shared fetcher client so the admin pane surfaces the
+    /// project + field chooser; tests can leave it unset and the
+    /// route returns 503.
+    pub fn with_projects_picker(
+        mut self,
+        picker: Arc<dyn ProjectsPickerBackend>,
+    ) -> Self {
+        self.projects_picker = picker;
         self
     }
 

@@ -22,6 +22,7 @@
  * exercise the reload UX without a backend.
  */
 
+import { useEffect, useRef } from "react";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
@@ -424,7 +425,8 @@ export function useRepoList(q: ListReposQuery) {
 }
 
 export function useIssue(id: string | undefined) {
-  return useQuery<IssueDto>({
+  const qc = useQueryClient();
+  const query = useQuery<IssueDto>({
     queryKey: id ? workflowKeys.issue(id) : ["workflow", "issue", "<none>"],
     enabled: !!id,
     queryFn: () => {
@@ -433,6 +435,30 @@ export function useIssue(id: string | undefined) {
       return api.getIssueById(id);
     },
   });
+  // §13.7 lazy resync: when the detail pane is opened (or the
+  // selected issue changes), fire a single best-effort
+  // `POST /issues/{id}/refresh` so the user doesn't see a row that
+  // last reconciled minutes ago. The server falls back to the
+  // stored row when no GitHub backend is wired, so this is safe
+  // to call unconditionally; we swallow errors because the local
+  // row is already shown and never block the UI on the refresh.
+  const lastRefreshedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!id || USE_MOCK) return;
+    if (lastRefreshedRef.current === id) return;
+    lastRefreshedRef.current = id;
+    api
+      .refreshIssue(id)
+      .then((fresh) => {
+        qc.setQueryData(workflowKeys.issue(fresh.id), fresh);
+      })
+      .catch(() => {
+        // Best-effort — the stored row from the regular GET is
+        // still shown. A transient refresh failure must not
+        // surface as a toast.
+      });
+  }, [id, qc]);
+  return query;
 }
 
 /**
@@ -473,6 +499,48 @@ export function useUpdateIssue(id: string) {
     },
     onSuccess: (updated) => {
       qc.setQueryData(workflowKeys.issue(updated.id), updated);
+    },
+  });
+}
+
+/**
+ * Toggle an issue's `open` / `closed` state. Thin wrapper over
+ * the same PATCH `useUpdateIssue` exposes, but bound at call
+ * time instead of at hook construction so list rows (triage,
+ * `all issues`) can fire it without one hook instance per row.
+ *
+ * Invalidates `["workflow"]` on success so the row's `state`
+ * badge + open/closed filters refresh; the per-issue cache is
+ * also patched so the peek panel reflects the new version
+ * immediately.
+ */
+export function useToggleIssueState() {
+  const qc = useQueryClient();
+  return useMutation<
+    IssueDto,
+    Error,
+    { id: string; version: number; state: "open" | "closed" }
+  >({
+    mutationFn: async ({ id, version, state }) => {
+      if (USE_MOCK) {
+        if (version !== mockIssue.version) {
+          throw new DpRestError(
+            409,
+            "stale_local_version",
+            "local row is stale; reload and re-apply",
+            { current_version: mockIssue.version },
+          );
+        }
+        mockIssue.state = state;
+        mockIssue.version += 1;
+        mockIssue.updated_at = new Date().toISOString();
+        return { ...mockIssue };
+      }
+      return api.updateIssue(id, { expected_version: version, state });
+    },
+    onSuccess: (updated) => {
+      qc.setQueryData(workflowKeys.issue(updated.id), updated);
+      void qc.invalidateQueries({ queryKey: ["workflow"] });
     },
   });
 }

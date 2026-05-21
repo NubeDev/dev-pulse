@@ -431,6 +431,7 @@
           "issues"
         ],
         "summary": "`POST /issues/{id}/comments` — append a comment. CAS-gated for\nsymmetry with PATCH so the UI's optimistic editor sees the same\nstale-version surface.",
+        "description": "After the GitHub call lands we do a best-effort single-issue\nrefetch (`gh_get_issue`) and project the payload through\n`parse_issue_upsert`, so the local row's `comment_count` /\n`updated_at` advance synchronously — without this the UI saw\nthe post-comment row stuck at the pre-write count until the\nnext webhook / reconciler tick (the bug the user reported).\nThe response carries the fresh `IssueDto` for the same reason\nthe PATCH handler does.",
         "operationId": "create_comment",
         "parameters": [
           {
@@ -455,8 +456,15 @@
           "required": true
         },
         "responses": {
-          "204": {
-            "description": "Comment posted"
+          "200": {
+            "description": "Comment posted; fresh issue row returned",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssueDto"
+                }
+              }
+            }
           },
           "400": {
             "description": "Validation failed at GitHub"
@@ -549,6 +557,43 @@
           },
           "403": {
             "description": "Writes not available for the target org"
+          },
+          "404": {
+            "description": "No such issue"
+          }
+        }
+      }
+    },
+    "/issues/{id}/refresh": {
+      "post": {
+        "tags": [
+          "issues"
+        ],
+        "summary": "`POST /issues/{id}/refresh` — fire-and-forget single-issue\nresync the UI calls when an issue is opened (or when the user\nhits a \"refresh\" affordance). Performs a `GET\n/repos/{owner}/{repo}/issues/{number}` against GitHub, projects\nthe payload through `parse_issue_upsert`, and returns the post-\nupsert row — so the frontend can swap its cached row for the\nfresh one in a single round-trip.",
+        "description": "Gated on `(issues, read)`: refreshing a row is a read of the\nunderlying issue (no GitHub mutation happens). The backend may\nreturn `None` (the unconfigured stub, test fakes) in which case\nwe simply re-read the local row and return it — callers get a\n200 with the existing state, never a 503, so the lazy-refresh\neffect on the frontend is safe to fire unconditionally.",
+        "operationId": "refresh_issue",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Issue id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Refreshed (or fell back to local row when no backend is configured)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssueDto"
+                }
+              }
+            }
           },
           "404": {
             "description": "No such issue"
@@ -1418,6 +1463,142 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/repos/{id}/project-link": {
+      "get": {
+        "tags": [
+          "repos"
+        ],
+        "summary": "`GET /repos/{id}/project-link` — read the current link, or\n`404` when the repo is not linked. Returning 404 (rather than\n`200 null`) lets the admin pane use the same fetch hook for\n\"load existing\" vs. \"first-time link\" without an extra\ndiscriminator on the wire.",
+        "operationId": "get_repo_project_link",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Repo id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current link",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoProjectLinkDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Repo not linked"
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "repos"
+        ],
+        "summary": "`PUT /repos/{id}/project-link` — upsert the link. The mirror\ncatches up on the next `PATCH /issues/{id}/dates`; this\nhandler does not back-fill historical issues.",
+        "operationId": "put_repo_project_link",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Repo id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PutRepoProjectLinkRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Link upserted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoProjectLinkDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such repo"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "repos"
+        ],
+        "summary": "`DELETE /repos/{id}/project-link` — unwire the repo. The\nlocal `dp_issue_dates` rows stay put (date editing still\nworks locally); subsequent `PATCH /issues/{id}/dates` calls\nfor issues in this repo just skip the mirror.",
+        "operationId": "delete_repo_project_link",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Repo id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Link removed (or was absent)"
+          }
+        }
+      }
+    },
+    "/repos/{id}/projects": {
+      "get": {
+        "tags": [
+          "repos"
+        ],
+        "summary": "`GET /repos/{id}/projects` — list Projects v2 boards visible\nto the deployment's PAT / installation for this repo, with\neach project's fields. The admin pane uses this for the\nproject + field picker so operators never paste node ids by\nhand. Returns the verbatim GraphQL `projectsV2` shape — the\nfrontend renders the picker straight off it.",
+        "operationId": "list_repo_projects",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Repo id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "GraphQL projectsV2 envelope"
+          },
+          "404": {
+            "description": "No such repo"
+          },
+          "503": {
+            "description": "Projects picker not configured"
           }
         }
       }
@@ -2551,6 +2732,13 @@
             "format": "uuid",
             "description": "Parent repo id."
           },
+          "repo_slug": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Short `owner/repo` label rendered in list rows. Populated\nby a per-page join through `repo_id -> (org_login, name)`.\nOmitted when the join is unavailable (point-lookup detail\nhandlers backfill this too so the peek panel and the row\nit was selected from agree)."
+          },
           "state": {
             "$ref": "#/components/schemas/IssueStateDto",
             "description": "State."
@@ -3025,6 +3213,33 @@
           "tag"
         ]
       },
+      "PutRepoProjectLinkRequest": {
+        "type": "object",
+        "description": "PUT body — `repo_id` is taken from the URL path so the wire\nshape only carries the three GraphQL node ids the operator\npicked. The handler upserts: posting twice with different\nvalues rewrites the link.",
+        "required": [
+          "project_node_id"
+        ],
+        "properties": {
+          "due_field_node_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional due-date field node id (omit when the project\ndoes not configure one)."
+          },
+          "project_node_id": {
+            "type": "string",
+            "description": "Projects v2 project node id the repo should mirror to."
+          },
+          "start_field_node_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional start-date field node id (omit when the project\ndoes not configure one — the mirror skips that lane)."
+          }
+        }
+      },
       "RefreshResponse": {
         "oneOf": [
           {
@@ -3120,6 +3335,39 @@
             "type": "integer",
             "format": "int64",
             "description": "Total matching the filter, ignoring pagination."
+          }
+        }
+      },
+      "RepoProjectLinkDto": {
+        "type": "object",
+        "description": "Wire shape for `dp_repo_project_link`. Mirrors\n[`RepoProjectLink`] one-for-one.",
+        "required": [
+          "repo_id",
+          "project_node_id"
+        ],
+        "properties": {
+          "due_field_node_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Field node id for the due-date column, or `null` when the\nproject does not configure one."
+          },
+          "project_node_id": {
+            "type": "string",
+            "description": "Projects v2 project node id (e.g. `PVT_kwDOABC...`)."
+          },
+          "repo_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The repo this link belongs to."
+          },
+          "start_field_node_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Field node id for the start-date column, or `null` when\nthe project does not configure one."
           }
         }
       },

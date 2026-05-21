@@ -83,14 +83,19 @@ use dp_fetcher::reconciler::Scheduler;
 use dp_fetcher::webhook::{self, WebhookMetrics, WebhookSecretSource, WebhookState};
 use dp_rest::{
     admin_router, app_permissions_router, directory_router, inbox_router, issue_dates_router,
-    issues_read_router, issues_write_router, me_identities_router, pins_router, repos_router,
+    issues_read_router, issues_write_router, me_identities_router, pins_router,
+    repo_project_link_router, repos_router,
     reports_router, tags_router, AdminState, AppState as RestAppState, DevPulseApi,
 };
 
 // Re-export so the bin layer (which doesn't depend on dp-rest
 // directly) can name the GitHub App config type for
 // SCOPE-PROJECTS §13.6 `[github.app]`.
-pub use dp_rest::GitHubAppConfig;
+pub use dp_rest::{FetcherIssueWriter, GitHubAppConfig, IssueWriteBackend};
+pub use dp_rest::{
+    OctocrabProjectV2Mirror, OctocrabProjectsPicker, ProjectV2MirrorBackend,
+    ProjectsPickerBackend,
+};
 use utoipa::OpenApi;
 use uuid::Uuid;
 
@@ -163,6 +168,24 @@ pub struct AppState {
     /// constructs it once and the build path moves it in) stays
     /// cheap.
     pub github_app: Arc<GitHubAppConfig>,
+    /// Optional §8 issue-write backend. `None` keeps the dp-rest
+    /// default ([`dp_rest::UnconfiguredIssueWriter`]) which refuses
+    /// every call — used when the deployment has no GitHub token
+    /// armed. The bin layer hands a
+    /// [`dp_rest::FetcherIssueWriter`] in PAT mode.
+    pub issue_writer: Option<Arc<dyn IssueWriteBackend>>,
+    /// Optional Projects v2 mirror backend. `None` leaves the
+    /// dp-rest default ([`dp_rest::UnconfiguredProjectV2Mirror`])
+    /// in place — mirroring is skipped entirely and only the
+    /// local `dp_issue_dates` row is updated. PAT mode wires the
+    /// [`dp_rest::OctocrabProjectV2Mirror`] adapter so the date
+    /// editor lands cards on the linked Projects v2 board.
+    pub projectv2_mirror: Option<Arc<dyn ProjectV2MirrorBackend>>,
+    /// Optional Projects v2 picker backend. `None` leaves the
+    /// dp-rest default in place; the admin pane's
+    /// `GET /repos/{id}/projects` route returns 503 in that case
+    /// and the operator falls back to pasting node ids by hand.
+    pub projects_picker: Option<Arc<dyn ProjectsPickerBackend>>,
 }
 
 /// All the inputs [`build`] needs. Bundles [`AppState`] with the
@@ -225,6 +248,9 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
         registry,
         metrics,
         github_app,
+        issue_writer,
+        projectv2_mirror,
+        projects_picker,
     } = state;
 
     // -----------------------------------------------------------------
@@ -241,12 +267,22 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
     // callback writes to. Cheap `Arc` clone — no fan-out cost.
     let identity_store = oauth.identity_store.clone();
 
-    let rest_state = Arc::new(
-        RestAppState::new(store.clone())
+    let rest_state = Arc::new({
+        let mut s = RestAppState::new(store.clone())
             .with_github_app(github_app.clone())
             .with_scheduler(scheduler.clone())
-            .with_identity_store(identity_store),
-    );
+            .with_identity_store(identity_store);
+        if let Some(w) = issue_writer {
+            s = s.with_issue_writer(w);
+        }
+        if let Some(m) = projectv2_mirror {
+            s = s.with_projectv2_mirror(m);
+        }
+        if let Some(p) = projects_picker {
+            s = s.with_projects_picker(p);
+        }
+        s
+    });
     let admin_state = Arc::new(AdminState::new(scheduler.clone(), store.clone()));
 
     let reports = reports_router(rest_state.clone());
@@ -265,6 +301,11 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
     // synchronous and the mirror task is spawned and recorded
     // out-of-band on `dp_issue_dates.mirror_error`.
     let issue_dates = issue_dates_router(rest_state.clone());
+    // §3.10 admin — link a NubeIO repo to a Projects v2 board so
+    // the date editor's mirror has a target. CRUD on
+    // `dp_repo_project_link` plus a GraphQL-backed picker; gated
+    // on `(issues, write)` (same lane as the editor).
+    let repo_project_link = repo_project_link_router(rest_state.clone());
     let inbox = inbox_router(rest_state.clone());
     // §3.0 / §10 — `GET /me/identities`. Reads the same
     // `IdentityStore` `starter_auth_oauth` writes to on link /
@@ -289,6 +330,7 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
         .merge(issues_read)
         .merge(issues_write)
         .merge(issue_dates)
+        .merge(repo_project_link)
         .merge(inbox)
         .merge(me_identities)
         .merge(github_app_routes)

@@ -84,13 +84,24 @@ pub trait IssueWriteBackend: Send + Sync + 'static {
     /// merged field set the user requested. The trait does not
     /// inspect which fields are `Some(_)` — it forwards the patch
     /// verbatim.
+    ///
+    /// On success returns `Some(payload)` carrying the GitHub-side
+    /// issue JSON when the backend can supply it. The handler
+    /// hands the payload to
+    /// [`dp_fetcher::worker::handlers::parse_issue_upsert`] and
+    /// upserts it into `dp_issues` so the local row reflects the
+    /// write before the next webhook / reconciler tick — closing
+    /// the two-way sync loop the UI relies on. Backends that can
+    /// not surface the payload (the unconfigured stub, certain
+    /// fakes) return `None` and the handler falls back to the
+    /// pre-write local row.
     async fn update_issue(
         &self,
         owner_login: &str,
         repo_name: &str,
         number: i64,
         patch: &IssuePatch,
-    ) -> Result<(), IssueWriteError>;
+    ) -> Result<Option<serde_json::Value>, IssueWriteError>;
 
     /// `POST /repos/{owner}/{repo}/issues/{number}/comments`.
     async fn create_comment(
@@ -100,6 +111,23 @@ pub trait IssueWriteBackend: Send + Sync + 'static {
         number: i64,
         body: &str,
     ) -> Result<(), IssueWriteError>;
+
+    /// `GET /repos/{owner}/{repo}/issues/{number}` — single-issue
+    /// refetch used by the lazy resync path (`POST /issues/{id}/refresh`
+    /// and the post-comment refresh in [`create_comment`]). Returns
+    /// `Some(payload)` carrying the GitHub-side JSON so the caller
+    /// can upsert immediately. Backends that can not surface a
+    /// payload return `Ok(None)` and the handler falls back to the
+    /// stored row — the default impl returns `Ok(None)` so the
+    /// unconfigured stub and test fakes don't have to opt in.
+    async fn refresh_issue(
+        &self,
+        _owner_login: &str,
+        _repo_name: &str,
+        _number: i64,
+    ) -> Result<Option<serde_json::Value>, IssueWriteError> {
+        Ok(None)
+    }
 }
 
 /// All errors the [`IssueWriteBackend`] may surface. Split on the
@@ -174,7 +202,7 @@ impl IssueWriteBackend for UnconfiguredIssueWriter {
         _: &str,
         _: i64,
         _: &IssuePatch,
-    ) -> Result<(), IssueWriteError> {
+    ) -> Result<Option<serde_json::Value>, IssueWriteError> {
         Err(IssueWriteError::Unconfigured)
     }
     async fn create_comment(
@@ -185,6 +213,109 @@ impl IssueWriteBackend for UnconfiguredIssueWriter {
         _: &str,
     ) -> Result<(), IssueWriteError> {
         Err(IssueWriteError::Unconfigured)
+    }
+}
+
+/// Production [`IssueWriteBackend`] backed by the dp-fetcher
+/// octocrab client. Used by the bin layer in both PAT mode (the
+/// classic / fine-grained token authorises the write) and the
+/// per-org App-installation mode (a future stage will pick the
+/// right per-org `Client` here).
+///
+/// The adapter is a thin shim: every method translates the
+/// `IssuePatch` / argument set into the fetcher's
+/// [`dp_fetcher::client::IssueRemotePatch`] / typed call, then maps
+/// the fetcher's [`dp_fetcher::client::GhWriteError`] into
+/// [`IssueWriteError`] one-to-one.
+pub struct FetcherIssueWriter {
+    client: Arc<dp_fetcher::client::Client>,
+}
+
+impl FetcherIssueWriter {
+    /// Construct from a ready-to-use fetcher client. The bin layer
+    /// already builds one for the read path (reconciler/backfill);
+    /// the writer reuses the same handle so the local request
+    /// budget covers writes too.
+    pub fn new(client: Arc<dp_fetcher::client::Client>) -> Self {
+        Self { client }
+    }
+}
+
+impl std::fmt::Debug for FetcherIssueWriter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FetcherIssueWriter").finish_non_exhaustive()
+    }
+}
+
+fn map_gh_write_err(e: dp_fetcher::client::GhWriteError) -> IssueWriteError {
+    match e {
+        dp_fetcher::client::GhWriteError::Validation(m) => IssueWriteError::Validation(m),
+        dp_fetcher::client::GhWriteError::Upstream(m) => IssueWriteError::Upstream(m),
+    }
+}
+
+#[async_trait]
+impl IssueWriteBackend for FetcherIssueWriter {
+    async fn create_issue(
+        &self,
+        owner_login: &str,
+        repo_name: &str,
+        title: &str,
+        body: Option<&str>,
+    ) -> Result<i64, IssueWriteError> {
+        self.client
+            .gh_create_issue(owner_login, repo_name, title, body)
+            .await
+            .map_err(map_gh_write_err)
+    }
+
+    async fn update_issue(
+        &self,
+        owner_login: &str,
+        repo_name: &str,
+        number: i64,
+        patch: &IssuePatch,
+    ) -> Result<Option<serde_json::Value>, IssueWriteError> {
+        let remote = dp_fetcher::client::IssueRemotePatch {
+            title: patch.title.clone(),
+            body: patch.body.clone(),
+            state: patch.state.clone(),
+            labels: patch.labels.clone(),
+            assignees: patch.assignees.clone(),
+        };
+        let payload = self
+            .client
+            .gh_update_issue(owner_login, repo_name, number, &remote)
+            .await
+            .map_err(map_gh_write_err)?;
+        Ok(Some(payload))
+    }
+
+    async fn create_comment(
+        &self,
+        owner_login: &str,
+        repo_name: &str,
+        number: i64,
+        body: &str,
+    ) -> Result<(), IssueWriteError> {
+        self.client
+            .gh_create_comment(owner_login, repo_name, number, body)
+            .await
+            .map_err(map_gh_write_err)
+    }
+
+    async fn refresh_issue(
+        &self,
+        owner_login: &str,
+        repo_name: &str,
+        number: i64,
+    ) -> Result<Option<serde_json::Value>, IssueWriteError> {
+        let payload = self
+            .client
+            .gh_get_issue(owner_login, repo_name, number)
+            .await
+            .map_err(map_gh_write_err)?;
+        Ok(Some(payload))
     }
 }
 
@@ -372,8 +503,51 @@ pub async fn patch_issue(
         .update_issue(&org.login, &repo.name, issue.number, &body.patch)
         .await
     {
-        Ok(()) => {
+        Ok(payload) => {
             commit_issue_mutation(&*state.store, &slot, None).await?;
+            // Two-way sync: GitHub's PATCH response is the new
+            // truth. Project it through the regular ingest path so
+            // the local `dp_issues` row reflects the write before
+            // the next webhook / reconciler tick — without this
+            // the UI re-read below would return the *pre-write*
+            // body / title / labels and the edit would appear lost.
+            // Best-effort: a parse / upsert error here is logged
+            // (the webhook will reconcile on the next tick) but
+            // never fails the request the user just committed.
+            if let Some(value) = payload {
+                match dp_fetcher::worker::handlers::parse_issue_upsert(
+                    issue.org_id,
+                    issue.repo_id,
+                    &value,
+                ) {
+                    Ok(upsert) => {
+                        // Zero window: we already cleared
+                        // pending_remote in commit_issue_mutation,
+                        // so the §13.7 guard would not defer; pass
+                        // a zero duration to make that explicit.
+                        if let Err(e) = state
+                            .store
+                            .upsert_issue_from_github(&upsert, chrono::Duration::zero())
+                            .await
+                        {
+                            tracing::warn!(
+                                target: "dp_rest::issues_write",
+                                issue_id = %issue.id,
+                                error = %e,
+                                "post-PATCH local upsert failed; row will reconcile on next webhook",
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            target: "dp_rest::issues_write",
+                            issue_id = %issue.id,
+                            error = %e,
+                            "post-PATCH parse of github payload failed; row will reconcile on next webhook",
+                        );
+                    }
+                }
+            }
         }
         Err(e) => {
             // Rollback before surfacing the error so the row is
@@ -394,19 +568,30 @@ pub async fn patch_issue(
             code: "issue_not_found",
             message: format!("no issue with id {id}"),
         })?;
-    Ok(Json(IssueDto::from(fresh)))
+    let mut dto = IssueDto::from(fresh);
+    crate::issues_read::attach_repo_slug_one(&*state.store, &mut dto).await?;
+    Ok(Json(dto))
 }
 
 /// `POST /issues/{id}/comments` — append a comment. CAS-gated for
 /// symmetry with PATCH so the UI's optimistic editor sees the same
 /// stale-version surface.
+///
+/// After the GitHub call lands we do a best-effort single-issue
+/// refetch (`gh_get_issue`) and project the payload through
+/// `parse_issue_upsert`, so the local row's `comment_count` /
+/// `updated_at` advance synchronously — without this the UI saw
+/// the post-comment row stuck at the pre-write count until the
+/// next webhook / reconciler tick (the bug the user reported).
+/// The response carries the fresh `IssueDto` for the same reason
+/// the PATCH handler does.
 #[utoipa::path(
     post,
     path = "/issues/{id}/comments",
     params(("id" = Uuid, Path, description = "Issue id")),
     request_body = CreateCommentRequest,
     responses(
-        (status = 204, description = "Comment posted"),
+        (status = 200, description = "Comment posted; fresh issue row returned", body = IssueDto),
         (status = 403, description = "Writes not available for the target org"),
         (status = 409, description = "Stale local version — UI should reload"),
         (status = 400, description = "Validation failed at GitHub"),
@@ -418,7 +603,7 @@ pub async fn create_comment(
     Extension(principal): Extension<Principal>,
     Path(id): Path<Uuid>,
     Json(body): Json<CreateCommentRequest>,
-) -> Result<axum::http::StatusCode, ApiError> {
+) -> Result<Json<IssueDto>, ApiError> {
     let issue = state
         .store
         .get_issue(id)
@@ -459,7 +644,134 @@ pub async fn create_comment(
             return Err(e.into_api_error());
         }
     }
-    Ok(axum::http::StatusCode::NO_CONTENT)
+    // Best-effort post-comment refresh: project the latest GitHub
+    // payload through the regular ingest path so `comment_count` /
+    // `updated_at` advance now instead of on the next webhook /
+    // reconciler tick. Failures are logged and silently fall
+    // through to the stored row — the user just succeeded at
+    // commenting; never let a stale-read sub-step fail their
+    // request.
+    refresh_issue_best_effort(&state, &org.login, &repo.name, &issue).await;
+    let fresh = state
+        .store
+        .get_issue(id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound {
+            code: "issue_not_found",
+            message: format!("no issue with id {id}"),
+        })?;
+    let mut dto = IssueDto::from(fresh);
+    crate::issues_read::attach_repo_slug_one(&*state.store, &mut dto).await?;
+    Ok(Json(dto))
+}
+
+/// `POST /issues/{id}/refresh` — fire-and-forget single-issue
+/// resync the UI calls when an issue is opened (or when the user
+/// hits a "refresh" affordance). Performs a `GET
+/// /repos/{owner}/{repo}/issues/{number}` against GitHub, projects
+/// the payload through `parse_issue_upsert`, and returns the post-
+/// upsert row — so the frontend can swap its cached row for the
+/// fresh one in a single round-trip.
+///
+/// Gated on `(issues, read)`: refreshing a row is a read of the
+/// underlying issue (no GitHub mutation happens). The backend may
+/// return `None` (the unconfigured stub, test fakes) in which case
+/// we simply re-read the local row and return it — callers get a
+/// 200 with the existing state, never a 503, so the lazy-refresh
+/// effect on the frontend is safe to fire unconditionally.
+#[utoipa::path(
+    post,
+    path = "/issues/{id}/refresh",
+    params(("id" = Uuid, Path, description = "Issue id")),
+    responses(
+        (status = 200, description = "Refreshed (or fell back to local row when no backend is configured)", body = IssueDto),
+        (status = 404, description = "No such issue"),
+    ),
+    tag = "issues",
+)]
+pub async fn refresh_issue(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<IssueDto>, ApiError> {
+    let issue = state
+        .store
+        .get_issue(id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound {
+            code: "issue_not_found",
+            message: format!("no issue with id {id}"),
+        })?;
+    let (org, repo) = resolve_repo(&*state.store, issue.repo_id).await?;
+    refresh_issue_best_effort(&state, &org.login, &repo.name, &issue).await;
+    let fresh = state
+        .store
+        .get_issue(id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound {
+            code: "issue_not_found",
+            message: format!("no issue with id {id}"),
+        })?;
+    let mut dto = IssueDto::from(fresh);
+    crate::issues_read::attach_repo_slug_one(&*state.store, &mut dto).await?;
+    Ok(Json(dto))
+}
+
+/// Shared best-effort single-issue refetch. Used by the post-
+/// comment refresh and by `POST /issues/{id}/refresh`. Never
+/// returns an error: the caller has already succeeded at the
+/// primary operation (or doesn't care about staleness blocking
+/// the response), so a transient GitHub hiccup must not bubble.
+async fn refresh_issue_best_effort(
+    state: &AppState,
+    owner_login: &str,
+    repo_name: &str,
+    issue: &dp_domain::issue::Issue,
+) {
+    let payload = match state
+        .issue_writer
+        .refresh_issue(owner_login, repo_name, issue.number)
+        .await
+    {
+        Ok(Some(v)) => v,
+        Ok(None) => return,
+        Err(e) => {
+            tracing::warn!(
+                target: "dp_rest::issues_write",
+                issue_id = %issue.id,
+                error = %e,
+                "single-issue refresh failed; row will reconcile on next webhook",
+            );
+            return;
+        }
+    };
+    match dp_fetcher::worker::handlers::parse_issue_upsert(
+        issue.org_id,
+        issue.repo_id,
+        &payload,
+    ) {
+        Ok(upsert) => {
+            if let Err(e) = state
+                .store
+                .upsert_issue_from_github(&upsert, chrono::Duration::zero())
+                .await
+            {
+                tracing::warn!(
+                    target: "dp_rest::issues_write",
+                    issue_id = %issue.id,
+                    error = %e,
+                    "single-issue refresh upsert failed; row will reconcile on next webhook",
+                );
+            }
+        }
+        Err(e) => {
+            tracing::warn!(
+                target: "dp_rest::issues_write",
+                issue_id = %issue.id,
+                error = %e,
+                "single-issue refresh parse failed; row will reconcile on next webhook",
+            );
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -519,6 +831,15 @@ pub fn issues_write_router(state: Arc<AppState>) -> Router {
                 .route("/issues/{id}/comments", post(create_comment)),
             "issues",
             "write",
+        ))
+        // `POST /issues/{id}/refresh` is a read trigger (no GitHub
+        // mutation), so it's gated under `(issues, read)` so a
+        // viewer can still hit the lazy-resync path that closes
+        // the "open issue, see staleness" gap.
+        .merge(with_permission(
+            Router::new().route("/issues/{id}/refresh", post(refresh_issue)),
+            "issues",
+            "read",
         ))
         .with_state(inner)
 }
@@ -606,7 +927,7 @@ mod tests {
             repo: &str,
             number: i64,
             _: &IssuePatch,
-        ) -> Result<(), IssueWriteError> {
+        ) -> Result<Option<serde_json::Value>, IssueWriteError> {
             self.calls
                 .lock()
                 .unwrap()
@@ -614,7 +935,7 @@ mod tests {
             if let Some(e) = self.fail_with.lock().unwrap().take() {
                 return Err(e);
             }
-            Ok(())
+            Ok(None)
         }
         async fn create_comment(
             &self,
@@ -1031,6 +1352,7 @@ mod tests {
             assignees: vec![],
             milestone: None,
             version: 7,
+            github_node_id: None,
             updated_at: Utc::now(),
         };
         {
@@ -1328,7 +1650,11 @@ mod tests {
             .body(Body::from(body.to_string()))
             .unwrap();
         let (status, _) = send(app(&rig), req).await;
-        assert_eq!(status, StatusCode::NO_CONTENT);
+        // §13.7 lazy resync: comment endpoint now returns 200 +
+        // fresh `IssueDto` so the UI doesn't have to issue a
+        // follow-up `GET /issues/{id}` to learn the new
+        // `comment_count` / `updated_at`.
+        assert_eq!(status, StatusCode::OK);
         let g = rig.store.inner.lock().unwrap();
         assert!(g
             .audit

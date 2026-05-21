@@ -110,9 +110,15 @@ async fn webhook_github_stub() {}
         crate::issues_write::create_issue,
         crate::issues_write::patch_issue,
         crate::issues_write::create_comment,
+        crate::issues_write::refresh_issue,
         // Issue dates surface (§3.10).
         crate::issue_dates::patch_issue_dates,
         crate::issue_dates::get_issue_dates,
+        // Repo → Projects v2 link admin surface (§3.10).
+        crate::repo_project_link::get_repo_project_link,
+        crate::repo_project_link::put_repo_project_link,
+        crate::repo_project_link::delete_repo_project_link,
+        crate::repo_project_link::list_repo_projects,
         // Issue read surface — present since slice 1, registered
         // here in slice 2 so the OpenAPI document covers every
         // mounted handler.
@@ -185,6 +191,9 @@ async fn webhook_github_stub() {}
         // Issue dates DTOs (§3.10).
         crate::issue_dates::PatchIssueDatesRequest,
         crate::issue_dates::IssueDatesDto,
+        // Repo → Projects v2 link DTOs (§3.10 admin).
+        crate::repo_project_link::RepoProjectLinkDto,
+        crate::repo_project_link::PutRepoProjectLinkRequest,
         crate::issues_read::IssueDto,
         crate::issues_read::IssueStateDto,
         crate::issues_read::IssueListResponse,

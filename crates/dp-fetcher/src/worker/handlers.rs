@@ -535,6 +535,16 @@ pub fn parse_issue_upsert(
         .get("id")
         .and_then(Value::as_i64)
         .ok_or(HandlerError::MissingField("issue.id"))?;
+    // GitHub payloads always carry `node_id` on issues, but some
+    // older test fixtures may not — keep this lenient so a
+    // fixture without it ingests cleanly. Production payloads land
+    // the column on `dp_issues.github_node_id` so the §3.10
+    // Projects v2 mirror has the `contentId` without a follow-up
+    // GraphQL lookup.
+    let github_node_id = issue
+        .get("node_id")
+        .and_then(Value::as_str)
+        .map(str::to_string);
     let number = issue
         .get("number")
         .and_then(Value::as_i64)
@@ -600,6 +610,7 @@ pub fn parse_issue_upsert(
         org_id,
         repo_id,
         github_id,
+        github_node_id,
         number,
         title,
         body,

@@ -72,6 +72,16 @@ pub struct Issue {
     /// §8 optimistic-CAS token. Bumped on every accepted update
     /// *and* on every webhook-applied refresh.
     pub version: i64,
+    /// GitHub GraphQL node id for this issue (e.g.
+    /// `I_kwDOABC...`). Captured from the webhook /
+    /// backfill payload via `issue.node_id` and persisted so the
+    /// §3.10 Projects v2 mirror can pass it verbatim as the
+    /// `addProjectV2ItemById` `contentId` argument without an
+    /// extra `repository.issue(number)` round-trip per first
+    /// mirror call. `None` only for rows ingested before the
+    /// 0021 migration shipped; the mirror adapter resolves the
+    /// id lazily in that case and caches it back here.
+    pub github_node_id: Option<String>,
     /// Last time the row changed (GitHub `updated_at`, or local
     /// mutation time for optimistic writes).
     pub updated_at: DateTime<Utc>,
@@ -121,6 +131,14 @@ pub struct IssueUpsert {
     pub repo_id: Uuid,
     /// GitHub's numeric issue id (stable across transfers).
     pub github_id: i64,
+    /// GitHub GraphQL node id (`issue.node_id` on the payload).
+    /// Forwarded by the fetcher so the dp-store-pg upsert can
+    /// persist it on `dp_issues.github_node_id` — the §3.10
+    /// Projects v2 mirror needs this as the `contentId` argument
+    /// to `addProjectV2ItemById`. Optional because some test
+    /// fixtures may not supply it; production payloads always
+    /// do.
+    pub github_node_id: Option<String>,
     /// Repo-relative issue number.
     pub number: i64,
     /// Title.

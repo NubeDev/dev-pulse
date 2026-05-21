@@ -184,7 +184,7 @@ async fn attach_repo_slugs(
 /// Single-issue variant of [`attach_repo_slugs`] for the detail
 /// handlers. Same fallback behaviour — a missing repo or org leaves
 /// the slug unset.
-async fn attach_repo_slug_one(
+pub(crate) async fn attach_repo_slug_one(
     store: &dyn dp_domain::store::Store,
     dto: &mut IssueDto,
 ) -> Result<(), ApiError> {
@@ -380,8 +380,10 @@ pub async fn list_issues(
     let filter = filter_from_query(&q);
     let rows = state.store.list_issues(&filter).await?;
     let total = state.store.count_issues(&filter).await?;
+    let mut dtos: Vec<IssueDto> = rows.into_iter().map(IssueDto::from).collect();
+    attach_repo_slugs(&*state.store, &mut dtos).await?;
     Ok(Json(IssueListResponse {
-        rows: rows.into_iter().map(IssueDto::from).collect(),
+        rows: dtos,
         total,
         limit: filter.limit,
         offset: filter.offset,
@@ -481,8 +483,10 @@ pub async fn me_queue(
         .store
         .count_inbox_issues(principal.actor_user_id, &filter)
         .await?;
+    let mut dtos: Vec<IssueDto> = rows.into_iter().map(IssueDto::from).collect();
+    attach_repo_slugs(&*state.store, &mut dtos).await?;
     Ok(Json(IssueListResponse {
-        rows: rows.into_iter().map(IssueDto::from).collect(),
+        rows: dtos,
         total,
         limit: filter.limit,
         offset: filter.offset,
@@ -507,7 +511,11 @@ pub async fn get_issue_by_id(
 ) -> Result<Json<IssueDto>, ApiError> {
     let issue = state.store.get_issue(id).await?;
     match issue {
-        Some(i) => Ok(Json(IssueDto::from(i))),
+        Some(i) => {
+            let mut dto = IssueDto::from(i);
+            attach_repo_slug_one(&*state.store, &mut dto).await?;
+            Ok(Json(dto))
+        }
         None => Err(ApiError::NotFound {
             code: "issue_not_found",
             message: format!("no issue with id {id}"),
@@ -540,7 +548,11 @@ pub async fn get_issue_by_number(
         .get_issue_by_repo_and_number(repo_id, number)
         .await?;
     match issue {
-        Some(i) => Ok(Json(IssueDto::from(i))),
+        Some(i) => {
+            let mut dto = IssueDto::from(i);
+            attach_repo_slug_one(&*state.store, &mut dto).await?;
+            Ok(Json(dto))
+        }
         None => Err(ApiError::NotFound {
             code: "issue_not_found",
             message: format!("no issue #{number} in repo {repo_id}"),
