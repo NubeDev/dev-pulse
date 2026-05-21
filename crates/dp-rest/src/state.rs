@@ -18,6 +18,9 @@ use dp_fetcher::reconciler::Scheduler;
 use starter_auth_oauth::IdentityStore;
 
 use crate::app_permissions::GitHubAppConfig;
+use crate::board_links::{
+    OrgProjectsPickerBackend, UnconfiguredOrgProjectsPicker,
+};
 use crate::issue_dates::{ProjectV2MirrorBackend, UnconfiguredProjectV2Mirror};
 use crate::issues_write::{IssueWriteBackend, UnconfiguredIssueWriter};
 use crate::repo_project_link::{
@@ -67,6 +70,16 @@ pub struct AppState {
     /// UI can degrade to a paste-node-id text field when no
     /// GraphQL transport is wired.
     pub projects_picker: Arc<dyn ProjectsPickerBackend>,
+    /// Org-scoped Projects v2 picker backend used by
+    /// `GET /orgs/{org_id}/projects-v2` (linear-projects-v2.md
+    /// §7.3) — the §6.4 link-a-board dialog reads from this. The
+    /// default — [`UnconfiguredOrgProjectsPicker`] — returns the
+    /// `upstream_unavailable` 400 so the dialog can render an
+    /// `[Open GitHub project settings]` hint instead of a blank
+    /// dropdown. Bin layer wires
+    /// [`crate::board_links::OctocrabOrgProjectsPicker`] when a
+    /// GitHub token / install is armed.
+    pub org_projects_picker: Arc<dyn OrgProjectsPickerBackend>,
     /// OAuth identity store handle. The `/me/identities` surface
     /// (§3.0 / §10) reads through it to project the viewer's
     /// linked third-party identities for the Account → Identities
@@ -90,6 +103,7 @@ impl AppState {
             scheduler: None,
             projectv2_mirror: Arc::new(UnconfiguredProjectV2Mirror),
             projects_picker: Arc::new(UnconfiguredProjectsPicker),
+            org_projects_picker: Arc::new(UnconfiguredOrgProjectsPicker),
             identity_store: None,
         }
     }
@@ -114,6 +128,18 @@ impl AppState {
         picker: Arc<dyn ProjectsPickerBackend>,
     ) -> Self {
         self.projects_picker = picker;
+        self
+    }
+
+    /// Override the org-scoped Projects v2 picker backend used by
+    /// `GET /orgs/{org_id}/projects-v2`. Bin layer wires this with
+    /// the shared fetcher client; tests can leave it unset and the
+    /// route returns the `upstream_unavailable` 400.
+    pub fn with_org_projects_picker(
+        mut self,
+        picker: Arc<dyn OrgProjectsPickerBackend>,
+    ) -> Self {
+        self.org_projects_picker = picker;
         self
     }
 

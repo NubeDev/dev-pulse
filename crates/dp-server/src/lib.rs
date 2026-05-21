@@ -82,10 +82,11 @@ use dp_domain::store::Store;
 use dp_fetcher::reconciler::Scheduler;
 use dp_fetcher::webhook::{self, WebhookMetrics, WebhookSecretSource, WebhookState};
 use dp_rest::{
-    admin_router, app_permissions_router, directory_router, inbox_router, issue_dates_router,
-    issues_read_router, issues_write_router, me_identities_router, pins_router,
-    project_issues_router, projects_router, repo_project_link_router, repos_router,
-    reports_router, tags_router, AdminState, AppState as RestAppState, DevPulseApi,
+    admin_router, app_permissions_router, board_links_router, directory_router, inbox_router,
+    issue_dates_router, issues_read_router, issues_write_router, me_identities_router,
+    pins_router, project_issues_router, projects_router, repo_project_link_router,
+    repos_router, reports_router, tags_router, AdminState, AppState as RestAppState,
+    DevPulseApi,
 };
 
 // Re-export so the bin layer (which doesn't depend on dp-rest
@@ -93,8 +94,8 @@ use dp_rest::{
 // SCOPE-PROJECTS §13.6 `[github.app]`.
 pub use dp_rest::{FetcherIssueWriter, GitHubAppConfig, IssueWriteBackend};
 pub use dp_rest::{
-    OctocrabProjectV2Mirror, OctocrabProjectsPicker, ProjectV2MirrorBackend,
-    ProjectsPickerBackend,
+    OctocrabOrgProjectsPicker, OctocrabProjectV2Mirror, OctocrabProjectsPicker,
+    OrgProjectsPickerBackend, ProjectV2MirrorBackend, ProjectsPickerBackend,
 };
 use utoipa::OpenApi;
 use uuid::Uuid;
@@ -186,6 +187,12 @@ pub struct AppState {
     /// `GET /repos/{id}/projects` route returns 503 in that case
     /// and the operator falls back to pasting node ids by hand.
     pub projects_picker: Option<Arc<dyn ProjectsPickerBackend>>,
+    /// Optional org-scoped Projects v2 picker backend used by the
+    /// §6.4 link-a-board dialog (`GET /orgs/{org_id}/projects-v2`).
+    /// `None` leaves the dp-rest default in place; the route then
+    /// returns the `upstream_unavailable` 400 so the dialog can
+    /// render the `[Open GitHub project settings]` hint.
+    pub org_projects_picker: Option<Arc<dyn OrgProjectsPickerBackend>>,
 }
 
 /// All the inputs [`build`] needs. Bundles [`AppState`] with the
@@ -251,6 +258,7 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
         issue_writer,
         projectv2_mirror,
         projects_picker,
+        org_projects_picker,
     } = state;
 
     // -----------------------------------------------------------------
@@ -281,6 +289,9 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
         if let Some(p) = projects_picker {
             s = s.with_projects_picker(p);
         }
+        if let Some(p) = org_projects_picker {
+            s = s.with_org_projects_picker(p);
+        }
         s
     });
     let admin_state = Arc::new(AdminState::new(scheduler.clone(), store.clone()));
@@ -297,6 +308,11 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
     // project?". Routes ride the same `(projects, read|write)` lanes
     // as the §7.1 CRUD spine.
     let project_issues = project_issues_router(rest_state.clone());
+    // First-class Project ↔ GitHub Projects v2 board picker + link
+    // CRUD (linear-projects-v2.md §7.3). Replaces the admin-pane
+    // `repo_project_link` surface on the primary path; the §6.4
+    // dialog reads the picker and the §6.3 row reads the link list.
+    let board_links = board_links_router(rest_state.clone());
     let tags = tags_router(rest_state.clone());
     let repos = repos_router(rest_state.clone());
     let issues_read = issues_read_router(rest_state.clone());
@@ -336,6 +352,7 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
         .merge(pins)
         .merge(projects)
         .merge(project_issues)
+        .merge(board_links)
         .merge(tags)
         .merge(repos)
         .merge(issues_read)

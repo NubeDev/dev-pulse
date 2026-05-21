@@ -371,6 +371,7 @@ impl TestApp {
             issue_writer: None,
             projectv2_mirror: None,
             projects_picker: None,
+            org_projects_picker: None,
         };
 
         let router = build(BuildConfig {

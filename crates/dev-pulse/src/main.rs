@@ -756,9 +756,10 @@ async fn run_serve(matches: &ArgMatches) -> Result<()> {
     // chooser surfaces a 503 so the operator knows to wire a
     // token. Reuses a sibling budget-shared `Client` so GraphQL
     // traffic counts against the same local fuse as REST.
-    let (projectv2_mirror, projects_picker): (
+    let (projectv2_mirror, projects_picker, org_projects_picker): (
         Option<Arc<dyn dp_server::ProjectV2MirrorBackend>>,
         Option<Arc<dyn dp_server::ProjectsPickerBackend>>,
+        Option<Arc<dyn dp_server::OrgProjectsPickerBackend>>,
     ) = if let Some(tok) = github_token.as_ref().filter(|t| !t.is_empty()) {
         let gql_client = dp_fetcher::client::Client::with_personal_token(
             SecretString::from(tok.clone()),
@@ -773,11 +774,14 @@ async fn run_serve(matches: &ArgMatches) -> Result<()> {
                 store.clone(),
             ))),
             Some(Arc::new(dp_server::OctocrabProjectsPicker::new(
+                gql_client.clone(),
+            ))),
+            Some(Arc::new(dp_server::OctocrabOrgProjectsPicker::new(
                 gql_client,
             ))),
         )
     } else {
-        (None, None)
+        (None, None, None)
     };
     let scheduler = Arc::new(dp_fetcher::reconciler::Scheduler::new(
         reconciler.clone(),
@@ -809,6 +813,7 @@ async fn run_serve(matches: &ArgMatches) -> Result<()> {
             issue_writer: issue_writer.clone(),
             projectv2_mirror: projectv2_mirror.clone(),
             projects_picker: projects_picker.clone(),
+            org_projects_picker: org_projects_picker.clone(),
         },
         auth: auth_state,
         oauth: oauth_state,

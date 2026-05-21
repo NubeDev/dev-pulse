@@ -1208,6 +1208,45 @@
         }
       }
     },
+    "/orgs/{org_id}/projects-v2": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "`GET /orgs/{org_id}/projects-v2` — normalized board picker for\nthe §6.4 link dialog. Returns 503 when no picker backend is\nwired (the UI then renders an `[Open GitHub project settings]`\nhint per §6.4); the empty-result case is `200 { boards: [],\nfetched_at }` so the UI can distinguish \"no boards\" from\n\"transport down\".",
+        "operationId": "list_org_projects_v2",
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "path",
+            "description": "Org id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Normalized picker DTO",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrgProjectPickerDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such org"
+          },
+          "503": {
+            "description": "Picker backend not configured"
+          }
+        }
+      }
+    },
     "/projects": {
       "get": {
         "tags": [
@@ -1458,6 +1497,137 @@
           },
           "409": {
             "description": "Stale `expected_version`"
+          }
+        }
+      }
+    },
+    "/projects/{id}/board-links": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "`GET /projects/{id}/board-links` — list the project's linked\nboards, in `created_at ASC` order (so §6.3 renders a stable\nsequence matching the operator's link-now order). Carries the\nper-link `last_mirror_at` / `last_mirror_error` so the row can\nrender mirror status without a second round-trip.",
+        "operationId": "list_board_links",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Linked boards (possibly empty)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/BoardLinkDto"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such project"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "`POST /projects/{id}/board-links` — link a board to the\nproject. The natural-key `(project_id, github_board_node_id)`\nUNIQUE constraint surfaces a re-link of the same board as\n`409 board_already_linked`. The picker-supplied cached\ntitle / url ride through so the link row renders the right\nname immediately. Audits [`audit::PROJECT_BOARD_LINK`].",
+        "operationId": "create_board_link",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateBoardLinkRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Board linked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BoardLinkDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure"
+          },
+          "404": {
+            "description": "No such project"
+          },
+          "409": {
+            "description": "Board already linked"
+          }
+        }
+      }
+    },
+    "/projects/{id}/board-links/{link_id}": {
+      "delete": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "`DELETE /projects/{id}/board-links/{link_id}` — unlink a board\nfrom the project. §9.2 elevation: caller must be the project's\n`created_by`, its `lead_user_id`, or hold the `(projects,\nadmin)` lane. We approximate the admin lane here by checking\nfor the lead / author seat; further admin elevation rides on\ntop of the `(projects, write)` outer gate. The mirror items\n(`dp_project_board_items`) cascade via `ON DELETE CASCADE`.\nAudits [`audit::PROJECT_BOARD_UNLINK`].",
+        "operationId": "delete_board_link",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "link_id",
+            "in": "path",
+            "description": "Board link id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Link removed"
+          },
+          "403": {
+            "description": "Caller is not the project creator / lead"
+          },
+          "404": {
+            "description": "No such project, or link does not belong to it"
           }
         }
       }
@@ -2746,6 +2916,135 @@
           }
         }
       },
+      "BoardLinkDto": {
+        "type": "object",
+        "description": "Wire form of [`BoardLink`] for the §7.3 GET / POST responses.\nCarries the per-link `last_mirror_at` / `last_mirror_error`\naggregate columns the §6.3 row renders as\n`Last sync: 14:23:07 ✓` / `Last sync: failed — …`.",
+        "required": [
+          "id",
+          "project_id",
+          "github_board_node_id",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "First-write timestamp."
+          },
+          "due_field_node_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Mapped due-date field, or `None`."
+          },
+          "github_board_cached_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Wall-clock the cache was last refreshed."
+          },
+          "github_board_node_id": {
+            "type": "string",
+            "description": "GitHub Projects v2 board node id (`PVT_…`)."
+          },
+          "github_board_title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Cached board title. `None` until the picker has refreshed\n— the UI falls back to \"Untitled board\" in that case."
+          },
+          "github_board_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Cached deep link."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Primary key — opaque to clients. The §7.3 DELETE handler\ntakes this in the URL so the wire shape never carries a\nraw GitHub node id."
+          },
+          "last_mirror_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Aggregate timestamp of the most recent successful mirror\nacross any item under this link. `None` until the first\nsuccess."
+          },
+          "last_mirror_error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Aggregate error from the most recent failed mirror across\nany item under this link; `None` when the most recent\noutcome was a success."
+          },
+          "project_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Parent project."
+          },
+          "start_field_node_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Mapped start-date field, or `None` when the board has no\nstart field (mirror skips the lane)."
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Last accepted mutation on the row."
+          }
+        }
+      },
+      "BoardPickerDto": {
+        "type": "object",
+        "description": "One board in [`OrgProjectPickerDto::boards`].",
+        "required": [
+          "node_id",
+          "title",
+          "date_fields"
+        ],
+        "properties": {
+          "date_fields": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DateFieldDto"
+            },
+            "description": "Date-typed fields the mirror can write. Filtered server-\nside so the dialog's `Start → / Due →` dropdowns only see\nfields the mirror will accept."
+          },
+          "node_id": {
+            "type": "string",
+            "description": "GitHub Projects v2 board node id (`PVT_…`)."
+          },
+          "number": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Project number (`#12` etc.). Optional so a future\ntransport that doesn't surface it doesn't break the DTO."
+          },
+          "title": {
+            "type": "string",
+            "description": "Human-readable title (e.g. `\"NubeIO / Rubix Roadmap\"`)."
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Deep link to github.com for this board, when GitHub\nsurfaces one. The §6.4 dialog uses this for the\n`[Open GitHub project settings]` fallback when the picker\nrenders a single result and the user wants to inspect it\nbefore linking."
+          }
+        }
+      },
       "BulkAddIssuesRequest": {
         "type": "object",
         "description": "Body for `POST /projects/{id}/issues`. CAS-gated on the project's\ncurrent `version` (§7.2); `issue_ids` is capped at\n[`BULK_ADD_ISSUE_CAP`].",
@@ -2892,6 +3191,47 @@
           "key": {
             "type": "string",
             "description": "The bucket key, formatted as a string."
+          }
+        }
+      },
+      "CreateBoardLinkRequest": {
+        "type": "object",
+        "description": "Body for `POST /projects/{id}/board-links`. Carries the board\nthe operator picked from the §6.4 dialog plus the field-id\nmappings the picker resolved. The cached `github_board_title`\n/ `github_board_url` ride through too so the link row renders\nthe right name immediately, without a second picker round-trip.",
+        "required": [
+          "github_board_node_id"
+        ],
+        "properties": {
+          "due_field_node_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Mapped due-date field."
+          },
+          "github_board_node_id": {
+            "type": "string",
+            "description": "GitHub board node id chosen from [`BoardPickerDto::node_id`]."
+          },
+          "github_board_title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Picker-resolved title. Optional — the nightly refresh\nbackfills it if absent."
+          },
+          "github_board_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Picker-resolved deep link."
+          },
+          "start_field_node_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Mapped start-date field. Omit when the board has no start\nfield — the mirror skips that lane."
           }
         }
       },
@@ -3099,6 +3439,24 @@
             ],
             "format": "date-time",
             "description": "Most recent finished webhook-worker tick."
+          }
+        }
+      },
+      "DateFieldDto": {
+        "type": "object",
+        "description": "One date-typed field exposed in the picker. Carries the\nGraphQL node id so the POST body can round-trip the operator's\nchoice without a second picker call.",
+        "required": [
+          "node_id",
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Field name as configured on the GitHub board\n(e.g. `\"Begin date\"`, `\"Target date\"`)."
+          },
+          "node_id": {
+            "type": "string",
+            "description": "Field node id (`PVTF_…`)."
           }
         }
       },
@@ -3730,6 +4088,28 @@
               "null"
             ],
             "description": "Display name, if set."
+          }
+        }
+      },
+      "OrgProjectPickerDto": {
+        "type": "object",
+        "description": "`GET /orgs/{org_id}/projects-v2` response (§7.3). Normalized so\nthe REST contract never leaks the GraphQL envelope. The\n`fetched_at` field is stamped server-side at picker run so the\nUI can render the freshness explicitly when an operator\nre-opens the dialog (the picker itself is a cache-by-default\nread but rebuilds the cache on every call — see\n[`crate::state::AppState`] notes on the picker backend).",
+        "required": [
+          "boards",
+          "fetched_at"
+        ],
+        "properties": {
+          "boards": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BoardPickerDto"
+            },
+            "description": "Boards visible to the deployment, in GitHub-provided order\n(typically most-recently-touched first). Closed boards are\nfiltered out by the normaliser so only link-able targets\nappear in the dialog."
+          },
+          "fetched_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Wall-clock the picker ran. Lets the UI render\n`Fetched 14:23:07` next to the dropdown."
           }
         }
       },

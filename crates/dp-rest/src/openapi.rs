@@ -107,6 +107,12 @@ async fn webhook_github_stub() {}
         crate::project_issues::bulk_add_issues,
         crate::project_issues::remove_project_issue,
         crate::project_issues::get_project_for_issue,
+        // Project ↔ GitHub board mirror picker + link CRUD
+        // (linear-projects-v2.md §7.3).
+        crate::board_links::list_org_projects_v2,
+        crate::board_links::list_board_links,
+        crate::board_links::create_board_link,
+        crate::board_links::delete_board_link,
         // Tags (SCOPE-PROJECTS §7).
         crate::tags::list_tags,
         crate::tags::list_my_tags,
@@ -188,6 +194,13 @@ async fn webhook_github_stub() {}
         crate::project_issues::BulkAddIssuesRequest,
         crate::project_issues::BulkAddResult,
         crate::project_issues::BulkAddSkipDto,
+        // Project ↔ board mirror picker + link CRUD
+        // (linear-projects-v2.md §7.3).
+        crate::board_links::OrgProjectPickerDto,
+        crate::board_links::BoardPickerDto,
+        crate::board_links::DateFieldDto,
+        crate::board_links::BoardLinkDto,
+        crate::board_links::CreateBoardLinkRequest,
         // Tags.
         crate::tags::TagDto,
         crate::tags::TagScopeKindDto,

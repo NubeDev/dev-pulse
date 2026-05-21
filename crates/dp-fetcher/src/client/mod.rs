@@ -1019,6 +1019,44 @@ impl Client {
             })
     }
 
+    /// `organization(login) { projectsV2(first: 50) { … } }` — the
+    /// org-scoped picker the §6.4 `Link a board…` dialog reads
+    /// from (linear-projects-v2.md §7.3). The dp-rest layer
+    /// normalizes the GraphQL envelope into `OrgProjectPickerDto`
+    /// so the REST contract never leaks the GraphQL schema.
+    pub async fn gh_list_org_projectv2(
+        &self,
+        org: &str,
+    ) -> Result<serde_json::Value, GhWriteError> {
+        let query = r#"
+            query OrgProjects($login: String!) {
+              organization(login: $login) {
+                projectsV2(first: 50) {
+                  nodes {
+                    id
+                    title
+                    number
+                    url
+                    closed
+                    fields(first: 50) {
+                      nodes {
+                        ... on ProjectV2FieldCommon { id name dataType }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+        "#;
+        let vars = serde_json::json!({ "login": org });
+        let data = self.gh_graphql(query, vars).await?;
+        Ok(data
+            .get("organization")
+            .and_then(|v| v.get("projectsV2"))
+            .cloned()
+            .unwrap_or(serde_json::json!({"nodes": []})))
+    }
+
     /// `repository(owner, name) { projectsV2(first: 50) { … } }`
     /// — used by the admin pane to surface a project picker
     /// without forcing the operator to paste raw node ids. Each

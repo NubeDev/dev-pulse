@@ -35,6 +35,7 @@
 pub mod admin;
 pub mod app_permissions;
 pub mod audit;
+pub mod board_links;
 pub mod directory;
 pub mod error;
 pub mod inbox;
@@ -64,6 +65,13 @@ pub use app_permissions::{
     GitHubAppConfig,
 };
 pub use audit::Principal;
+pub use board_links::{
+    board_links_router, create_board_link, delete_board_link, list_board_links,
+    list_org_projects_v2, normalize_picker_envelope, BoardLinkDto, BoardPickerDto,
+    CreateBoardLinkRequest, DateFieldDto, OctocrabOrgProjectsPicker,
+    OrgProjectPickerDto, OrgProjectsPickerBackend, OrgProjectsPickerError,
+    UnconfiguredOrgProjectsPicker,
+};
 pub use directory::{
     directory_router, list_orgs, list_teams, list_users, set_home_org, Ack, OrgDto, OrgFilter,
     OrgRequired, SetHomeOrgRequest, TeamDto, UserDto,
