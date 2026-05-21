@@ -40,17 +40,28 @@ RUN pnpm --filter dev-pulse-frontend build
 # ============================================================ runtime
 FROM debian:bookworm-slim AS runtime
 
+# Runtime deps + Caddy (cloudsmith) + Postgres 16 (pgdg).
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates libssl3 gettext-base tini debian-keyring \
-      debian-archive-keyring apt-transport-https curl gnupg \
+      debian-archive-keyring apt-transport-https curl gnupg lsb-release \
  && curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
       | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg \
  && curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
       > /etc/apt/sources.list.d/caddy-stable.list \
- && apt-get update && apt-get install -y --no-install-recommends caddy \
- && apt-get purge -y curl gnupg \
+ && curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+      | gpg --dearmor -o /usr/share/keyrings/pgdg-archive-keyring.gpg \
+ && echo "deb [signed-by=/usr/share/keyrings/pgdg-archive-keyring.gpg] https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" \
+      > /etc/apt/sources.list.d/pgdg.list \
+ && apt-get update && apt-get install -y --no-install-recommends \
+      caddy postgresql-16 \
+ && apt-get purge -y gnupg lsb-release \
  && apt-get autoremove -y \
  && rm -rf /var/lib/apt/lists/*
+
+# Postgres needs its binaries on PATH for the entrypoint.
+ENV PATH="/usr/lib/postgresql/16/bin:${PATH}"
+# Note: `curl` is kept (small) so the Fly health check and the
+# compose-local health check can hit /health without needing wget.
 
 # Backend binary.
 COPY --from=backend-builder /tmp/dev-pulse /usr/local/bin/dev-pulse

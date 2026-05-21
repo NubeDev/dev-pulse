@@ -55,15 +55,17 @@ use std::sync::Arc;
 use axum::{
     extract::{Extension, Path, State},
     response::Json,
-    routing::get,
+    routing::{get, post},
     Router,
 };
 use chrono::{DateTime, Utc};
+use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use dp_domain::setting::UserSetting;
 use dp_domain::store::StoreError;
+use dp_fetcher::client::{Client as GhClient, ClientError as GhClientError, Fetched};
 
 use crate::audit::{self, Principal};
 use crate::directory::Ack;
@@ -342,6 +344,129 @@ fn unknown_setting(key: &str) -> ApiError {
 }
 
 // ---------------------------------------------------------------------------
+// `POST /me/settings/github.pat/test` — diagnostic
+// ---------------------------------------------------------------------------
+
+/// Response from the `github.pat` connectivity probe. Carries
+/// either an `ok: true` payload with the GitHub identity the
+/// token resolves to, or `ok: false` with a stable `code` the
+/// UI can switch on.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(tag = "ok")]
+pub enum TestGithubPatResponse {
+    /// Token authenticated successfully against `GET /user`.
+    #[serde(rename = "true")]
+    Ok {
+        /// GitHub login the token belongs to.
+        login: String,
+        /// Display name from the GitHub profile (may be `null`).
+        name: Option<String>,
+        /// Account type — usually `"User"`.
+        account_type: Option<String>,
+    },
+    /// Token did not authenticate. `code` is one of
+    /// `unauthorized`, `rate_limited`, `network`, `unset`.
+    #[serde(rename = "false")]
+    Err {
+        /// Stable machine code.
+        code: &'static str,
+        /// Human-readable message safe to render.
+        message: String,
+    },
+}
+
+/// `POST /me/settings/github.pat/test` — call `GET /user` on
+/// github.com with the caller's stored PAT and report the
+/// outcome. Diagnostic only; does not store or surface the
+/// token value back to the caller. Returns `200` for both
+/// success and failure outcomes so the UI can switch on the
+/// `ok` discriminator instead of catching errors.
+#[utoipa::path(
+    post,
+    path = "/me/settings/github.pat/test",
+    responses(
+        (status = 200, description = "Probe result (ok | err)", body = TestGithubPatResponse),
+    ),
+    tag = "settings",
+)]
+pub async fn test_github_pat(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+) -> Result<Json<TestGithubPatResponse>, ApiError> {
+    let row = state
+        .store
+        .get_user_setting(principal.actor_user_id, "github.pat")
+        .await?;
+    let token = match row {
+        Some(r) if !r.value.is_empty() => r.value,
+        _ => {
+            return Ok(Json(TestGithubPatResponse::Err {
+                code: "unset",
+                message: "No GitHub PAT is set for your account.".into(),
+            }));
+        }
+    };
+
+    // v1: target github.com. GHE base-url support is a future
+    // setting (e.g. `github.base_url`); not in the catalogue yet.
+    let base_url = "https://api.github.com";
+    let client = match GhClient::with_personal_token(SecretString::from(token), base_url) {
+        Ok(c) => c,
+        Err(e) => {
+            return Ok(Json(TestGithubPatResponse::Err {
+                code: "network",
+                message: format!("GitHub client init failed: {e}"),
+            }));
+        }
+    };
+
+    match client.get_authenticated_user().await {
+        Ok(Fetched::Ok { body, .. }) => {
+            let login = body
+                .get("login")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let name = body.get("name").and_then(|v| v.as_str()).map(String::from);
+            let account_type = body.get("type").and_then(|v| v.as_str()).map(String::from);
+            Ok(Json(TestGithubPatResponse::Ok {
+                login,
+                name,
+                account_type,
+            }))
+        }
+        // 304 with no body is impossible without an If-None-Match;
+        // treat as ok-but-empty for robustness.
+        Ok(Fetched::NotModified { .. }) => Ok(Json(TestGithubPatResponse::Err {
+            code: "network",
+            message: "GitHub returned 304 unexpectedly.".into(),
+        })),
+        Err(GhClientError::Unauthorized) => Ok(Json(TestGithubPatResponse::Err {
+            code: "unauthorized",
+            message: "GitHub rejected the token (401). Check that the PAT is correct, \
+                      not expired, and has the required scopes (repo, read:org)."
+                .into(),
+        })),
+        Err(GhClientError::PrimaryRateLimit { reset_at }) => {
+            Ok(Json(TestGithubPatResponse::Err {
+                code: "rate_limited",
+                message: format!("Primary rate limit hit; resets at {reset_at}."),
+            }))
+        }
+        Err(GhClientError::SecondaryRateLimit { retry_at }) => {
+            Ok(Json(TestGithubPatResponse::Err {
+                code: "rate_limited",
+                message: format!("Secondary rate limit; retry at {retry_at}."),
+            }))
+        }
+        Err(e) => Ok(Json(TestGithubPatResponse::Err {
+            code: "network",
+            message: format!("GitHub request failed: {e}"),
+        })),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
 
@@ -360,10 +485,12 @@ pub fn settings_router(state: Arc<AppState>) -> Router {
         "read",
     );
     let writes = with_permission(
-        Router::new().route(
-            "/me/settings/{key}",
-            axum::routing::put(put_setting).delete(delete_setting),
-        ),
+        Router::new()
+            .route(
+                "/me/settings/{key}",
+                axum::routing::put(put_setting).delete(delete_setting),
+            )
+            .route("/me/settings/github.pat/test", post(test_github_pat)),
         "settings",
         "write",
     );

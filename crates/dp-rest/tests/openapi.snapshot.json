@@ -1170,6 +1170,27 @@
         }
       }
     },
+    "/me/settings/github.pat/test": {
+      "post": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "`POST /me/settings/github.pat/test` — call `GET /user` on\ngithub.com with the caller's stored PAT and report the\noutcome. Diagnostic only; does not store or surface the\ntoken value back to the caller. Returns `200` for both\nsuccess and failure outcomes so the UI can switch on the\n`ok` discriminator instead of catching errors.",
+        "operationId": "test_github_pat",
+        "responses": {
+          "200": {
+            "description": "Probe result (ok | err)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TestGithubPatResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/me/settings/{key}": {
       "get": {
         "tags": [
@@ -5855,6 +5876,70 @@
             "description": "URL slug."
           }
         }
+      },
+      "TestGithubPatResponse": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "Token authenticated successfully against `GET /user`.",
+            "required": [
+              "login",
+              "ok"
+            ],
+            "properties": {
+              "account_type": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Account type — usually `\"User\"`."
+              },
+              "login": {
+                "type": "string",
+                "description": "GitHub login the token belongs to."
+              },
+              "name": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Display name from the GitHub profile (may be `null`)."
+              },
+              "ok": {
+                "type": "string",
+                "enum": [
+                  "true"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Token did not authenticate. `code` is one of\n`unauthorized`, `rate_limited`, `network`, `unset`.",
+            "required": [
+              "code",
+              "message",
+              "ok"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "description": "Stable machine code."
+              },
+              "message": {
+                "type": "string",
+                "description": "Human-readable message safe to render."
+              },
+              "ok": {
+                "type": "string",
+                "enum": [
+                  "false"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "Response from the `github.pat` connectivity probe. Carries\neither an `ok: true` payload with the GitHub identity the\ntoken resolves to, or `ok: false` with a stable `code` the\nUI can switch on."
       },
       "TimelineEntryDto": {
         "type": "object",

@@ -26,10 +26,9 @@ kill_timeout    = "30s"
   dockerfile = "Dockerfile.fly"
 
 [deploy]
-  # Run pending dp-store-pg sqlx migrations before promoting the new
-  # release. The binary's own `migrate` subcommand is the source of truth.
-  release_command = "/usr/local/bin/dev-pulse migrate --config /etc/dev-pulse/config.toml"
-  strategy        = "rolling"
+  # Migrations run inside the entrypoint AFTER bundled Postgres comes up
+  # (the release VM has no /data volume, so we can't use release_command).
+  strategy = "immediate"
 
 [env]
   # Non-secret runtime knobs. Secrets (PATs, OAuth secrets, webhook

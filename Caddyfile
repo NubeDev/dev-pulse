@@ -1,13 +1,14 @@
-# Caddyfile — runs inside the Fly Machine on :8080.
+# Caddyfile — runs INSIDE the Fly Machine on :8080.
 #
 # Fly's edge (Anycast + Let's Encrypt) terminates TLS for *.fly.dev
 # and custom domains, then forwards plain HTTP to this listener.
-# That's why we bind plain `:8080` and not `https://`. If you ever
-# run this image OFF Fly, swap `:8080` for your hostname and Caddy
-# will provision certs automatically.
+# That's why we bind plain `:8080` and not `https://`. The local
+# HTTPS pre-flight (docker-compose.fly-local.yml) puts a SECOND Caddy
+# in front with `tls /certs/localhost.pem` to mimic Fly's edge.
 
 {
-	# Trust Fly's edge so $remote_addr/X-Forwarded-* are honored.
+	# Trust fly-proxy / the local TLS Caddy so X-Forwarded-* are
+	# honoured (drives Secure-cookie issuance, scheme-aware redirects).
 	servers {
 		trusted_proxies static private_ranges
 	}
@@ -18,25 +19,29 @@
 :8080 {
 	encode zstd gzip
 
-	# API routes — must match frontend/nginx.conf and frontend/vite.config.ts.
-	@api {
-		path /auth/* /reports/* /directory/* /admin/* /health /openapi.json /metrics
-	}
-	reverse_proxy @api 127.0.0.1:8731 {
-		header_up X-Forwarded-Proto {http.request.header.X-Forwarded-Proto}
-		header_up X-Forwarded-For   {http.request.header.X-Forwarded-For}
-		header_up Host              {http.request.host}
-	}
-
-	# SPA: serve dist/, fall back to index.html for client-side routing.
-	root * /usr/share/dev-pulse/web
-	try_files {path} /index.html
-	file_server
-
-	# Long-cache hashed assets, no-cache the entry HTML.
+	# Long-cache hashed assets (matches the file_server hit below).
 	@hashed path_regexp \.[0-9a-f]{8,}\.(js|css|woff2?|png|jpg|svg|webp|avif)$
 	header @hashed Cache-Control "public, max-age=31536000, immutable"
 	header /index.html Cache-Control "no-cache"
+
+	# SPA shell + static assets. The frontend uses HASH routing
+	# (URLs like /#/account/settings), so the path the server ever
+	# sees is `/`, `/index.html`, `/assets/*`, or a top-level static
+	# file. Everything else is API and goes to the backend.
+	@spa {
+		path / /index.html /favicon.ico /robots.txt /manifest.json
+		path /assets/* /static/* /icons/*
+	}
+	handle @spa {
+		root * /usr/share/dev-pulse/web
+		try_files {path} /index.html
+		file_server
+	}
+
+	# Catch-all: anything that isn't the SPA is the API.
+	handle {
+		reverse_proxy 127.0.0.1:8731
+	}
 
 	log {
 		output stdout

@@ -343,6 +343,26 @@ export const PutSettingRequestSchema = z.object({
 });
 export type PutSettingRequest = z.infer<typeof PutSettingRequestSchema>;
 
+// Discriminated by `ok` — the server returns `200 OK` for both
+// success and failure of the connectivity probe so the UI can
+// switch on the value rather than catching errors.
+export const TestGithubPatResponseSchema = z.discriminatedUnion("ok", [
+  z.object({
+    ok: z.literal("true"),
+    login: z.string(),
+    name: z.string().nullable(),
+    account_type: z.string().nullable(),
+  }),
+  z.object({
+    ok: z.literal("false"),
+    /** Stable machine code: `unauthorized`, `rate_limited`,
+     *  `network`, `unset`. */
+    code: z.string(),
+    message: z.string(),
+  }),
+]);
+export type TestGithubPatResponse = z.infer<typeof TestGithubPatResponseSchema>;
+
 export const TagScopeKindSchema = z.enum(["user", "team", "org"]);
 export type TagScopeKind = z.infer<typeof TagScopeKindSchema>;
 
@@ -1952,6 +1972,18 @@ export class DevPulseApi {
       `/me/settings/${encodeURIComponent(key)}`,
       undefined,
       AckSchema,
+    );
+  }
+
+  /** `POST /me/settings/github.pat/test` — probe the stored PAT
+   *  against `GET https://api.github.com/user`. Returns a
+   *  discriminated union; both outcomes are HTTP 200. */
+  async testGithubPat(): Promise<TestGithubPatResponse> {
+    return this.sendJson(
+      "POST",
+      "/me/settings/github.pat/test",
+      undefined,
+      TestGithubPatResponseSchema,
     );
   }
 

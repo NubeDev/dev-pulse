@@ -15,7 +15,7 @@
 
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { IconCheck, IconKey, IconTrash } from "@tabler/icons-react";
+import { IconCheck, IconKey, IconPlugConnected, IconTrash } from "@tabler/icons-react";
 
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -31,7 +31,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Spinner } from "@/components/ui/spinner";
 import { api } from "@/api/client";
-import type { SettingDto } from "@/api/client";
+import type { SettingDto, TestGithubPatResponse } from "@/api/client";
 
 const QUERY_KEY = ["me", "settings"] as const;
 
@@ -105,6 +105,20 @@ function SettingCard({ setting }: { setting: SettingDto }): JSX.Element {
   const busy = putMutation.isPending || deleteMutation.isPending;
   const lastError = putMutation.error ?? deleteMutation.error;
 
+  // Connectivity probe for `github.pat`. Both success and failure
+  // outcomes come back as HTTP 200 with a discriminated payload
+  // (see `TestGithubPatResponseSchema`), so we keep the *result*
+  // separately from the mutation `error` (which is reserved for
+  // transport failures).
+  const [probeResult, setProbeResult] = useState<TestGithubPatResponse | null>(
+    null,
+  );
+  const testMutation = useMutation({
+    mutationFn: () => api.testGithubPat(),
+    onSuccess: (res) => setProbeResult(res),
+    onError: () => setProbeResult(null),
+  });
+
   function handleSave() {
     putMutation.mutate(draft);
   }
@@ -162,6 +176,15 @@ function SettingCard({ setting }: { setting: SettingDto }): JSX.Element {
           </Alert>
         ) : null}
 
+        {setting.key === "github.pat" && setting.has_value ? (
+          <GithubPatProbe
+            result={probeResult}
+            running={testMutation.isPending}
+            transportError={testMutation.error}
+            onRun={() => testMutation.mutate()}
+          />
+        ) : null}
+
         <div className="flex items-center justify-between">
           <p className="text-xs text-muted-foreground">
             {savedNote ??
@@ -193,5 +216,75 @@ function SettingCard({ setting }: { setting: SettingDto }): JSX.Element {
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// `github.pat` connectivity probe
+// ---------------------------------------------------------------------------
+// Calls `POST /me/settings/github.pat/test` and renders the
+// discriminated result inline under the card. Kept as a small
+// dedicated component so the success/failure styling lives near
+// the call site without bloating `SettingCard`.
+
+function GithubPatProbe({
+  result,
+  running,
+  transportError,
+  onRun,
+}: {
+  result: TestGithubPatResponse | null;
+  running: boolean;
+  transportError: unknown;
+  onRun: () => void;
+}): JSX.Element {
+  return (
+    <div className="space-y-2 rounded-md border bg-muted/30 p-3">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs text-muted-foreground">
+          Verify the stored token by calling{" "}
+          <code className="font-mono">GET /user</code> on api.github.com.
+          The token itself is never returned to your browser.
+        </p>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={onRun}
+          disabled={running}
+          data-testid="setting-github-pat-test"
+        >
+          {running ? <Spinner /> : <IconPlugConnected size={14} />}
+          Test connection
+        </Button>
+      </div>
+
+      {transportError ? (
+        <Alert variant="destructive">
+          <AlertDescription>
+            Probe request failed: {String(transportError)}
+          </AlertDescription>
+        </Alert>
+      ) : null}
+
+      {result?.ok === "true" ? (
+        <Alert>
+          <AlertDescription>
+            <strong>OK</strong> — authenticated as{" "}
+            <code className="font-mono">{result.login}</code>
+            {result.name ? ` (${result.name})` : ""}
+            {result.account_type ? ` · ${result.account_type}` : ""}.
+          </AlertDescription>
+        </Alert>
+      ) : null}
+
+      {result?.ok === "false" ? (
+        <Alert variant="destructive">
+          <AlertDescription>
+            <strong>{result.code}</strong> — {result.message}
+          </AlertDescription>
+        </Alert>
+      ) : null}
+    </div>
   );
 }

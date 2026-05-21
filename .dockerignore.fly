@@ -1,0 +1,40 @@
+# Ignore file for `fly deploy` whose build context is the PARENT dir
+# (so workspace path-deps in ../starter resolve). Passed via
+# `fly deploy --ignorefile dev-pulse/.dockerignore.fly`.
+#
+# Whitelist approach: deny everything, then allow only what the
+# Dockerfile.fly COPY layers need.
+
+**
+
+# Source we DO need.
+!starter/**
+!dev-pulse/**
+
+# Drop heavy build/cache artefacts everywhere.
+**/target/**
+**/node_modules/**
+**/.git/**
+**/.venv/**
+**/.cache/**
+**/.codeless/**
+**/.next/**
+**/dist/**
+**/build/**
+**/.turbo/**
+**/.pnpm-store/**
+
+# dev-pulse-specific large/irrelevant trees.
+dev-pulse/runs/**
+dev-pulse/.codeless/**
+dev-pulse/frontend/test-results/**
+dev-pulse/frontend/playwright-report/**
+dev-pulse/certs/**
+dev-pulse/.env*
+dev-pulse/docker-compose.fly-local.yml
+dev-pulse/Caddyfile.local
+dev-pulse/Dockerfile.backend
+dev-pulse/Dockerfile.frontend
+
+# Sibling extras we never copy.
+codeless-workspace/**

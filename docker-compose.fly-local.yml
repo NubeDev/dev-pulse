@@ -78,7 +78,7 @@ services:
       - app-data:/data
     healthcheck:
       # Hits the inner Caddy (which proxies to the backend's /health).
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
       interval: 5s
       timeout: 3s
       retries: 20

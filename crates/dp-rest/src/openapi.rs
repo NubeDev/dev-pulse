@@ -166,6 +166,7 @@ async fn webhook_github_stub() {}
         crate::settings::get_setting,
         crate::settings::put_setting,
         crate::settings::delete_setting,
+        crate::settings::test_github_pat,
         // Webhooks (Phase 2 — docs-only stub, real handler in dp-fetcher).
         webhook_github_stub,
     ),
@@ -273,6 +274,7 @@ async fn webhook_github_stub() {}
         // Per-user settings.
         crate::settings::SettingDto,
         crate::settings::PutSettingRequest,
+        crate::settings::TestGithubPatResponse,
     )),
     tags(
         (name = "reports",   description = "Per-user / team / org activity reports + freshness probe."),

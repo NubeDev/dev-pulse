@@ -176,6 +176,7 @@ fly-deploy:
 	  --app $(FLY_APP) \
 	  --config $(ROOT)/fly.toml \
 	  --dockerfile $(ROOT)/Dockerfile.fly \
+	  --ignorefile $(ROOT)/.dockerignore.fly \
 	  --remote-only \
 	  .
 
