@@ -102,6 +102,11 @@ async fn webhook_github_stub() {}
         crate::projects::create_project,
         crate::projects::patch_project,
         crate::projects::archive_project,
+        // Project ↔ issue membership (linear-projects-v2.md §7.2).
+        crate::project_issues::list_project_issues,
+        crate::project_issues::bulk_add_issues,
+        crate::project_issues::remove_project_issue,
+        crate::project_issues::get_project_for_issue,
         // Tags (SCOPE-PROJECTS §7).
         crate::tags::list_tags,
         crate::tags::list_my_tags,
@@ -179,6 +184,10 @@ async fn webhook_github_stub() {}
         crate::projects::CreateProjectRequest,
         crate::projects::PatchProjectRequest,
         crate::projects::ArchiveProjectRequest,
+        // Project ↔ issue membership (linear-projects-v2.md §7.2).
+        crate::project_issues::BulkAddIssuesRequest,
+        crate::project_issues::BulkAddResult,
+        crate::project_issues::BulkAddSkipDto,
         // Tags.
         crate::tags::TagDto,
         crate::tags::TagScopeKindDto,

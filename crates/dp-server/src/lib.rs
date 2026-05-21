@@ -84,7 +84,7 @@ use dp_fetcher::webhook::{self, WebhookMetrics, WebhookSecretSource, WebhookStat
 use dp_rest::{
     admin_router, app_permissions_router, directory_router, inbox_router, issue_dates_router,
     issues_read_router, issues_write_router, me_identities_router, pins_router,
-    projects_router, repo_project_link_router, repos_router,
+    project_issues_router, projects_router, repo_project_link_router, repos_router,
     reports_router, tags_router, AdminState, AppState as RestAppState, DevPulseApi,
 };
 
@@ -292,6 +292,11 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
     // Slice A: list / get / create / patch / archive. Membership
     // (§7.2) and board picker (§7.3) land in later stages.
     let projects = projects_router(rest_state.clone());
+    // First-class Projects ↔ issues membership (linear-projects-v2.md
+    // §7.2): bulk add, single delete, list, and "what's this issue's
+    // project?". Routes ride the same `(projects, read|write)` lanes
+    // as the §7.1 CRUD spine.
+    let project_issues = project_issues_router(rest_state.clone());
     let tags = tags_router(rest_state.clone());
     let repos = repos_router(rest_state.clone());
     let issues_read = issues_read_router(rest_state.clone());
@@ -330,6 +335,7 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
         .merge(directory)
         .merge(pins)
         .merge(projects)
+        .merge(project_issues)
         .merge(tags)
         .merge(repos)
         .merge(issues_read)

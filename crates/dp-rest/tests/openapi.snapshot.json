@@ -564,6 +564,46 @@
         }
       }
     },
+    "/issues/{id}/project": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "`GET /issues/{id}/project` — resolve the (single, per v1 `UNIQUE\n(issue_id)`) project for an issue, or `null` when the issue is\nnot in any project. Backs the §6.5 detail-pane chip.",
+        "operationId": "get_project_for_issue",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Issue id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ProjectDto or null",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProjectDto"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/issues/{id}/refresh": {
       "post": {
         "tags": [
@@ -1415,6 +1455,184 @@
           },
           "404": {
             "description": "No such project"
+          },
+          "409": {
+            "description": "Stale `expected_version`"
+          }
+        }
+      }
+    },
+    "/projects/{id}/issues": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "`GET /projects/{id}/issues` — paginated issue list scoped to a\nproject (§7.2). Same envelope as `GET /issues`.",
+        "description": "Implementation note: v1 resolves membership via\n[`Store::list_issue_ids_for_project`], fetches each issue row\nwith [`Store::get_issue`], applies optional `state` / `q` filters\nin-memory, then paginates. Correct for the slice-A target of\nprojects with ≤ 100 issues. The natural follow-up — a SQL-level\n\"filter `dp_issues` by `project_id`\" — is deferred until\n`IssueListFilter` grows a `project_id` field in slice B.",
+        "operationId": "list_project_issues",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "description": "open|closed|all (default all)",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Substring search on title",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size (1..=200, default 50)",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Page offset (default 0)",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated issue list scoped to the project",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssueListResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such project"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "`POST /projects/{id}/issues` — bulk add (§7.2). Returns\n`BulkAddResult` so per-row outcomes flow back in one round-trip.",
+        "description": "* `issue_ids` capped at [`BULK_ADD_ISSUE_CAP`]; over the cap\n  returns `400 bulk_add_too_large`.\n* CAS-gated on the project's `version`; mismatch returns\n  `409 stale_project_version`.\n* One audit row per accepted issue\n  ([`audit::PROJECT_ISSUE_ADD`]); skipped rows never audit.",
+        "operationId": "bulk_add_issues",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BulkAddIssuesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Per-row outcome of the bulk add",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BulkAddResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure (cap, etc.)"
+          },
+          "404": {
+            "description": "No such project"
+          },
+          "409": {
+            "description": "Stale `expected_version`"
+          }
+        }
+      }
+    },
+    "/projects/{id}/issues/{issue_id}": {
+      "delete": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "`DELETE /projects/{id}/issues/{issue_id}?expected_version=` —\nsingle detach (§7.2). 204 on success; CAS-gated on the project's\n`version`. A no-op detach (the issue is not currently in this\nproject) is `404 project_issue_not_found` — same idempotence-at-\nthe-application-boundary contract as the store layer.",
+        "operationId": "remove_project_issue",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "issue_id",
+            "in": "path",
+            "description": "Issue id to detach",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "expected_version",
+            "in": "query",
+            "description": "Caller-observed project version (CAS)",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Detached"
+          },
+          "404": {
+            "description": "No such project, or issue is not in this project"
           },
           "409": {
             "description": "Stale `expected_version`"
@@ -2525,6 +2743,81 @@
             "type": "integer",
             "format": "int64",
             "description": "The `version` the caller observed."
+          }
+        }
+      },
+      "BulkAddIssuesRequest": {
+        "type": "object",
+        "description": "Body for `POST /projects/{id}/issues`. CAS-gated on the project's\ncurrent `version` (§7.2); `issue_ids` is capped at\n[`BULK_ADD_ISSUE_CAP`].",
+        "required": [
+          "expected_version",
+          "issue_ids"
+        ],
+        "properties": {
+          "expected_version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The `version` the caller observed on the project row. A\nmismatch returns `409 stale_project_version` just like the\n§7.1 PATCH / archive routes."
+          },
+          "issue_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "Issue ids to attach. Capped at [`BULK_ADD_ISSUE_CAP`]; over\nthe cap returns `400 bulk_add_too_large`. An empty array is\naccepted as a no-op (returns `BulkAddResult { added: [],\nskipped: [] }` and does not bump the project version)."
+          }
+        }
+      },
+      "BulkAddResult": {
+        "type": "object",
+        "description": "`BulkAddResult` — the per-row outcome shape `linear-projects-v2.md`\n§7.2 / `SCOPE-PROJECTS.md` §7 wire through the REST layer so the\nUI can render add-by-add status from one round-trip.",
+        "required": [
+          "added",
+          "skipped"
+        ],
+        "properties": {
+          "added": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "Issue ids the store accepted into the project."
+          },
+          "skipped": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BulkAddSkipDto"
+            },
+            "description": "Issue ids the store refused, each with a closed-vocabulary\n`reason`. See [`BulkAddSkipDto`]."
+          }
+        }
+      },
+      "BulkAddSkipDto": {
+        "type": "object",
+        "description": "One row in [`BulkAddResult::skipped`]. Mirrors\n[`ProjectIssueAddSkip`] but kept as a separate wire type so the\nOpenAPI schema is decoupled from the domain crate and so the\n`reason` vocabulary is documented at the REST boundary.",
+        "required": [
+          "issue_id",
+          "reason"
+        ],
+        "properties": {
+          "existing_project_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Set when `reason == \"already_in_project\"`. Lets the UI link\ndirectly to the existing project's detail page."
+          },
+          "issue_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The issue id that was rejected."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Closed-vocabulary reason; one of:\n\n* `\"already_in_project\"` — the v1 `UNIQUE (issue_id)`\n  constraint fired. `existing_project_id` is set so the UI\n  can render a `Move here?` affordance.\n* `\"unknown_issue\"` — the issue id did not resolve in\n  `dp_issues`.\n* `\"cross_org\"` — the issue's `org_id` differs from the\n  project's `org_id` (v1: one org per project, §4)."
           }
         }
       },

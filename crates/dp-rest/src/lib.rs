@@ -45,6 +45,7 @@ pub mod issues_write;
 pub mod me_identities;
 pub mod openapi;
 pub mod pins;
+pub mod project_issues;
 pub mod projects;
 pub mod reports;
 pub mod repo_project_link;
@@ -111,6 +112,11 @@ pub use projects::{
     archive_project, create_project, get_project, list_projects, patch_project, projects_router,
     ArchiveProjectRequest, CreateProjectRequest, ListProjectsQuery, PatchProjectRequest,
     ProjectDto, ProjectListResponse, ProjectStatusDto,
+};
+pub use project_issues::{
+    bulk_add_issues, get_project_for_issue, list_project_issues, project_issues_router,
+    remove_project_issue, BulkAddIssuesRequest, BulkAddResult, BulkAddSkipDto,
+    ListProjectIssuesQuery, RemoveIssueQuery, BULK_ADD_ISSUE_CAP,
 };
 pub use reports::{
     freshness_report, home_org_split_report, issues_report, org_report, reports_router,
