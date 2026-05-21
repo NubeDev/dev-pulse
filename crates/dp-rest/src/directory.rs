@@ -212,6 +212,41 @@ pub async fn list_orgs(
     Ok(Json(orgs.into_iter().map(OrgDto::from).collect()))
 }
 
+/// `GET /me/orgs` — orgs the caller has a membership in.
+///
+/// Narrower than `GET /orgs` (which returns every org dev-pulse
+/// has observed). Use this surface when the UI needs to scope a
+/// write to an org the caller is allowed to write to — e.g. the
+/// Account → Tags page picking a scope for `POST /tags`, whose
+/// backend gate (`tags::ViewerVisibility::visible_org_ids`) only
+/// admits orgs the caller is a direct member of. Returning the
+/// full directory there causes a confusing 403 when the operator
+/// picks an org they can see but isn't in.
+#[utoipa::path(
+    get,
+    path = "/me/orgs",
+    responses(
+        (status = 200, description = "Orgs the caller is a member of", body = Vec<OrgDto>),
+    ),
+    tag = "directory",
+)]
+pub async fn list_my_orgs(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+) -> Result<Json<Vec<OrgDto>>, ApiError> {
+    let memberships = state
+        .store
+        .list_memberships_for_user(principal.actor_user_id)
+        .await?;
+    let mut out: Vec<OrgDto> = Vec::with_capacity(memberships.len());
+    for m in memberships {
+        if let Some(o) = state.store.get_org(m.org_id).await? {
+            out.push(OrgDto::from(o));
+        }
+    }
+    Ok(Json(out))
+}
+
 /// `GET /teams?org_id=…` — teams inside one org.
 #[utoipa::path(
     get,
@@ -299,6 +334,11 @@ pub fn directory_router(state: Arc<AppState>) -> Router {
         ))
         .merge(with_permission(
             Router::new().route("/orgs", get(list_orgs)),
+            "orgs",
+            "read",
+        ))
+        .merge(with_permission(
+            Router::new().route("/me/orgs", get(list_my_orgs)),
             "orgs",
             "read",
         ))

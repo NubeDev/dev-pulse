@@ -47,7 +47,9 @@ pub mod me_identities;
 pub mod openapi;
 pub mod pins;
 pub mod project_issues;
+pub mod project_milestones;
 pub mod project_repos;
+pub mod project_views;
 pub mod projects;
 pub mod reports;
 pub mod repos;
@@ -74,7 +76,7 @@ pub use board_links::{
     UnconfiguredOrgProjectsPicker,
 };
 pub use directory::{
-    directory_router, list_orgs, list_teams, list_users, set_home_org, Ack, OrgDto, OrgFilter,
+    directory_router, list_orgs, list_teams, list_users, set_home_org, list_my_orgs, Ack, OrgDto, OrgFilter,
     OrgRequired, SetHomeOrgRequest, TeamDto, UserDto,
 };
 pub use error::ApiError;
@@ -135,6 +137,15 @@ pub use project_issues::{
 pub use project_repos::{
     add_project_repo, list_project_repos, project_repos_router, remove_project_repo,
     ProjectRepoDto,
+};
+pub use project_milestones::{
+    adopt_milestone, list_project_milestones, project_milestones_router, AdoptMilestoneBody,
+    ListMilestonesQuery, MilestoneDto,
+};
+pub use project_views::{
+    create_project_view, delete_project_view, get_project_view, list_project_views,
+    project_views_router, reorder_project_views, update_project_view, ProjectViewCreateBody,
+    ProjectViewDto, ProjectViewReorderBody, ProjectViewUpdateBody,
 };
 pub use reports::{
     freshness_report, home_org_split_report, issues_report, org_report, reports_router,

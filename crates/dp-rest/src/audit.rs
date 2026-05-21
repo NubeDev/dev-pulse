@@ -164,6 +164,21 @@ pub const PROJECT_REPO_ADD: &str = "project.repo.add";
 /// `project.repo.remove` — `DELETE /projects/{id}/repos/{repo_id}`.
 pub const PROJECT_REPO_REMOVE: &str = "project.repo.remove";
 
+/// `project.view.create` — `POST /projects/{id}/views`
+/// (PROJECT-VIEW.md §7.1, Slice 4).
+pub const PROJECT_VIEW_CREATE: &str = "project.view.create";
+/// `project.view.update` — `PATCH /projects/{id}/views/{view_id}`.
+pub const PROJECT_VIEW_UPDATE: &str = "project.view.update";
+/// `project.view.delete` — `DELETE /projects/{id}/views/{view_id}`.
+pub const PROJECT_VIEW_DELETE: &str = "project.view.delete";
+/// `project.view.reorder` — `POST /projects/{id}/views/reorder`.
+pub const PROJECT_VIEW_REORDER: &str = "project.view.reorder";
+
+/// `project.milestone.adopt` — `POST /projects/{id}/adopt-milestone`
+/// (PROJECT-VIEW.md §5.5 / §9.5, Slice 5). Target carries
+/// `<project_id>:<milestone_id>` or `<project_id>:` on a clear.
+pub const PROJECT_MILESTONE_ADOPT: &str = "project.milestone.adopt";
+
 /// `issue.pending_remote_timeout` — emitted by the §8.5 sweeper
 /// when a `dp_issues.pending_remote` flag has lingered past
 /// `issues.pending_remote_timeout_secs`. The audit target carries

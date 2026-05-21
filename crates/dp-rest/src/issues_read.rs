@@ -116,6 +116,17 @@ pub struct IssueDto {
     /// the same as before.
     #[serde(default, skip_serializing_if = "is_false")]
     pub unread: bool,
+    /// Bucket keys assigned by an active `group_by` (PROJECT-VIEW.md
+    /// §7.2). Populated **only** by `GET /projects/{id}/issues` when
+    /// `?group_by=` is set. Each entry is the bucket the issue
+    /// belongs to — `None` (serialised as `null`) for the synthetic
+    /// "No <key>" bucket. An issue can appear in multiple buckets
+    /// when `group_by=tag:<key>` and the issue carries multiple kv
+    /// values for the same key (e.g. `category:firmware` +
+    /// `category:hardware`). Omitted entirely when no grouping is
+    /// active.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bucket_keys: Option<Vec<Option<String>>>,
 }
 
 /// Helper for the `skip_serializing_if` on [`IssueDto::unread`].
@@ -142,6 +153,7 @@ impl From<Issue> for IssueDto {
             updated_at: i.updated_at,
             repo_slug: None,
             unread: false,
+            bucket_keys: None,
         }
     }
 }
@@ -213,6 +225,36 @@ pub struct IssueListResponse {
     pub limit: i64,
     /// Echoed offset.
     pub offset: i64,
+    /// Server-side bucket sidecar — populated **only** by
+    /// `GET /projects/{id}/issues` when `?group_by=` is set
+    /// (PROJECT-VIEW.md §7.2). Counts are **post-filter** (§5.2)
+    /// and authoritative; the client never re-buckets. `key` is
+    /// `None` for the synthetic "No <key>" bucket. Bucket ordering
+    /// is server-decided (§5.1 — ordinal taxonomies first, then
+    /// count desc).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub buckets: Option<Vec<IssueBucket>>,
+}
+
+/// One bucket in [`IssueListResponse::buckets`]. The label is the
+/// human-readable form the client renders verbatim; `key` is the
+/// stable identifier used for collapse state and as the
+/// `bucket_keys` value on `IssueDto`.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct IssueBucket {
+    /// Stable bucket key (`g3-mvp-build`, `open`, `<uuid>` for
+    /// milestone/type buckets). `None` for the synthetic "No <key>"
+    /// bucket.
+    pub key: Option<String>,
+    /// Human-readable label (`G3 · MVP build`, `Open`). For now
+    /// equals `key` for tag buckets; richer labels (gate prefix,
+    /// milestone title) land with the ordinal-taxonomy config
+    /// (PROJECT-VIEW.md §5.1 / §10.1) and milestone joins.
+    pub label: String,
+    /// Open issue count in this bucket, post-filter.
+    pub open: i64,
+    /// Closed issue count in this bucket, post-filter.
+    pub closed: i64,
 }
 
 /// State filter accepted on the wire. `Open` is the v1 default; the
@@ -387,6 +429,7 @@ pub async fn list_issues(
         total,
         limit: filter.limit,
         offset: filter.offset,
+        buckets: None,
     }))
 }
 
@@ -490,6 +533,7 @@ pub async fn me_queue(
         total,
         limit: filter.limit,
         offset: filter.offset,
+        buckets: None,
     }))
 }
 

@@ -98,6 +98,93 @@ export function projectSelectedIssue(route: string): string | null {
   return id && id.length > 0 ? id : null;
 }
 
+/** Parse `?group=<dim>` from a `#/projects/{id}?group=…` route
+ *  (PROJECT-VIEW.md §5.4). Accepts `status` or `tag:<key>`; any
+ *  other value returns `null` so a bad hash falls back to the
+ *  flat list rather than 400-ing the server. */
+export function projectGroupBy(route: string): string | null {
+  const q = route.indexOf("?");
+  if (q < 0) return null;
+  const params = new URLSearchParams(route.slice(q + 1));
+  const raw = params.get("group");
+  if (!raw) return null;
+  if (raw === "status") return raw;
+  if (/^tag:[a-z0-9][a-z0-9-]{0,49}$/.test(raw)) return raw;
+  return null;
+}
+
+/** Parse `?filter=<chips>` from a project detail route
+ *  (PROJECT-VIEW.md §5.4). Returns the raw wire string verbatim —
+ *  the workbench is responsible for splitting on `;` and rendering
+ *  chips. `null` when absent or empty. */
+export function projectFilter(route: string): string | null {
+  const q = route.indexOf("?");
+  if (q < 0) return null;
+  const params = new URLSearchParams(route.slice(q + 1));
+  const raw = params.get("filter");
+  if (!raw) return null;
+  return raw;
+}
+
+/** Parse `?sort=<order>` from a project detail route
+ *  (PROJECT-VIEW.md §5.4 / §5.3). */
+export function projectSort(route: string): string | null {
+  const q = route.indexOf("?");
+  if (q < 0) return null;
+  const params = new URLSearchParams(route.slice(q + 1));
+  const raw = params.get("sort");
+  if (!raw) return null;
+  return raw;
+}
+
+/** Parse `?view=<uuid>` from a project detail route
+ *  (PROJECT-VIEW.md §5.4). When present the workbench treats the
+ *  saved view as the source of truth and only treats explicit
+ *  `group`/`filter`/`sort` overrides as a "dirty" delta. Returns
+ *  the raw value; the caller verifies it against the loaded list
+ *  and shows a "view no longer exists" toast on mismatch. */
+export function projectViewId(route: string): string | null {
+  const q = route.indexOf("?");
+  if (q < 0) return null;
+  const params = new URLSearchParams(route.slice(q + 1));
+  const raw = params.get("view");
+  if (!raw) return null;
+  // Loose UUID shape — server is the authority on existence.
+  if (
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+      raw,
+    )
+  ) {
+    return null;
+  }
+  return raw;
+}
+
+/** Build a `#/projects/{id}` URL while preserving the existing
+ *  query string and replacing the `group` param with `group`.
+ *  Pass `null` to clear. Other params (issue, filter, sort, view)
+ *  are passed through untouched so the toolbar's URL persistence
+ *  composes with the issue-detail deep link. */
+export function projectDetailRouteWithParams(
+  id: string,
+  patch: {
+    issueId?: string | null;
+    group?: string | null;
+    filter?: string | null;
+    sort?: string | null;
+    view?: string | null;
+  },
+): string {
+  const params = new URLSearchParams();
+  if (patch.issueId) params.set("issue", patch.issueId);
+  if (patch.view) params.set("view", patch.view);
+  if (patch.group) params.set("group", patch.group);
+  if (patch.filter) params.set("filter", patch.filter);
+  if (patch.sort) params.set("sort", patch.sort);
+  const qs = params.toString();
+  return `#/projects/${id}${qs ? `?${qs}` : ""}`;
+}
+
 /** Sub-route under the account section. Defaults to
  *  `identities` — the link / unlink / transfer / set-primary
  *  surface (`linear-projects-idea.md` §10 multi-identity).

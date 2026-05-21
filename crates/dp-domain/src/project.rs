@@ -103,6 +103,13 @@ pub struct Project {
     /// §8.2 CAS counter. Bumped by every accepted write; PATCH /
     /// archive callers send `expected_version`.
     pub version: i64,
+    /// Adopted "primary" milestone — the one a project is currently
+    /// orbiting (PROJECT-VIEW.md §5.5 / §9.5). `None` until the
+    /// operator runs `Adopt as primary` on a milestone card. The
+    /// FK is `ON DELETE SET NULL` so dropping a repo (which
+    /// cascades to its milestones) automatically detaches the
+    /// pointer rather than leaving a dangling row.
+    pub primary_milestone_id: Option<Uuid>,
 }
 
 /// Mutable payload for create / update. Carries only the

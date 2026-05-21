@@ -32,6 +32,7 @@ use dp_domain::freshness::DataAsOf;
 use dp_domain::identity::{IdentityLinkPending, UserIdentity, VerifiedVia};
 use dp_domain::inbox::{InboxIssueRow, InboxStatus, UserIssueState};
 use dp_domain::membership::Membership;
+use dp_domain::milestone::{Milestone, MilestoneState, MilestoneUpsert};
 use dp_domain::org::Org;
 use dp_domain::pin::{Pin, PinKind};
 use dp_domain::repo::Repo;
@@ -48,6 +49,9 @@ use dp_domain::issue_dates::{IssueDates, ProjectV2MirrorTask, ProjectV2MirrorTas
 use dp_domain::project::{
     Project, ProjectIssueAddOutcome, ProjectIssueAddSkip, ProjectListFilter, ProjectRepo,
     ProjectStatus, ProjectUpsert,
+};
+use dp_domain::project_view::{
+    ProjectView, ProjectViewFilterClause, ProjectViewUpsert, ProjectViewVisibility,
 };
 use dp_domain::store::{
     EventActorRow, IssueDatesMirrorOutcome, IssueListFilter, IssueMetric, IssueMetricGroupBy,
@@ -126,6 +130,34 @@ fn invalid(msg: impl Into<String>) -> StoreError {
     let m: String = msg.into();
     let e: Box<dyn StdError + Send + Sync> = m.into();
     StoreError::Backend(e)
+}
+
+fn project_view_from_row(
+    r: &sqlx::postgres::PgRow,
+) -> Result<ProjectView, StoreError> {
+    let filter_json: serde_json::Value = r.try_get("filter_json").map_err(map_sqlx)?;
+    let filter_clauses: Vec<ProjectViewFilterClause> =
+        serde_json::from_value(filter_json).map_err(|e| {
+            StoreError::Invalid(format!("filter_json decode: {e}"))
+        })?;
+    let visibility_text: String = r.try_get("visibility").map_err(map_sqlx)?;
+    let visibility = ProjectViewVisibility::from_str(&visibility_text)
+        .ok_or_else(|| {
+            StoreError::Invalid(format!("unknown view visibility: {visibility_text}"))
+        })?;
+    Ok(ProjectView {
+        id: r.try_get("id").map_err(map_sqlx)?,
+        project_id: r.try_get("project_id").map_err(map_sqlx)?,
+        owner_user_id: r.try_get("owner_user_id").map_err(map_sqlx)?,
+        name: r.try_get("name").map_err(map_sqlx)?,
+        group_by: r.try_get("group_by").map_err(map_sqlx)?,
+        filter_clauses,
+        sort: r.try_get("sort").map_err(map_sqlx)?,
+        position: r.try_get("position").map_err(map_sqlx)?,
+        visibility,
+        created_at: r.try_get("created_at").map_err(map_sqlx)?,
+        updated_at: r.try_get("updated_at").map_err(map_sqlx)?,
+    })
 }
 
 // ---------- row decoders --------------------------------------------
@@ -476,6 +508,29 @@ fn row_to_tag_link(r: &sqlx::postgres::PgRow) -> Result<TagLink, StoreError> {
         target_team_id: r.try_get("target_team_id").map_err(map_sqlx)?,
         added_by: r.try_get("added_by").map_err(map_sqlx)?,
         added_at: r.try_get("added_at").map_err(map_sqlx)?,
+    })
+}
+
+fn row_to_milestone(r: &sqlx::postgres::PgRow) -> Result<Milestone, StoreError> {
+    let state_text: String = r.try_get("state").map_err(map_sqlx)?;
+    let state = MilestoneState::from_str(&state_text)
+        .ok_or_else(|| StoreError::Invalid(format!("unknown milestone state {state_text:?}")))?;
+    Ok(Milestone {
+        id: r.try_get("id").map_err(map_sqlx)?,
+        repo_id: r.try_get("repo_id").map_err(map_sqlx)?,
+        github_number: r.try_get("github_number").map_err(map_sqlx)?,
+        github_node_id: r.try_get("github_node_id").map_err(map_sqlx)?,
+        title: r.try_get("title").map_err(map_sqlx)?,
+        description: r.try_get("description").map_err(map_sqlx)?,
+        state,
+        due_on: r.try_get("due_on").map_err(map_sqlx)?,
+        open_issues: r.try_get("open_issues").map_err(map_sqlx)?,
+        closed_issues: r.try_get("closed_issues").map_err(map_sqlx)?,
+        created_at: r.try_get("created_at").map_err(map_sqlx)?,
+        updated_at: r.try_get("updated_at").map_err(map_sqlx)?,
+        closed_at: r.try_get("closed_at").map_err(map_sqlx)?,
+        fetched_at: r.try_get("fetched_at").map_err(map_sqlx)?,
+        remote_missing_streak: r.try_get("remote_missing_streak").map_err(map_sqlx)?,
     })
 }
 
@@ -3478,7 +3533,8 @@ impl Store for PgStore {
         let rows = sqlx::query(
             r#"SELECT id, org_id, name, description, lead_user_id, status,
                       start_at, due_at, issue_count, closed_issue_count,
-                      created_by, created_at, updated_at, version
+                      created_by, created_at, updated_at, version,
+                      primary_milestone_id
                  FROM dp_projects
                 WHERE ($1::uuid IS NULL OR org_id = $1)
                   AND ($2::text IS NULL OR status = $2)
@@ -3535,7 +3591,8 @@ impl Store for PgStore {
         let row = sqlx::query(
             r#"SELECT id, org_id, name, description, lead_user_id, status,
                       start_at, due_at, issue_count, closed_issue_count,
-                      created_by, created_at, updated_at, version
+                      created_by, created_at, updated_at, version,
+                      primary_milestone_id
                  FROM dp_projects WHERE id = $1"#,
         )
         .bind(id)
@@ -3557,7 +3614,8 @@ impl Store for PgStore {
                        now(), now(), 1)
                RETURNING id, org_id, name, description, lead_user_id, status,
                          start_at, due_at, issue_count, closed_issue_count,
-                         created_by, created_at, updated_at, version"#,
+                         created_by, created_at, updated_at, version,
+                         primary_milestone_id"#,
         )
         .bind(upsert.org_id)
         .bind(&upsert.name)
@@ -3606,7 +3664,8 @@ impl Store for PgStore {
                 WHERE id = $1 AND version = $2
                RETURNING id, org_id, name, description, lead_user_id, status,
                          start_at, due_at, issue_count, closed_issue_count,
-                         created_by, created_at, updated_at, version"#,
+                         created_by, created_at, updated_at, version,
+                         primary_milestone_id"#,
         )
         .bind(id)
         .bind(expected_version)
@@ -3650,7 +3709,8 @@ impl Store for PgStore {
                 WHERE id = $1 AND version = $2
                RETURNING id, org_id, name, description, lead_user_id, status,
                          start_at, due_at, issue_count, closed_issue_count,
-                         created_by, created_at, updated_at, version"#,
+                         created_by, created_at, updated_at, version,
+                         primary_milestone_id"#,
         )
         .bind(id)
         .bind(expected_version)
@@ -3835,7 +3895,8 @@ impl Store for PgStore {
                 WHERE id = $1
                RETURNING id, org_id, name, description, lead_user_id, status,
                          start_at, due_at, issue_count, closed_issue_count,
-                         created_by, created_at, updated_at, version"#,
+                         created_by, created_at, updated_at, version,
+                         primary_milestone_id"#,
         )
         .bind(project_id)
         .fetch_one(&mut *tx)
@@ -3853,7 +3914,8 @@ impl Store for PgStore {
         let row = sqlx::query(
             r#"SELECT p.id, p.org_id, p.name, p.description, p.lead_user_id, p.status,
                       p.start_at, p.due_at, p.issue_count, p.closed_issue_count,
-                      p.created_by, p.created_at, p.updated_at, p.version
+                      p.created_by, p.created_at, p.updated_at, p.version,
+                      p.primary_milestone_id
                  FROM dp_projects p
                  JOIN dp_project_issues pi ON pi.project_id = p.id
                 WHERE pi.issue_id = $1"#,
@@ -3882,6 +3944,294 @@ impl Store for PgStore {
         rows.iter()
             .map(|r| r.try_get::<Uuid, _>("issue_id").map_err(map_sqlx))
             .collect()
+    }
+
+    async fn list_project_issue_tag_values(
+        &self,
+        project_id: Uuid,
+        tag_key: &str,
+    ) -> Result<Vec<(Uuid, String)>, StoreError> {
+        // Walk the project's issue ids through dp_tag_links → dp_tags
+        // and pull `(issue_id, value)` for the requested kv key.
+        // Archived tags are excluded so the workbench's bucket list
+        // tracks live data only (PROJECT-VIEW.md §5.1).
+        let rows = sqlx::query(
+            r#"SELECT tl.target_issue_id AS issue_id, t.value AS value
+                 FROM dp_project_issues pi
+                 JOIN dp_tag_links tl ON tl.target_issue_id = pi.issue_id
+                                     AND tl.kind = 'issue'
+                 JOIN dp_tags t       ON t.id = tl.tag_id
+                                     AND t.kind = 'kv'
+                                     AND t.key = $2
+                                     AND t.archived_at IS NULL
+                WHERE pi.project_id = $1"#,
+        )
+        .bind(project_id)
+        .bind(tag_key)
+        .fetch_all(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        rows.iter()
+            .map(|r| {
+                let id: Uuid = r.try_get("issue_id").map_err(map_sqlx)?;
+                let v: String = r.try_get("value").map_err(map_sqlx)?;
+                Ok((id, v))
+            })
+            .collect()
+    }
+
+    async fn list_project_issue_tag_keys(
+        &self,
+        project_id: Uuid,
+    ) -> Result<Vec<String>, StoreError> {
+        let rows = sqlx::query(
+            r#"SELECT DISTINCT t.key AS key
+                 FROM dp_project_issues pi
+                 JOIN dp_tag_links tl ON tl.target_issue_id = pi.issue_id
+                                     AND tl.kind = 'issue'
+                 JOIN dp_tags t       ON t.id = tl.tag_id
+                                     AND t.kind = 'kv'
+                                     AND t.archived_at IS NULL
+                                     AND t.key IS NOT NULL
+                WHERE pi.project_id = $1
+             ORDER BY key ASC"#,
+        )
+        .bind(project_id)
+        .fetch_all(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        rows.iter()
+            .map(|r| r.try_get::<String, _>("key").map_err(map_sqlx))
+            .collect()
+    }
+
+    // ---- project saved views (PROJECT-VIEW.md §6.1) --------------
+
+    async fn list_project_views(
+        &self,
+        project_id: Uuid,
+        owner_user_id: Uuid,
+    ) -> Result<Vec<ProjectView>, StoreError> {
+        let rows = sqlx::query(
+            r#"SELECT id, project_id, owner_user_id, name, group_by,
+                      filter_json, sort, position, visibility,
+                      created_at, updated_at
+                 FROM dp_project_views
+                WHERE project_id = $1 AND owner_user_id = $2
+             ORDER BY position ASC, created_at ASC"#,
+        )
+        .bind(project_id)
+        .bind(owner_user_id)
+        .fetch_all(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        rows.iter().map(project_view_from_row).collect()
+    }
+
+    async fn get_project_view(
+        &self,
+        id: Uuid,
+        owner_user_id: Uuid,
+    ) -> Result<Option<ProjectView>, StoreError> {
+        let row_opt = sqlx::query(
+            r#"SELECT id, project_id, owner_user_id, name, group_by,
+                      filter_json, sort, position, visibility,
+                      created_at, updated_at
+                 FROM dp_project_views
+                WHERE id = $1 AND owner_user_id = $2"#,
+        )
+        .bind(id)
+        .bind(owner_user_id)
+        .fetch_optional(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        row_opt.as_ref().map(project_view_from_row).transpose()
+    }
+
+    async fn create_project_view(
+        &self,
+        project_id: Uuid,
+        owner_user_id: Uuid,
+        upsert: &ProjectViewUpsert,
+    ) -> Result<ProjectView, StoreError> {
+        let id = Uuid::new_v4();
+        let filter_json = serde_json::to_value(&upsert.filter_clauses)
+            .map_err(|e| StoreError::Invalid(format!("filter_json encode: {e}")))?;
+        let mut tx = self.pool.sqlx().begin().await.map_err(map_sqlx)?;
+        // Append-at-end position. Per-(project, owner) so two users'
+        // tab strips never collide on position.
+        let (next_pos,): (i64,) = sqlx::query_as(
+            r#"SELECT COUNT(*)::bigint
+                 FROM dp_project_views
+                WHERE project_id = $1 AND owner_user_id = $2"#,
+        )
+        .bind(project_id)
+        .bind(owner_user_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(map_sqlx)?;
+        let row = sqlx::query(
+            r#"INSERT INTO dp_project_views
+                  (id, project_id, owner_user_id, name, group_by,
+                   filter_json, sort, position, visibility)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+               RETURNING id, project_id, owner_user_id, name, group_by,
+                         filter_json, sort, position, visibility,
+                         created_at, updated_at"#,
+        )
+        .bind(id)
+        .bind(project_id)
+        .bind(owner_user_id)
+        .bind(&upsert.name)
+        .bind(&upsert.group_by)
+        .bind(&filter_json)
+        .bind(if upsert.sort.is_empty() {
+            "updated_desc"
+        } else {
+            upsert.sort.as_str()
+        })
+        .bind(next_pos as i32)
+        .bind(upsert.visibility.as_str())
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(map_sqlx)?;
+        tx.commit().await.map_err(map_sqlx)?;
+        project_view_from_row(&row)
+    }
+
+    async fn update_project_view(
+        &self,
+        id: Uuid,
+        owner_user_id: Uuid,
+        upsert: &ProjectViewUpsert,
+    ) -> Result<ProjectView, StoreError> {
+        let filter_json = serde_json::to_value(&upsert.filter_clauses)
+            .map_err(|e| StoreError::Invalid(format!("filter_json encode: {e}")))?;
+        let row_opt = sqlx::query(
+            r#"UPDATE dp_project_views
+                  SET name = $3,
+                      group_by = $4,
+                      filter_json = $5,
+                      sort = $6,
+                      visibility = $7,
+                      updated_at = now()
+                WHERE id = $1 AND owner_user_id = $2
+                RETURNING id, project_id, owner_user_id, name, group_by,
+                          filter_json, sort, position, visibility,
+                          created_at, updated_at"#,
+        )
+        .bind(id)
+        .bind(owner_user_id)
+        .bind(&upsert.name)
+        .bind(&upsert.group_by)
+        .bind(&filter_json)
+        .bind(if upsert.sort.is_empty() {
+            "updated_desc"
+        } else {
+            upsert.sort.as_str()
+        })
+        .bind(upsert.visibility.as_str())
+        .fetch_optional(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        match row_opt {
+            Some(r) => project_view_from_row(&r),
+            None => Err(not_found("project_view", id)),
+        }
+    }
+
+    async fn delete_project_view(
+        &self,
+        id: Uuid,
+        owner_user_id: Uuid,
+    ) -> Result<(), StoreError> {
+        let res = sqlx::query(
+            r#"DELETE FROM dp_project_views
+                WHERE id = $1 AND owner_user_id = $2"#,
+        )
+        .bind(id)
+        .bind(owner_user_id)
+        .execute(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        if res.rows_affected() == 0 {
+            return Err(not_found("project_view", id));
+        }
+        Ok(())
+    }
+
+    async fn reorder_project_views(
+        &self,
+        project_id: Uuid,
+        owner_user_id: Uuid,
+        ordered_ids: &[Uuid],
+    ) -> Result<Vec<ProjectView>, StoreError> {
+        let mut tx = self.pool.sqlx().begin().await.map_err(map_sqlx)?;
+        // Lock the caller's views so a concurrent reorder / create
+        // can't shift the set out from under us.
+        let existing: Vec<(Uuid,)> = sqlx::query_as(
+            r#"SELECT id FROM dp_project_views
+                WHERE project_id = $1 AND owner_user_id = $2
+                FOR UPDATE"#,
+        )
+        .bind(project_id)
+        .bind(owner_user_id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(map_sqlx)?;
+        let existing_set: std::collections::HashSet<Uuid> =
+            existing.into_iter().map(|(i,)| i).collect();
+        let req_set: std::collections::HashSet<Uuid> =
+            ordered_ids.iter().copied().collect();
+        if existing_set != req_set {
+            return Err(StoreError::Invalid(
+                "reorder ordered_ids must match the existing view set".into(),
+            ));
+        }
+        // Two-phase rewrite to dodge the UNIQUE on (project_id,
+        // owner_user_id, position) — none exists today but if it's
+        // added the swap-via-negatives keeps us safe.
+        for (idx, vid) in ordered_ids.iter().enumerate() {
+            sqlx::query(
+                r#"UPDATE dp_project_views
+                      SET position = $3, updated_at = now()
+                    WHERE id = $1 AND owner_user_id = $2"#,
+            )
+            .bind(vid)
+            .bind(owner_user_id)
+            .bind(-(idx as i32) - 1)
+            .execute(&mut *tx)
+            .await
+            .map_err(map_sqlx)?;
+        }
+        for (idx, vid) in ordered_ids.iter().enumerate() {
+            sqlx::query(
+                r#"UPDATE dp_project_views
+                      SET position = $3
+                    WHERE id = $1 AND owner_user_id = $2"#,
+            )
+            .bind(vid)
+            .bind(owner_user_id)
+            .bind(idx as i32)
+            .execute(&mut *tx)
+            .await
+            .map_err(map_sqlx)?;
+        }
+        let rows = sqlx::query(
+            r#"SELECT id, project_id, owner_user_id, name, group_by,
+                      filter_json, sort, position, visibility,
+                      created_at, updated_at
+                 FROM dp_project_views
+                WHERE project_id = $1 AND owner_user_id = $2
+             ORDER BY position ASC"#,
+        )
+        .bind(project_id)
+        .bind(owner_user_id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(map_sqlx)?;
+        tx.commit().await.map_err(map_sqlx)?;
+        rows.iter().map(project_view_from_row).collect()
     }
 
     // ---- project ↔ repo associations -----------------------------
@@ -4494,6 +4844,200 @@ impl Store for PgStore {
         .map_err(map_sqlx)?;
         rows.iter().map(row_to_tag_link).collect()
     }
+
+    // ---- milestones (tagging.md §9.3) -----------------------------
+
+    async fn upsert_milestone(
+        &self,
+        upsert: &MilestoneUpsert,
+    ) -> Result<Milestone, StoreError> {
+        // Natural-key upsert on `(repo_id, github_number)`. The
+        // surrogate `id` is preserved on conflict so any future FK
+        // from `dp_issues.milestone_id` stays stable. Observing the
+        // milestone is the strongest evidence it's not missing on
+        // the remote, so we always reset `remote_missing_streak`
+        // to 0 on upsert.
+        let row = sqlx::query(
+            "INSERT INTO dp_milestones ( \
+                 repo_id, github_number, github_node_id, title, description, \
+                 state, due_on, open_issues, closed_issues, \
+                 created_at, updated_at, closed_at, \
+                 fetched_at, remote_missing_streak \
+             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now(), 0) \
+             ON CONFLICT (repo_id, github_number) DO UPDATE SET \
+                 github_node_id        = EXCLUDED.github_node_id, \
+                 title                 = EXCLUDED.title, \
+                 description           = EXCLUDED.description, \
+                 state                 = EXCLUDED.state, \
+                 due_on                = EXCLUDED.due_on, \
+                 open_issues           = EXCLUDED.open_issues, \
+                 closed_issues         = EXCLUDED.closed_issues, \
+                 created_at            = EXCLUDED.created_at, \
+                 updated_at            = EXCLUDED.updated_at, \
+                 closed_at             = EXCLUDED.closed_at, \
+                 fetched_at            = now(), \
+                 remote_missing_streak = 0 \
+             RETURNING id, repo_id, github_number, github_node_id, title, \
+                       description, state, due_on, open_issues, closed_issues, \
+                       created_at, updated_at, closed_at, fetched_at, \
+                       remote_missing_streak",
+        )
+        .bind(upsert.repo_id)
+        .bind(upsert.github_number)
+        .bind(&upsert.github_node_id)
+        .bind(&upsert.title)
+        .bind(upsert.description.as_deref())
+        .bind(upsert.state.as_str())
+        .bind(upsert.due_on)
+        .bind(upsert.open_issues)
+        .bind(upsert.closed_issues)
+        .bind(upsert.created_at)
+        .bind(upsert.updated_at)
+        .bind(upsert.closed_at)
+        .fetch_one(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        row_to_milestone(&row)
+    }
+
+    async fn list_milestones_for_repo(
+        &self,
+        repo_id: Uuid,
+        include_closed: bool,
+    ) -> Result<Vec<Milestone>, StoreError> {
+        // `due_on NULLS LAST` so undated milestones drop to the
+        // bottom of the open list (operators care about dated
+        // ones first). `github_number ASC` as a stable tie-break.
+        let rows = if include_closed {
+            sqlx::query(
+                "SELECT id, repo_id, github_number, github_node_id, title, \
+                        description, state, due_on, open_issues, closed_issues, \
+                        created_at, updated_at, closed_at, fetched_at, \
+                        remote_missing_streak \
+                   FROM dp_milestones \
+                  WHERE repo_id = $1 \
+                  ORDER BY state ASC, due_on ASC NULLS LAST, github_number ASC",
+            )
+            .bind(repo_id)
+            .fetch_all(self.pool.sqlx())
+            .await
+            .map_err(map_sqlx)?
+        } else {
+            sqlx::query(
+                "SELECT id, repo_id, github_number, github_node_id, title, \
+                        description, state, due_on, open_issues, closed_issues, \
+                        created_at, updated_at, closed_at, fetched_at, \
+                        remote_missing_streak \
+                   FROM dp_milestones \
+                  WHERE repo_id = $1 AND state = 'open' \
+                  ORDER BY due_on ASC NULLS LAST, github_number ASC",
+            )
+            .bind(repo_id)
+            .fetch_all(self.pool.sqlx())
+            .await
+            .map_err(map_sqlx)?
+        };
+        rows.iter().map(row_to_milestone).collect()
+    }
+
+    async fn list_project_milestones(
+        &self,
+        project_id: Uuid,
+        include_closed: bool,
+    ) -> Result<Vec<Milestone>, StoreError> {
+        // Join via dp_project_repos so the strip covers every linked
+        // repo, then DISTINCT — `(repo_id, github_number)` is the
+        // milestone PK already, but the join itself is unique on
+        // `(project_id, repo_id)` so this is a defensive no-op.
+        // Sort: open first when including closed; due_on ASC NULLS
+        // LAST so soonest-due bubbles to the front; title ASC as a
+        // stable tie-break across repos that share a milestone name.
+        let rows = if include_closed {
+            sqlx::query(
+                "SELECT m.id, m.repo_id, m.github_number, m.github_node_id, m.title, \
+                        m.description, m.state, m.due_on, m.open_issues, m.closed_issues, \
+                        m.created_at, m.updated_at, m.closed_at, m.fetched_at, \
+                        m.remote_missing_streak \
+                   FROM dp_milestones m \
+                   JOIN dp_project_repos pr ON pr.repo_id = m.repo_id \
+                  WHERE pr.project_id = $1 \
+                  ORDER BY m.state ASC, m.due_on ASC NULLS LAST, m.title ASC, \
+                           m.github_number ASC",
+            )
+            .bind(project_id)
+            .fetch_all(self.pool.sqlx())
+            .await
+            .map_err(map_sqlx)?
+        } else {
+            sqlx::query(
+                "SELECT m.id, m.repo_id, m.github_number, m.github_node_id, m.title, \
+                        m.description, m.state, m.due_on, m.open_issues, m.closed_issues, \
+                        m.created_at, m.updated_at, m.closed_at, m.fetched_at, \
+                        m.remote_missing_streak \
+                   FROM dp_milestones m \
+                   JOIN dp_project_repos pr ON pr.repo_id = m.repo_id \
+                  WHERE pr.project_id = $1 AND m.state = 'open' \
+                  ORDER BY m.due_on ASC NULLS LAST, m.title ASC, m.github_number ASC",
+            )
+            .bind(project_id)
+            .fetch_all(self.pool.sqlx())
+            .await
+            .map_err(map_sqlx)?
+        };
+        rows.iter().map(row_to_milestone).collect()
+    }
+
+    async fn set_project_primary_milestone(
+        &self,
+        project_id: Uuid,
+        milestone_id: Option<Uuid>,
+    ) -> Result<Project, StoreError> {
+        // When adopting, validate the milestone belongs to a repo
+        // linked to the project. The UI only surfaces eligible
+        // milestones; this is the server-side enforcement that
+        // resists a stale strip or a hand-rolled API call.
+        if let Some(mid) = milestone_id {
+            let row: Option<(Uuid,)> = sqlx::query_as(
+                r#"SELECT m.id
+                     FROM dp_milestones m
+                     JOIN dp_project_repos pr ON pr.repo_id = m.repo_id
+                    WHERE m.id = $1 AND pr.project_id = $2"#,
+            )
+            .bind(mid)
+            .bind(project_id)
+            .fetch_optional(self.pool.sqlx())
+            .await
+            .map_err(map_sqlx)?;
+            if row.is_none() {
+                return Err(invalid(
+                    "milestone does not belong to any repo linked to this project",
+                ));
+            }
+        }
+        // Bumping `version` keeps any concurrent PATCH callers
+        // honest — a stale `expected_version` on the next edit will
+        // now 409 instead of silently overwriting.
+        let row = sqlx::query(
+            r#"UPDATE dp_projects
+                  SET primary_milestone_id = $2,
+                      version              = version + 1,
+                      updated_at           = now()
+                WHERE id = $1
+               RETURNING id, org_id, name, description, lead_user_id, status,
+                         start_at, due_at, issue_count, closed_issue_count,
+                         created_by, created_at, updated_at, version,
+                         primary_milestone_id"#,
+        )
+        .bind(project_id)
+        .bind(milestone_id)
+        .fetch_optional(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        match row {
+            Some(r) => row_to_project(&r),
+            None => Err(not_found("project", project_id)),
+        }
+    }
 }
 
 /// Resolve whether an `UPDATE dp_projects ... WHERE id = ? AND
@@ -4538,6 +5082,7 @@ fn row_to_project(r: &sqlx::postgres::PgRow) -> Result<Project, StoreError> {
         created_at: r.try_get("created_at").map_err(map_sqlx)?,
         updated_at: r.try_get("updated_at").map_err(map_sqlx)?,
         version: r.try_get("version").map_err(map_sqlx)?,
+        primary_milestone_id: r.try_get("primary_milestone_id").map_err(map_sqlx)?,
     })
 }
 

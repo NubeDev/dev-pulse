@@ -21,6 +21,7 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { IconArchive, IconPlus, IconRestore, IconTag } from "@tabler/icons-react";
+import { useAuth } from "@nube/starter-ui-core/auth";
 
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -53,7 +54,12 @@ import type {
 } from "@/api/client";
 
 const TAGS_KEY = ["tags"] as const;
-const ORGS_KEY = ["orgs"] as const;
+// Narrowed to orgs the caller has a membership in. The backend
+// gate on `POST /tags` (`tags::ViewerVisibility::visible_org_ids`)
+// only admits direct memberships, so listing the whole directory
+// here would let the operator pick an org they can see but isn't
+// in — yielding a confusing 403.
+const ORGS_KEY = ["me", "orgs"] as const;
 
 /** Semantic palette names accepted by `TagDto.color`. The list is
  *  intentionally short — the frontend maps each name to a design
@@ -119,7 +125,12 @@ export function TagsPage(): JSX.Element {
 
 function NewTagCard(): JSX.Element {
   const queryClient = useQueryClient();
-  const orgs = useQuery({ queryKey: ORGS_KEY, queryFn: () => api.listOrgs() });
+  const auth = useAuth();
+  // `subject` is the `Principal.actor_user_id` (Uuid) — same value
+  // the REST `create_tag` handler reads off the request extension
+  // when it validates user-scope creates. See `dp_server::bridge_principal`.
+  const viewerUserId: string | null = auth.user?.subject ?? null;
+  const orgs = useQuery({ queryKey: ORGS_KEY, queryFn: () => api.listMyOrgs() });
 
   const [name, setName] = useState("");
   const [color, setColor] = useState<string>(COLOR_CHOICES[1]);
@@ -133,11 +144,12 @@ function NewTagCard(): JSX.Element {
   // instead of three).
   const orgChoices: OrgDto[] = orgs.data ?? [];
   const effectiveScopeId = useMemo(() => {
+    if (scopeKind === "user") return viewerUserId ?? "";
     if (scopeId) return scopeId;
     const first = orgChoices[0];
     if (scopeKind === "org" && first) return first.id;
     return "";
-  }, [scopeId, scopeKind, orgChoices]);
+  }, [scopeId, scopeKind, orgChoices, viewerUserId]);
 
   const create = useMutation({
     mutationFn: (req: CreateTagRequest) => api.createTag(req),
@@ -238,7 +250,11 @@ function NewTagCard(): JSX.Element {
                 <SelectTrigger id="tag-scope-org">
                   <SelectValue
                     placeholder={
-                      orgs.isLoading ? "Loading…" : "Pick an org"
+                      orgs.isLoading
+                        ? "Loading…"
+                        : orgChoices.length === 0
+                          ? "No orgs — pick Just me"
+                          : "Pick an org"
                     }
                   />
                 </SelectTrigger>
@@ -250,18 +266,25 @@ function NewTagCard(): JSX.Element {
                   ))}
                 </SelectContent>
               </Select>
+              {!orgs.isLoading && orgChoices.length === 0 ? (
+                <p className="text-xs text-muted-foreground">
+                  You're not a member of any org yet. Switch the scope
+                  to "Just me" to create a personal tag.
+                </p>
+              ) : null}
             </div>
           ) : (
-            // user-scope: the server picks the caller's user id
-            // from the session; we still need to send *something*
-            // for `scope_id`. The REST handler validates that the
-            // value equals the caller — passing the caller's id
-            // requires a /me lookup we don't have, so we leave the
-            // input out and rely on the existing `403
-            // tag_scope_member_required` to surface mis-scoped
-            // requests cleanly. v1 stores the value via /me/tags
-            // on success.
-            null
+            // user-scope: scope_id is the viewer's user uuid, read
+            // from the auth provider's `MeResponse.subject` (same
+            // value the REST handler validates against). No input
+            // is rendered because there's nothing for the operator
+            // to pick — the scope IS them.
+            <div className="space-y-1">
+              <Label>Owner</Label>
+              <p className="text-sm text-muted-foreground pt-2">
+                Just you — visible only to your account.
+              </p>
+            </div>
           )}
         </div>
         <div className="space-y-1">

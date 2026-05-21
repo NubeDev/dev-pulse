@@ -1,0 +1,646 @@
+/**
+ * `<ProjectWorkbench>` — the §6.3 issues card wrapped with a
+ * Group-by dropdown and a server-side sectioned list
+ * (PROJECT-VIEW.md §5.1 / §5.2 / §7.2).
+ *
+ * Slice 2 (PROJECT-VIEW.md §8 — "Slice 2"): ships Group-by only.
+ * Filter and Sort are intentionally stubbed as disabled controls
+ * so the visual shape lands first; Slice 3 wires up the chip bar.
+ *
+ * Wire contract:
+ *
+ *   * When `group_by` is unset, the response is the existing flat
+ *     `IssueListResponse`; this component renders a single flat
+ *     list (same UX as the pre-PROJECT-VIEW issues card).
+ *   * When `group_by` is set, the server returns the same flat
+ *     `rows` plus a `buckets` sidecar with **post-filter** counts
+ *     and each row carries `bucket_keys` (PROJECT-VIEW.md §7.2).
+ *     The client never re-buckets — it groups in-place using
+ *     `bucket_keys` so the section counts always agree with the
+ *     dropdown's authoritative numbers.
+ *
+ * URL hash: `?group=<dim>` (§5.4 — clause C "ad-hoc"). Saved-view
+ * (§5.4 clauses A/B) lands in Slice 4 — for now the `view` param
+ * is ignored.
+ */
+
+import { useMemo, useState } from "react";
+import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
+
+import type { IssueBucket, IssueListItem, ProjectDto } from "../api/client.js";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Spinner } from "@/components/ui/spinner";
+import {
+  navigate,
+  projectDetailRouteWithParams,
+  projectFilter,
+  projectGroupBy,
+  projectSort,
+  projectViewId,
+  useRoute,
+} from "../routes.js";
+
+import { AddIssuesDialog } from "./add-issues-dialog.js";
+import {
+  FilterChipBar,
+  parseFilterString,
+  serializeFilterChips,
+  type FilterChip,
+} from "./project-filter-chips.js";
+import {
+  useCreateProjectView,
+  useDeleteProjectView,
+  useProjectGroupByOptions,
+  useProjectIssues,
+  useProjectMilestones,
+  useProjectViews,
+  useRemoveIssueFromProject,
+  useReorderProjectViews,
+  useUpdateProjectView,
+} from "./use-projects-data.js";
+import { ViewsTabStrip } from "./views-tab-strip.js";
+
+export interface ProjectWorkbenchProps {
+  project: ProjectDto;
+  selectedIssueId: string | null;
+  onSelectIssue: (id: string | null) => void;
+  /** Issue row renderer. Provided by the detail page so the
+   *  row's chrome stays in one place — the workbench only owns
+   *  layout and section grouping. */
+  renderRow: (row: IssueListItem, selected: boolean) => JSX.Element;
+}
+
+export function ProjectWorkbench({
+  project,
+  renderRow,
+  selectedIssueId,
+}: ProjectWorkbenchProps): JSX.Element {
+  const route = useRoute();
+  const urlGroupBy = projectGroupBy(route);
+  const urlFilterRaw = projectFilter(route);
+  const urlSort = projectSort(route);
+  const urlViewId = projectViewId(route);
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
+
+  // Saved views (PROJECT-VIEW.md §5.4 / §7.1). The strip + dirty
+  // detection both depend on this list, so resolve `activeView`
+  // *before* deriving the effective workbench shape below.
+  const viewsQuery = useProjectViews(project.id);
+  const views = viewsQuery.data ?? [];
+  const activeView =
+    urlViewId !== null ? views.find((v) => v.id === urlViewId) ?? null : null;
+
+  // §5.4 precedence — per-field:
+  //   1. If `?<param>=...` is present, the URL wins.
+  //   2. Else, if a saved view is active, the view's stored value wins.
+  //   3. Else, fall back to the legacy ad-hoc default (null / default sort).
+  const viewFilterSerialised = useMemo(
+    () =>
+      activeView
+        ? serializeFilterChips(
+            activeView.filter_clauses.map((c) =>
+              c.dim === "tag"
+                ? { dim: "tag", key: c.key, value: c.value }
+                : { dim: c.dim, value: c.value },
+            ),
+          )
+        : "",
+    [activeView],
+  );
+
+  const groupBy =
+    urlGroupBy ?? (activeView ? activeView.group_by : null);
+  const filterRaw =
+    urlFilterRaw ?? (activeView ? viewFilterSerialised || null : null);
+  const sort = urlSort ?? (activeView ? activeView.sort : null);
+
+  const chips = useMemo(() => parseFilterString(filterRaw), [filterRaw]);
+
+  // §5.4 dirty marker — any URL override while a view is active.
+  // We deliberately use "any override present" rather than a deep
+  // value-equality check; the user's intent in writing the URL was
+  // already an explicit ad-hoc edit, even if it happens to equal
+  // the saved value.
+  const isDirty =
+    activeView !== null &&
+    (urlGroupBy !== null || urlFilterRaw !== null || urlSort !== null);
+
+  const issues = useProjectIssues(project.id, {
+    state: "all",
+    limit: 100,
+    group_by: groupBy ?? undefined,
+    filter: filterRaw ?? undefined,
+    sort: sort ?? undefined,
+  });
+  const groupOptions = useProjectGroupByOptions(project.id);
+  const milestonesForFilter = useProjectMilestones(project.id);
+  const milestoneFilterOptions = useMemo(
+    () =>
+      (milestonesForFilter.data ?? []).map((m) => ({
+        id: m.id,
+        title: m.title,
+      })),
+    [milestonesForFilter.data],
+  );
+  const remove = useRemoveIssueFromProject(project.id);
+
+  const createView = useCreateProjectView(project.id);
+  const updateView = useUpdateProjectView(project.id);
+  const deleteView = useDeleteProjectView(project.id);
+  const reorderViews = useReorderProjectViews(project.id);
+  const viewMutationsBusy =
+    createView.isPending ||
+    updateView.isPending ||
+    deleteView.isPending ||
+    reorderViews.isPending;
+
+  /** Replace the entire ad-hoc URL state in one navigation so the
+   *  history stack stays clean (PROJECT-VIEW.md §5.4 — ad-hoc edits
+   *  always overwrite, never push). Pass `view: undefined` to keep
+   *  the current view selection; pass `null` to clear it. */
+  const patchUrl = (patch: {
+    group?: string | null;
+    filter?: string | null;
+    sort?: string | null;
+    view?: string | null;
+  }): void => {
+    navigate(
+      projectDetailRouteWithParams(project.id, {
+        issueId: selectedIssueId,
+        view: patch.view !== undefined ? patch.view : urlViewId,
+        group: patch.group !== undefined ? patch.group : urlGroupBy,
+        filter: patch.filter !== undefined ? patch.filter : urlFilterRaw,
+        sort: patch.sort !== undefined ? patch.sort : urlSort,
+      }),
+    );
+  };
+
+  const setGroupBy = (next: string | null): void => {
+    patchUrl({ group: next });
+  };
+
+  const setFilterChips = (next: FilterChip[]): void => {
+    const serialised = serializeFilterChips(next);
+    patchUrl({ filter: serialised.length > 0 ? serialised : null });
+  };
+
+  const setSort = (next: string | null): void => {
+    patchUrl({ sort: next });
+  };
+
+  /** Activate (or clear) a saved view. Clears every ad-hoc URL
+   *  override in the same navigation so the saved view's shape
+   *  takes over cleanly (state A in §5.4). */
+  const selectView = (viewId: string | null): void => {
+    patchUrl({
+      view: viewId,
+      group: null,
+      filter: null,
+      sort: null,
+    });
+  };
+
+  /** "Discard" on a dirty active view — keep the view, drop the
+   *  per-field overrides. */
+  const discardDirty = (): void => {
+    patchUrl({ group: null, filter: null, sort: null });
+  };
+
+  /** "Save changes" on a dirty active view: PATCH the view to the
+   *  current effective shape, then clear the URL overrides so the
+   *  strip immediately drops the `*` marker. */
+  const handleUpdateView = (
+    viewId: string,
+    body: Parameters<typeof updateView.mutate>[0]["body"],
+  ): void => {
+    updateView.mutate(
+      { viewId, body },
+      {
+        onSuccess: () => {
+          patchUrl({ group: null, filter: null, sort: null });
+        },
+      },
+    );
+  };
+
+  /** Create-from-current — write the new view server-side and
+   *  pivot the URL onto it. The strip is fed by the same query so
+   *  the new tab pops into place on invalidation. */
+  const handleCreateView = (
+    body: Parameters<typeof createView.mutate>[0],
+  ): void => {
+    createView.mutate(body, {
+      onSuccess: (v) => {
+        patchUrl({ view: v.id, group: null, filter: null, sort: null });
+      },
+    });
+  };
+
+  const handleDeleteView = (viewId: string): void => {
+    deleteView.mutate(viewId, {
+      onSuccess: () => {
+        if (urlViewId === viewId) {
+          patchUrl({ view: null, group: null, filter: null, sort: null });
+        }
+      },
+    });
+  };
+
+  // §5.4 — stale `?view=` recovery: the id was valid on the wire
+  // but isn't in the loaded list (deleted in another tab, etc.).
+  // We silently strip it once the load has resolved.
+  if (
+    urlViewId !== null &&
+    !viewsQuery.isPending &&
+    !viewsQuery.isError &&
+    activeView === null
+  ) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[projects] view ${urlViewId} no longer exists; falling back to ad-hoc.`,
+    );
+    // Defer the navigation to the next tick to avoid setState-in-render.
+    queueMicrotask(() => patchUrl({ view: null }));
+  }
+
+  const toggleCollapsed = (key: string): void => {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  };
+
+  const rows = issues.data?.rows ?? [];
+  const buckets = issues.data?.buckets;
+
+  // Pre-bucket the rows once per response so re-renders during
+  // section collapse / expand don't recompute. We honour the
+  // server's `buckets` ordering verbatim — clients never re-order
+  // (PROJECT-VIEW.md §5.1).
+  const sectioned = useMemo<SectionedRows | null>(() => {
+    if (!groupBy || !buckets) return null;
+    return groupRowsByBuckets(rows, buckets);
+  }, [groupBy, buckets, rows]);
+
+  return (
+    <Card data-testid="project-issues">
+      <CardHeader className="flex flex-row items-center justify-between gap-2">
+        <CardTitle className="text-base">
+          Issues{" "}
+          <span className="ml-2 text-sm font-normal text-muted-foreground">
+            ({project.closed_issue_count}/{project.issue_count} closed)
+          </span>
+        </CardTitle>
+        <Button
+          size="sm"
+          onClick={() => setDialogOpen(true)}
+          data-testid="project-add-issues-button"
+        >
+          + Add issues
+        </Button>
+      </CardHeader>
+
+      <CardContent className="flex flex-col gap-3">
+        <ViewsTabStrip
+          views={views}
+          activeViewId={activeView ? activeView.id : null}
+          isDirty={isDirty}
+          current={{
+            groupBy,
+            filterClauses: chips.map((c) =>
+              c.dim === "tag"
+                ? { dim: "tag", key: c.key ?? "", value: c.value }
+                : { dim: c.dim, value: c.value },
+            ),
+            sort: sort ?? "updated_desc",
+          }}
+          onSelectView={selectView}
+          onCreateView={handleCreateView}
+          onUpdateView={handleUpdateView}
+          onDeleteView={handleDeleteView}
+          onReorderViews={(ids) => reorderViews.mutate(ids)}
+          onDiscardDirty={discardDirty}
+          busy={viewMutationsBusy}
+        />
+        <Toolbar
+          groupBy={groupBy}
+          options={groupOptions.data?.dims ?? []}
+          onChange={setGroupBy}
+          chips={chips}
+          onChipsChange={setFilterChips}
+          milestoneOptions={milestoneFilterOptions}
+          sort={sort}
+          onSortChange={setSort}
+        />
+
+        {issues.isPending && (
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Spinner /> Loading issues…
+          </div>
+        )}
+        {issues.isError && (
+          <Alert variant="destructive">
+            <AlertTitle>Couldn't load issues</AlertTitle>
+            <AlertDescription>{issues.error.message}</AlertDescription>
+          </Alert>
+        )}
+
+        {!issues.isPending && !issues.isError && rows.length === 0 && (
+          <p
+            className="py-6 text-center text-sm text-muted-foreground"
+            data-testid="project-issues-empty"
+          >
+            No issues in this project yet. Click [+ Add issues] to attach work from the workflow surface.
+          </p>
+        )}
+
+        {/* Flat list — no grouping active. */}
+        {!sectioned && rows.length > 0 && (
+          <div className="flex flex-col gap-2" data-testid="project-issues-flat">
+            {rows.map((row) => renderRow(row, row.id === selectedIssueId))}
+          </div>
+        )}
+
+        {/* Sectioned list — one collapsible block per bucket. */}
+        {sectioned && (
+          <div className="flex flex-col gap-3" data-testid="project-issues-grouped">
+            {sectioned.sections.map((section) => {
+              const sectionKey = bucketKeyForState(section.bucket.key);
+              const isCollapsed = collapsed.has(sectionKey);
+              return (
+                <BucketSection
+                  key={sectionKey}
+                  bucket={section.bucket}
+                  rows={section.rows}
+                  collapsed={isCollapsed}
+                  onToggle={() => toggleCollapsed(sectionKey)}
+                  renderRow={renderRow}
+                  selectedIssueId={selectedIssueId}
+                />
+              );
+            })}
+            {sectioned.empty && (
+              <p className="py-6 text-center text-sm text-muted-foreground">
+                No issues match this grouping.
+              </p>
+            )}
+          </div>
+        )}
+
+        {remove.error && (
+          <Alert variant="destructive">
+            <AlertTitle>Remove failed</AlertTitle>
+            <AlertDescription>{remove.error.message}</AlertDescription>
+          </Alert>
+        )}
+      </CardContent>
+
+      <AddIssuesDialog
+        open={dialogOpen}
+        onOpenChange={setDialogOpen}
+        project={project}
+      />
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Toolbar — Group-by dropdown + disabled Filter/Sort stubs.
+// ---------------------------------------------------------------------------
+
+interface ToolbarProps {
+  groupBy: string | null;
+  options: { id: string; label: string }[];
+  onChange: (next: string | null) => void;
+  chips: FilterChip[];
+  onChipsChange: (next: FilterChip[]) => void;
+  milestoneOptions: { id: string; title: string }[];
+  sort: string | null;
+  onSortChange: (next: string | null) => void;
+}
+
+const GROUP_NONE = "__none__";
+const SORT_DEFAULT = "updated_desc";
+
+/** Sort options exposed by the dropdown — values match
+ *  `parse_sort` in `crates/dp-rest/src/project_issues.rs`. */
+const SORT_OPTIONS: { value: string; label: string }[] = [
+  { value: "updated_desc", label: "Updated ↓" },
+  { value: "updated_asc", label: "Updated ↑" },
+  { value: "title_asc", label: "Title A→Z" },
+];
+
+function Toolbar({
+  groupBy,
+  options,
+  onChange,
+  chips,
+  onChipsChange,
+  milestoneOptions,
+  sort,
+  onSortChange,
+}: ToolbarProps): JSX.Element {
+  // Sentinel value so the Select can represent "no grouping" — the
+  // routing layer keeps the URL as the source of truth, but Radix
+  // <Select> requires non-empty option values.
+  const value = groupBy ?? GROUP_NONE;
+  const sortValue = sort ?? SORT_DEFAULT;
+  return (
+    <div
+      className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-md border border-dashed border-border bg-muted/20 px-3 py-2 text-sm"
+      data-testid="project-workbench-toolbar"
+    >
+      <label className="flex items-center gap-2">
+        <span className="text-muted-foreground">Group by:</span>
+        <Select
+          value={value}
+          onValueChange={(v) => onChange(v === GROUP_NONE ? null : v)}
+        >
+          <SelectTrigger className="h-7 w-40" data-testid="project-group-by-select">
+            <SelectValue placeholder="None" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={GROUP_NONE}>None</SelectItem>
+            {options.map((opt) => (
+              <SelectItem key={opt.id} value={opt.id}>
+                {opt.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </label>
+
+      <FilterChipBar
+        chips={chips}
+        groupOptions={options}
+        milestoneOptions={milestoneOptions}
+        onChange={onChipsChange}
+      />
+
+      <label className="flex items-center gap-2">
+        <span className="text-muted-foreground">Sort:</span>
+        <Select
+          value={sortValue}
+          onValueChange={(v) =>
+            onSortChange(v === SORT_DEFAULT ? null : v)
+          }
+        >
+          <SelectTrigger className="h-7 w-36" data-testid="project-sort-select">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {SORT_OPTIONS.map((o) => (
+              <SelectItem key={o.value} value={o.value}>
+                {o.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </label>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Section — one collapsible bucket.
+// ---------------------------------------------------------------------------
+
+interface BucketSectionProps {
+  bucket: IssueBucket;
+  rows: IssueListItem[];
+  collapsed: boolean;
+  onToggle: () => void;
+  renderRow: (row: IssueListItem, selected: boolean) => JSX.Element;
+  selectedIssueId: string | null;
+}
+
+function BucketSection({
+  bucket,
+  rows,
+  collapsed,
+  onToggle,
+  renderRow,
+  selectedIssueId,
+}: BucketSectionProps): JSX.Element {
+  return (
+    <section className="flex flex-col" data-testid="project-issues-section">
+      <button
+        type="button"
+        onClick={onToggle}
+        className="flex items-center justify-between rounded-md px-2 py-1.5 text-left text-sm font-medium hover:bg-accent/30"
+        aria-expanded={!collapsed}
+        data-testid="project-issues-section-header"
+        data-bucket-key={bucket.key ?? ""}
+      >
+        <span className="flex items-center gap-1.5">
+          {collapsed ? (
+            <ChevronRightIcon className="h-4 w-4 text-muted-foreground" />
+          ) : (
+            <ChevronDownIcon className="h-4 w-4 text-muted-foreground" />
+          )}
+          <span>{bucket.label}</span>
+          {bucket.key === null && (
+            <Badge variant="outline" className="ml-1 text-[10px]">
+              none
+            </Badge>
+          )}
+        </span>
+        <span className="text-xs font-normal tabular-nums text-muted-foreground">
+          {bucket.open} open
+          {bucket.closed > 0 ? ` · ${bucket.closed} ✓` : ""}
+        </span>
+      </button>
+      {!collapsed && (
+        <div className="ml-1 mt-1 flex flex-col gap-2 border-l border-border/60 pl-3">
+          {rows.length === 0 ? (
+            <p className="py-3 text-xs text-muted-foreground">
+              Nothing in this bucket.
+            </p>
+          ) : (
+            rows.map((row) => renderRow(row, row.id === selectedIssueId))
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Bucketing helpers — exported for unit tests in Slice 4 onward.
+// ---------------------------------------------------------------------------
+
+interface SectionedRows {
+  sections: { bucket: IssueBucket; rows: IssueListItem[] }[];
+  empty: boolean;
+}
+
+/** Compose `IssueListItem.bucket_keys` against the server's
+ *  authoritative `buckets` ordering. An issue with multiple keys
+ *  appears in every matching section (PROJECT-VIEW.md §5.1 — kv
+ *  tags can be multi-valued, e.g. `category:firmware` +
+ *  `category:hardware`). Issues whose `bucket_keys` is missing
+ *  (server didn't ship the field) are dropped from the sectioned
+ *  view — that branch should never fire because the server only
+ *  omits the field when no grouping is active. */
+export function groupRowsByBuckets(
+  rows: IssueListItem[],
+  buckets: IssueBucket[],
+): SectionedRows {
+  const sections = buckets.map((b) => ({
+    bucket: b,
+    rows: [] as IssueListItem[],
+  }));
+  // Use the bucket key (stringified `null` → "") as map key so the
+  // "No <key>" bucket is reachable too. The synthetic bucket is
+  // emitted with `key: null` by the server (PROJECT-VIEW.md §7.2).
+  const byKey = new Map<string, IssueListItem[]>();
+  for (const s of sections) {
+    byKey.set(bucketKeyForState(s.bucket.key), s.rows);
+  }
+  for (const row of rows) {
+    const keys = row.bucket_keys;
+    if (!keys || keys.length === 0) {
+      // Fallback — shouldn't happen, but route through "no key" so
+      // the row is still visible.
+      byKey.get(bucketKeyForState(null))?.push(row);
+      continue;
+    }
+    for (const k of keys) {
+      const slot = byKey.get(bucketKeyForState(k));
+      if (slot) slot.push(row);
+    }
+  }
+  return {
+    sections,
+    empty: rows.length === 0,
+  };
+}
+
+/** Stable string form of a bucket key for `Map` / `Set` lookups
+ *  and React `key` props. `null` (the "No <key>" bucket) maps to
+ *  the empty string — kv keys can never be empty under the §3
+ *  grammar so the collision is impossible. */
+function bucketKeyForState(key: string | null): string {
+  return key ?? "";
+}

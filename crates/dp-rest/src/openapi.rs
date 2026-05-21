@@ -84,6 +84,7 @@ async fn webhook_github_stub() {}
         // Directory (stage 4).
         crate::directory::list_users,
         crate::directory::list_orgs,
+        crate::directory::list_my_orgs,
         crate::directory::list_teams,
         crate::directory::set_home_org,
         // Admin (stage 5).
@@ -104,6 +105,7 @@ async fn webhook_github_stub() {}
         crate::projects::archive_project,
         // Project ↔ issue membership (linear-projects-v2.md §7.2).
         crate::project_issues::list_project_issues,
+        crate::project_issues::list_group_by_options,
         crate::project_issues::bulk_add_issues,
         crate::project_issues::remove_project_issue,
         crate::project_issues::get_project_for_issue,
@@ -117,6 +119,16 @@ async fn webhook_github_stub() {}
         crate::board_links::list_board_links,
         crate::board_links::create_board_link,
         crate::board_links::delete_board_link,
+        crate::project_views::list_project_views,
+        crate::project_views::get_project_view,
+        crate::project_views::create_project_view,
+        crate::project_views::update_project_view,
+        crate::project_views::delete_project_view,
+        crate::project_views::reorder_project_views,
+        // Project milestones strip (PROJECT-VIEW.md §5.5, Slice 1).
+        crate::project_milestones::list_project_milestones,
+        // Adopt milestone as project primary (Slice 5).
+        crate::project_milestones::adopt_milestone,
         // Tags (SCOPE-PROJECTS §7).
         crate::tags::list_tags,
         crate::tags::list_my_tags,
@@ -205,6 +217,8 @@ async fn webhook_github_stub() {}
         crate::project_issues::BulkAddIssuesRequest,
         crate::project_issues::BulkAddResult,
         crate::project_issues::BulkAddSkipDto,
+        crate::project_issues::GroupByOptionDto,
+        crate::project_issues::GroupByOptionsResponse,
         // Project ↔ repo soft scoping.
         crate::project_repos::ProjectRepoDto,
         // Project ↔ board mirror picker + link CRUD
@@ -214,6 +228,12 @@ async fn webhook_github_stub() {}
         crate::board_links::DateFieldDto,
         crate::board_links::BoardLinkDto,
         crate::board_links::CreateBoardLinkRequest,
+        crate::project_views::ProjectViewDto,
+        crate::project_views::ProjectViewCreateBody,
+        crate::project_views::ProjectViewReorderBody,
+        // Project milestones (PROJECT-VIEW.md §5.5).
+        crate::project_milestones::MilestoneDto,
+        crate::project_milestones::AdoptMilestoneBody,
         // Tags.
         crate::tags::TagDto,
         crate::tags::TagScopeKindDto,
@@ -242,6 +262,7 @@ async fn webhook_github_stub() {}
         crate::issues_read::IssueDto,
         crate::issues_read::IssueStateDto,
         crate::issues_read::IssueListResponse,
+        crate::issues_read::IssueBucket,
         crate::issues_read::TimelineEntryDto,
         crate::issues_read::TimelineResponse,
         // Repo wire DTOs.

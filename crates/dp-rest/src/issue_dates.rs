@@ -1293,6 +1293,7 @@ mod tests {
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
                 version: 1,
+                primary_milestone_id: None,
             },
         );
         g.project_for_issue.insert(rig.issue.id, project_id);

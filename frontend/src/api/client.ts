@@ -561,6 +561,8 @@ export const ProjectDtoSchema = z.object({
   created_by: uuid.nullable().optional(),
   created_at: isoDateTime,
   updated_at: isoDateTime,
+  /** PROJECT-VIEW.md §5.5 / §9.5 — adopted primary milestone. */
+  primary_milestone_id: uuid.nullable().optional(),
 });
 export type ProjectDto = z.infer<typeof ProjectDtoSchema>;
 
@@ -748,6 +750,13 @@ export const IssueListItemSchema = z.object({
    *  outside the `GET /me/queue` envelope. Treat `undefined` as
    *  `false` at the call site. */
   unread: z.boolean().optional(),
+  /** Per-row bucket assignment when `?group_by=` is set on
+   *  `GET /projects/{id}/issues` (PROJECT-VIEW.md §7.2). Each
+   *  entry is a bucket key the row belongs to; `null` is the
+   *  synthetic "No <key>" bucket. Multi-valued for issues that
+   *  carry multiple kv tags with the same key. Absent when no
+   *  grouping is active. */
+  bucket_keys: z.array(z.string().nullable()).optional(),
 });
 export type IssueListItem = z.infer<typeof IssueListItemSchema>;
 
@@ -757,8 +766,108 @@ export const IssueListResponseSchema = z.object({
   total: z.number().int(),
   limit: z.number().int(),
   offset: z.number().int(),
+  /** Server-side bucket sidecar. Populated **only** by
+   *  `GET /projects/{id}/issues` when `?group_by=` is set
+   *  (PROJECT-VIEW.md §7.2). Counts are post-filter and
+   *  authoritative; the client never re-buckets. `key` is `null`
+   *  for the synthetic "No <key>" bucket. */
+  buckets: z
+    .array(
+      z.object({
+        key: z.string().nullable(),
+        label: z.string(),
+        open: z.number().int(),
+        closed: z.number().int(),
+      }),
+    )
+    .optional(),
 });
 export type IssueListResponse = z.infer<typeof IssueListResponseSchema>;
+export type IssueBucket = NonNullable<IssueListResponse["buckets"]>[number];
+
+/** `GET /projects/{id}/group-by-options` — dynamic dim catalogue
+ *  for the workbench Group-by dropdown (PROJECT-VIEW.md §7.3). */
+export const GroupByOptionsResponseSchema = z.object({
+  dims: z.array(
+    z.object({
+      id: z.string(),
+      label: z.string(),
+    }),
+  ),
+});
+export type GroupByOptionsResponse = z.infer<
+  typeof GroupByOptionsResponseSchema
+>;
+export type GroupByOption = GroupByOptionsResponse["dims"][number];
+
+// ---------------------------------------------------------------------------
+// Project saved views — PROJECT-VIEW.md §6.1 / §7.1 (Slice 4).
+// ---------------------------------------------------------------------------
+
+/** Wire shape of one canonical filter clause inside a saved view.
+ *  Mirrors `dp_domain::project_view::ProjectViewFilterClause` —
+ *  `serde(tag = "dim")` discriminated. */
+export const ProjectViewFilterClauseSchema = z.discriminatedUnion("dim", [
+  z.object({ dim: z.literal("status"), value: z.string() }),
+  z.object({ dim: z.literal("assignee"), value: z.string() }),
+  z.object({ dim: z.literal("label"), value: z.string() }),
+  z.object({ dim: z.literal("tag"), key: z.string(), value: z.string() }),
+]);
+export type ProjectViewFilterClause = z.infer<
+  typeof ProjectViewFilterClauseSchema
+>;
+
+/** `GET /projects/{id}/views` row. */
+export const ProjectViewDtoSchema = z.object({
+  id: uuid,
+  project_id: uuid,
+  owner_user_id: uuid,
+  name: z.string(),
+  group_by: z.string().nullable(),
+  filter_clauses: z.array(ProjectViewFilterClauseSchema),
+  sort: z.string(),
+  position: z.number().int(),
+  visibility: z.string(),
+  created_at: isoDateTime,
+  updated_at: isoDateTime,
+});
+export type ProjectViewDto = z.infer<typeof ProjectViewDtoSchema>;
+
+/** POST / PATCH body for project views. */
+export interface ProjectViewWriteBody {
+  name: string;
+  group_by: string | null;
+  filter_clauses: ProjectViewFilterClause[];
+  sort: string;
+}
+
+// ---------------------------------------------------------------------------
+// Milestones — PROJECT-VIEW.md §5.5 (Slice 1).
+// ---------------------------------------------------------------------------
+
+/** Calendar date in `YYYY-MM-DD` form. The server serialises
+ *  `dp_milestones.due_on` as a tz-agnostic `DATE`. */
+const dateOnly = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, "expected YYYY-MM-DD");
+
+/** `GET /projects/{id}/milestones` row. Mirrors
+ *  `dp_rest::project_milestones::MilestoneDto`. */
+export const MilestoneDtoSchema = z.object({
+  id: uuid,
+  repo_id: uuid,
+  github_number: z.number().int(),
+  title: z.string(),
+  description: z.string().nullable(),
+  state: z.enum(["open", "closed"]),
+  due_on: dateOnly.nullable(),
+  open_issues: z.number().int(),
+  closed_issues: z.number().int(),
+  created_at: isoDateTime,
+  updated_at: isoDateTime,
+  closed_at: isoDateTime.nullable(),
+});
+export type MilestoneDto = z.infer<typeof MilestoneDtoSchema>;
 
 /** Repo summary row returned by `GET /repos`. */
 export const RepoSummaryDtoSchema = z.object({
@@ -1239,6 +1348,18 @@ export class DevPulseApi {
     return this.getJson("/orgs", z.array(OrgDtoSchema));
   }
 
+  /**
+   * `GET /me/orgs` — orgs the caller is a member of.
+   *
+   * Use this when the UI is about to call a write that the
+   * backend gates on direct org membership (e.g. `POST /tags`)
+   * so the operator never picks an org they can see but isn't
+   * in.
+   */
+  async listMyOrgs(): Promise<OrgDto[]> {
+    return this.getJson("/me/orgs", z.array(OrgDtoSchema));
+  }
+
   /** `GET /teams?org_id=…`. */
   async listTeams(orgId: string): Promise<TeamDto[]> {
     const q = new URLSearchParams({ org_id: orgId }).toString();
@@ -1562,17 +1683,143 @@ export class DevPulseApi {
    *  project. `state` defaults to `all` server-side. */
   async listProjectIssues(
     projectId: string,
-    q: { state?: "open" | "closed" | "all"; q?: string; limit?: number; offset?: number } = {},
+    q: {
+      state?: "open" | "closed" | "all";
+      q?: string;
+      limit?: number;
+      offset?: number;
+      /** PROJECT-VIEW.md §5.1 — `status` or `tag:<key>`. */
+      group_by?: string;
+      /** PROJECT-VIEW.md §5.2/§5.4 — wire form
+       *  `<dim>:<value>;<dim>:<value>;…`. */
+      filter?: string;
+      /** PROJECT-VIEW.md §5.3 — `updated_desc` (default) |
+       *  `updated_asc` | `title_asc`. */
+      sort?: string;
+    } = {},
   ): Promise<IssueListResponse> {
     const params = new URLSearchParams();
     if (q.state) params.set("state", q.state);
     if (q.q) params.set("q", q.q);
     if (q.limit !== undefined) params.set("limit", String(q.limit));
     if (q.offset !== undefined) params.set("offset", String(q.offset));
+    if (q.group_by) params.set("group_by", q.group_by);
+    if (q.filter) params.set("filter", q.filter);
+    if (q.sort) params.set("sort", q.sort);
     const qs = params.toString();
     return this.getJson(
       `/projects/${encodeURIComponent(projectId)}/issues${qs ? `?${qs}` : ""}`,
       IssueListResponseSchema,
+    );
+  }
+
+  /** `GET /projects/{id}/group-by-options` — dimensions the
+   *  workbench Group-by dropdown can offer for this project
+   *  (PROJECT-VIEW.md §7.3). */
+  async getProjectGroupByOptions(
+    projectId: string,
+  ): Promise<GroupByOptionsResponse> {
+    return this.getJson(
+      `/projects/${encodeURIComponent(projectId)}/group-by-options`,
+      GroupByOptionsResponseSchema,
+    );
+  }
+
+  // -- saved views (PROJECT-VIEW.md §7.1) ------------------------------
+
+  /** `GET /projects/{id}/views` — caller's saved views, position ASC. */
+  async listProjectViews(projectId: string): Promise<ProjectViewDto[]> {
+    return this.getJson(
+      `/projects/${encodeURIComponent(projectId)}/views`,
+      z.array(ProjectViewDtoSchema),
+    );
+  }
+
+  /** `POST /projects/{id}/views` — create + append at end of strip. */
+  async createProjectView(
+    projectId: string,
+    body: ProjectViewWriteBody,
+  ): Promise<ProjectViewDto> {
+    return this.sendJson(
+      "POST",
+      `/projects/${encodeURIComponent(projectId)}/views`,
+      body,
+      ProjectViewDtoSchema,
+    );
+  }
+
+  /** `PATCH /projects/{id}/views/{view_id}`. */
+  async updateProjectView(
+    projectId: string,
+    viewId: string,
+    body: ProjectViewWriteBody,
+  ): Promise<ProjectViewDto> {
+    return this.sendJson(
+      "PATCH",
+      `/projects/${encodeURIComponent(projectId)}/views/${encodeURIComponent(viewId)}`,
+      body,
+      ProjectViewDtoSchema,
+    );
+  }
+
+  /** `DELETE /projects/{id}/views/{view_id}` — 204 on success;
+   *  404 squashed to a clean resolve so deletes are idempotent. */
+  async deleteProjectView(
+    projectId: string,
+    viewId: string,
+  ): Promise<void> {
+    try {
+      await this.sendNoContent(
+        "DELETE",
+        `/projects/${encodeURIComponent(projectId)}/views/${encodeURIComponent(viewId)}`,
+        undefined,
+      );
+    } catch (e) {
+      if (e instanceof DpRestError && e.status === 404) return;
+      throw e;
+    }
+  }
+
+  /** `POST /projects/{id}/views/reorder` — atomic position rewrite. */
+  async reorderProjectViews(
+    projectId: string,
+    orderedIds: string[],
+  ): Promise<ProjectViewDto[]> {
+    return this.sendJson(
+      "POST",
+      `/projects/${encodeURIComponent(projectId)}/views/reorder`,
+      { ordered_ids: orderedIds },
+      z.array(ProjectViewDtoSchema),
+    );
+  }
+
+  /** `GET /projects/{id}/milestones` — active milestones across
+   *  every repo linked to the project (PROJECT-VIEW.md §5.5). */
+  async listProjectMilestones(
+    projectId: string,
+    includeClosed = false,
+  ): Promise<MilestoneDto[]> {
+    const qs = includeClosed ? "?include_closed=true" : "";
+    return this.getJson(
+      `/projects/${encodeURIComponent(projectId)}/milestones${qs}`,
+      z.array(MilestoneDtoSchema),
+    );
+  }
+
+  /** `POST /projects/{id}/adopt-milestone` — set or clear the
+   *  project's primary milestone (PROJECT-VIEW.md §9.5).
+   *  Passing `null` clears the pointer. Returns the updated
+   *  project so the caller can refresh the chip without a follow-
+   *  up GET. */
+  async adoptProjectMilestone(
+    projectId: string,
+    milestoneId: string | null,
+  ): Promise<ProjectDto> {
+    return this.sendJson(
+      "POST",
+      `/projects/${encodeURIComponent(projectId)}/adopt-milestone`,
+      { milestone_id: milestoneId },
+      ProjectDtoSchema,
     );
   }
 

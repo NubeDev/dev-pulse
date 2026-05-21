@@ -351,13 +351,23 @@ async fn main() -> Result<()> {
             Command::new("import-my-orgs")
                 .about(
                     "GET /user/orgs and upsert every org the PAT user \
-                     belongs to. Requires `read:org` scope.",
+                     belongs to. Requires `read:org` scope. Use --orgs \
+                     to scope to an allow-list.",
                 )
                 .arg(
                     Arg::new("config")
                         .long("config")
                         .required(true)
                         .help("Path to the dev-pulse TOML config."),
+                )
+                .arg(
+                    Arg::new("orgs")
+                        .long("orgs")
+                        .help(
+                            "Comma-separated allow-list of owner logins \
+                             (case-insensitive). Only orgs whose login appears \
+                             in this list are upserted.",
+                        ),
                 ),
         )
         .subcommand(
@@ -579,6 +589,23 @@ async fn run_serve(matches: &ArgMatches) -> Result<()> {
         .await
         .with_context(|| format!("connect postgres: {}", cfg.postgres.url))?;
     let store = Arc::new(dp_store_pg::PgStore::new(pg_pool));
+
+    // -- local-admin org-membership stamp ------------------------------
+    //
+    // Operators created via `dev-pulse create-admin` (the local
+    // email+password path) have a synthetic *negative* `github_id`
+    // (see `run_create_admin`) — there is no real GitHub identity
+    // behind them, so the OAuth-driven membership-derivation path
+    // never fires and `dp_memberships` stays empty. That makes the
+    // org dropdown on `#/account/tags` blank and blocks org-scoped
+    // tag creation entirely.
+    //
+    // Since these accounts only exist for local development /
+    // break-glass, stamp them as members of every synced org on
+    // every boot. Idempotent (`ON CONFLICT DO NOTHING`) and scoped
+    // to local-only users by the `github_id < 0` filter, so it
+    // never touches real GitHub-linked rows.
+    stamp_local_admin_memberships(store.pool()).await?;
 
     // -- auth sidecar sqlite pool + migrations -------------------------
     let sqlite_pool = starter_store_sqlite::pool::connect(&cfg.auth_sqlite.url)
@@ -1060,6 +1087,60 @@ async fn apply_auth_sqlite_migrations(
         .context("apply starter_auth_{users,oauth} migrations")
 }
 
+/// Stamp every local-only `dp_users` row (those with a synthetic
+/// negative `github_id`, written by `run_create_admin`) into
+/// `dp_memberships` against every row in `dp_orgs`. Idempotent.
+///
+/// Why this exists: local accounts have no real GitHub identity, so
+/// the OAuth-driven `dp_memberships` derivation path never runs for
+/// them. Without this step the `#/account/tags` org dropdown is
+/// empty and org-scoped tag creation is impossible from a local
+/// `create-admin` session. Runs on every `serve` boot so it
+/// survives DB resets and picks up newly-synced orgs.
+async fn stamp_local_admin_memberships(
+    pool: &starter_store_postgres::Pool,
+) -> Result<()> {
+    // Also backfill `dp_membership_identities` so the provenance
+    // invariant ("a membership row implies at least one identity
+    // row claiming it") holds. The synthetic identity row was
+    // written by migration 0019's backfill.
+    sqlx::query(
+        "INSERT INTO dp_membership_identities \
+            (user_id, org_id, github_user_id, observed_at) \
+         SELECT u.id, o.id, ui.github_user_id, now() \
+         FROM dp_users u \
+         JOIN dp_user_identities ui ON ui.user_id = u.id \
+         CROSS JOIN dp_orgs o \
+         WHERE u.deleted_at IS NULL AND u.github_id < 0 \
+         ON CONFLICT (user_id, org_id, github_user_id) DO NOTHING",
+    )
+    .execute(pool.sqlx())
+    .await
+    .context("stamp local-admin dp_membership_identities")?;
+
+    let res = sqlx::query(
+        "INSERT INTO dp_memberships \
+            (user_id, org_id, role, home_org, joined_at) \
+         SELECT u.id, o.id, 'admin', NULL::uuid, now() \
+         FROM dp_users u \
+         CROSS JOIN dp_orgs o \
+         WHERE u.deleted_at IS NULL AND u.github_id < 0 \
+         ON CONFLICT (user_id, org_id) DO NOTHING",
+    )
+    .execute(pool.sqlx())
+    .await
+    .context("stamp local-admin dp_memberships")?;
+
+    let inserted = res.rows_affected();
+    if inserted > 0 {
+        tracing::info!(
+            inserted,
+            "stamped local-admin memberships into every synced org"
+        );
+    }
+    Ok(())
+}
+
 /// Minimal projection of a GitHub `User` / `Organization` payload —
 /// `add-org` accepts either, because a single PAT user (e.g. NubeDev)
 /// is itself a valid owner of repos.
@@ -1195,6 +1276,15 @@ async fn run_add_repo(matches: &ArgMatches) -> Result<()> {
 
 async fn run_import_my_orgs(matches: &ArgMatches) -> Result<()> {
     let cfg_path = matches.get_one::<String>("config").unwrap();
+    let orgs_allow: Option<Vec<String>> = matches.get_one::<String>("orgs").map(|s| {
+        s.split(',')
+            .map(|t| t.trim().to_ascii_lowercase())
+            .filter(|t| !t.is_empty())
+            .collect()
+    });
+    if let Some(list) = &orgs_allow {
+        println!("scoped to orgs: {list:?}");
+    }
     let (cfg, pool) = load_cfg_and_pool(cfg_path).await?;
     let client = build_pat_client(&cfg)?;
     println!("GET /user/orgs ...");
@@ -1208,7 +1298,15 @@ async fn run_import_my_orgs(matches: &ArgMatches) -> Result<()> {
     };
     let store = dp_store_pg::PgStore::new(pool);
     use dp_domain::Store as _;
+    let mut imported = 0usize;
+    let mut skipped = 0usize;
     for org in &body {
+        if let Some(list) = &orgs_allow {
+            if !list.contains(&org.login.to_ascii_lowercase()) {
+                skipped += 1;
+                continue;
+            }
+        }
         let row = dp_domain::Org {
             id: Uuid::new_v4(),
             github_id: org.id,
@@ -1220,11 +1318,12 @@ async fn run_import_my_orgs(matches: &ArgMatches) -> Result<()> {
             .await
             .with_context(|| format!("upsert_org {}", org.login))?;
         println!("  + {} (id {})", org.login, saved.id);
+        imported += 1;
     }
     if body.is_empty() {
         println!("(empty — PAT may be missing `read:org` scope)");
     } else {
-        println!("\nimported {} org(s)", body.len());
+        println!("\nimported {imported} org(s); skipped {skipped} out-of-scope");
     }
     Ok(())
 }

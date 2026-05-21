@@ -1339,6 +1339,84 @@ pub trait Store: Send + Sync {
         Ok(Vec::new())
     }
 
+    // ---- milestones (tagging.md §9.3) -----------------------------
+    //
+    // GitHub repo milestones, mirrored per-repo by the fetcher.
+    // Storage shipped in migration 0030_milestones.sql; the fetcher
+    // integration that actually populates these rows arrives in a
+    // follow-up slice. Default impls return safe empties so test
+    // fakes and any future stores stay compiling.
+
+    /// Upsert a milestone by its natural key `(repo_id,
+    /// github_number)`. The surrogate `id` is preserved on
+    /// conflict so any future FK from `dp_issues.milestone_id`
+    /// stays stable across re-fetches.
+    ///
+    /// On a successful upsert the store resets
+    /// `remote_missing_streak` to 0 — observing the milestone via
+    /// `list_milestones` is the strongest possible evidence that
+    /// it is **not** missing on the remote.
+    async fn upsert_milestone(
+        &self,
+        _upsert: &crate::milestone::MilestoneUpsert,
+    ) -> Result<crate::milestone::Milestone, StoreError> {
+        Err(StoreError::Invalid(
+            "milestones not supported by this store".into(),
+        ))
+    }
+
+    /// List milestones for a single repo. `include_closed = false`
+    /// returns only `state = 'open'` rows (the common case for the
+    /// triage rail); `true` returns both states sorted by
+    /// `(state, due_on NULLS LAST, github_number)` so the operator
+    /// sees the active set first then the historical tail.
+    async fn list_milestones_for_repo(
+        &self,
+        _repo_id: Uuid,
+        _include_closed: bool,
+    ) -> Result<Vec<crate::milestone::Milestone>, StoreError> {
+        Ok(Vec::new())
+    }
+
+    /// List milestones across every repo currently associated with
+    /// a project (via `dp_project_repos`). Backs the Slice 1
+    /// `MilestonesStrip` on the project detail page
+    /// (PROJECT-VIEW.md §5.5). Sorted by `due_on ASC NULLS LAST,
+    /// title ASC` so the strip puts soonest-due first and the
+    /// no-date milestones at the end.
+    ///
+    /// `include_closed = false` returns only `state = 'open'`
+    /// rows (the default — the strip's primary case). `true`
+    /// returns the open set followed by closed rows so the
+    /// `▸ Show closed` toggle can render historical context.
+    async fn list_project_milestones(
+        &self,
+        _project_id: Uuid,
+        _include_closed: bool,
+    ) -> Result<Vec<crate::milestone::Milestone>, StoreError> {
+        Ok(Vec::new())
+    }
+
+    /// Set or clear a project's primary milestone pointer
+    /// (PROJECT-VIEW.md §5.5 / §9.5). `milestone_id = Some(mid)`
+    /// adopts; `None` clears. Returns the updated [`Project`].
+    ///
+    /// Implementations must validate that the milestone (when
+    /// `Some`) belongs to a repo currently linked to the project,
+    /// returning [`StoreError::Invalid`] otherwise — the strip
+    /// only surfaces milestones already in `list_project_milestones`,
+    /// but a stale UI must not be able to point at an unrelated
+    /// milestone via a direct API call.
+    async fn set_project_primary_milestone(
+        &self,
+        _project_id: Uuid,
+        _milestone_id: Option<Uuid>,
+    ) -> Result<crate::project::Project, StoreError> {
+        Err(StoreError::Invalid(
+            "primary milestone adoption not supported by this store".into(),
+        ))
+    }
+
     // ---- GitHub App installation permissions (SCOPE-PROJECTS §8.4, §13.6) ----
     //
     // The reconciler / install-callback writes one row per org
@@ -1822,6 +1900,149 @@ pub trait Store: Send + Sync {
         _project_id: Uuid,
     ) -> Result<Vec<Uuid>, StoreError> {
         Ok(Vec::new())
+    }
+
+    /// Resolve the `(issue_id, tag_value)` pairs for every kv tag
+    /// link attached to one of the project's issues whose
+    /// `dp_tags.key = tag_key` and `dp_tags.archived_at IS NULL`
+    /// (PROJECT-VIEW.md §5.1 / §7.2 — backs `Group by: tag:<key>`).
+    ///
+    /// An issue can appear multiple times in the result when it
+    /// carries multiple distinct values for the same key (e.g.
+    /// `category:firmware` + `category:hardware`). Issues without
+    /// any matching tag are not returned — the caller's
+    /// `list_issue_ids_for_project` set drives the "No <key>"
+    /// bucket synthetically.
+    ///
+    /// Implementations must restrict to `dp_tags.kind = 'kv'` and
+    /// ignore archived tags. Tag scope (`scope_org_id` /
+    /// `scope_user_id` / `scope_team_id`) is **not** filtered here;
+    /// any tag visible to the issue is fair game for grouping. The
+    /// REST authz layer above is the gate.
+    ///
+    /// Default impl returns an empty vec so non-Postgres fakes
+    /// don't need to override; production backends override.
+    async fn list_project_issue_tag_values(
+        &self,
+        _project_id: Uuid,
+        _tag_key: &str,
+    ) -> Result<Vec<(Uuid, String)>, StoreError> {
+        Ok(Vec::new())
+    }
+
+    /// Return the distinct `dp_tags.key` values present on the
+    /// project's issues — non-NULL, non-archived, `kind='kv'`. Used
+    /// by `GET /projects/{id}/group-by-options` to drive the
+    /// dynamic dimension dropdown (PROJECT-VIEW.md §5.1).
+    ///
+    /// Default impl returns an empty vec.
+    async fn list_project_issue_tag_keys(
+        &self,
+        _project_id: Uuid,
+    ) -> Result<Vec<String>, StoreError> {
+        Ok(Vec::new())
+    }
+
+    // ---- project saved views (PROJECT-VIEW.md §6.1, Slice 4) -----
+
+    /// List the caller's saved views for a project, ordered by
+    /// `position ASC` (then `created_at ASC` as a stable tiebreak
+    /// for the unlikely case two rows share a position after a
+    /// partial reorder). v1 scopes to a single owner — shared
+    /// views (`visibility='project'`) are reserved for a later
+    /// slice and never returned here.
+    ///
+    /// Default impl returns an empty vec.
+    async fn list_project_views(
+        &self,
+        _project_id: Uuid,
+        _owner_user_id: Uuid,
+    ) -> Result<Vec<crate::project_view::ProjectView>, StoreError> {
+        Ok(Vec::new())
+    }
+
+    /// Fetch a single saved view by id. Returns `None` when the
+    /// row is missing or `owner_user_id` does not match (so the
+    /// REST layer can collapse not-mine to 404 without leaking the
+    /// id's existence). Default impl returns `None`.
+    async fn get_project_view(
+        &self,
+        _id: Uuid,
+        _owner_user_id: Uuid,
+    ) -> Result<Option<crate::project_view::ProjectView>, StoreError> {
+        Ok(None)
+    }
+
+    /// Insert a new saved view. The store assigns `id`, stamps
+    /// `created_at` / `updated_at`, and appends `position = N`
+    /// where N is the count of pre-existing views for
+    /// `(project_id, owner_user_id)`. The `UNIQUE (project_id,
+    /// owner_user_id, name)` constraint surfaces a duplicate name
+    /// as [`StoreError::Conflict`].
+    ///
+    /// Default impl rejects so fakes that haven't opted in fail
+    /// loudly rather than silently dropping the write.
+    async fn create_project_view(
+        &self,
+        _project_id: Uuid,
+        _owner_user_id: Uuid,
+        _upsert: &crate::project_view::ProjectViewUpsert,
+    ) -> Result<crate::project_view::ProjectView, StoreError> {
+        Err(StoreError::Invalid(
+            "project views not supported by this store".into(),
+        ))
+    }
+
+    /// Update a saved view. Mutates `name`, `group_by`,
+    /// `filter_clauses`, `sort`, and `visibility` from the upsert
+    /// payload; `position` is rewritten only by
+    /// [`Store::reorder_project_views`] (kept off the PATCH so
+    /// rename and reorder don't race).
+    ///
+    /// Returns [`StoreError::NotFound`] when the row is missing
+    /// or owned by another user; [`StoreError::Conflict`] when a
+    /// rename collides with another view's name.
+    async fn update_project_view(
+        &self,
+        _id: Uuid,
+        _owner_user_id: Uuid,
+        _upsert: &crate::project_view::ProjectViewUpsert,
+    ) -> Result<crate::project_view::ProjectView, StoreError> {
+        Err(StoreError::Invalid(
+            "project views not supported by this store".into(),
+        ))
+    }
+
+    /// Delete a saved view. Returns `Ok(())` on success;
+    /// [`StoreError::NotFound`] when the row is missing or not
+    /// owned by the caller. Positions of sibling views are **not**
+    /// rewritten on delete — the tab strip tolerates gaps and the
+    /// next reorder normalises them.
+    async fn delete_project_view(
+        &self,
+        _id: Uuid,
+        _owner_user_id: Uuid,
+    ) -> Result<(), StoreError> {
+        Err(StoreError::Invalid(
+            "project views not supported by this store".into(),
+        ))
+    }
+
+    /// Rewrite positions for the caller's views on a project. The
+    /// `ordered_ids` slice must equal the caller's existing view
+    /// ids on this project (no adds, no removes) — set mismatch
+    /// returns [`StoreError::Invalid`]. On success the rows are
+    /// stamped `position = 0..N-1` in one transaction and the
+    /// updated list is returned in the new order.
+    async fn reorder_project_views(
+        &self,
+        _project_id: Uuid,
+        _owner_user_id: Uuid,
+        _ordered_ids: &[Uuid],
+    ) -> Result<Vec<crate::project_view::ProjectView>, StoreError> {
+        Err(StoreError::Invalid(
+            "project views not supported by this store".into(),
+        ))
     }
 
     // ---- project ↔ repo associations -----------------------------

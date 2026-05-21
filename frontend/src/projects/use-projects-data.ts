@@ -27,6 +27,7 @@ import {
   type BulkAddResult,
   type CreateBoardLinkRequest,
   type CreateProjectRequest,
+  type GroupByOptionsResponse,
   type IssueListResponse,
   type ListProjectsQuery,
   type OrgProjectPickerDto,
@@ -35,6 +36,9 @@ import {
   type ProjectListResponse,
   type ProjectRepoDto,
   type ProjectStatusDto,
+  type ProjectViewDto,
+  type ProjectViewWriteBody,
+  type MilestoneDto,
 } from "../api/client.js";
 
 /** Stable cache keys — `useQuery` invalidation surface for the
@@ -50,10 +54,16 @@ export const projectsKeys = {
     ["projects", "org-picker", orgId] as const,
   issues: (projectId: string, q: ListProjectIssuesQuery) =>
     ["projects", "issues", projectId, q] as const,
+  groupByOptions: (projectId: string) =>
+    ["projects", "group-by-options", projectId] as const,
   forIssue: (issueId: string) =>
     ["projects", "for-issue", issueId] as const,
   repos: (projectId: string) =>
     ["projects", "repos", projectId] as const,
+  views: (projectId: string) =>
+    ["projects", "views", projectId] as const,
+  milestones: (projectId: string, includeClosed: boolean) =>
+    ["projects", "milestones", projectId, includeClosed] as const,
 };
 
 /** Query shape for [`useProjectIssues`]. Mirrors the wire params. */
@@ -62,6 +72,14 @@ export interface ListProjectIssuesQuery {
   q?: string;
   limit?: number;
   offset?: number;
+  /** PROJECT-VIEW.md §5.1 — `status` or `tag:<key>`. When set, the
+   *  response carries a `buckets` sidecar the workbench uses to
+   *  render collapsible sections. */
+  group_by?: string;
+  /** PROJECT-VIEW.md §5.2/§5.4 — AND-combined chip string. */
+  filter?: string;
+  /** PROJECT-VIEW.md §5.3 — sort order. */
+  sort?: string;
 }
 
 /** Per-status count probe, backed by `GET /projects?count_only=1`.
@@ -253,6 +271,134 @@ export function useProjectIssues(
         : Promise.resolve({ rows: [], total: 0, limit: 0, offset: 0 }),
     enabled: !!projectId,
     staleTime: 15_000,
+  });
+}
+
+/** `GET /projects/{id}/group-by-options` — dimensions the
+ *  workbench Group-by dropdown should offer for this project
+ *  (PROJECT-VIEW.md §7.3). Stays cached for the page lifetime so
+ *  re-opening the dropdown is instant; invalidated by any tag
+ *  link mutation against this project's issues. */
+export function useProjectGroupByOptions(projectId: string | null) {
+  return useQuery<GroupByOptionsResponse>({
+    queryKey: projectId
+      ? projectsKeys.groupByOptions(projectId)
+      : ["projects", "group-by-options", "(none)"],
+    queryFn: () =>
+      projectId
+        ? api.getProjectGroupByOptions(projectId)
+        : Promise.resolve({ dims: [] }),
+    enabled: !!projectId,
+    staleTime: 60_000,
+  });
+}
+
+// -- saved views (PROJECT-VIEW.md §5.4 / §7.1) --------------------------
+
+/** `GET /projects/{id}/views` — caller's saved views, position ASC.
+ *  Backs the ViewsTabStrip; cached for the page lifetime so tab
+ *  reopens are instant. Mutations below invalidate the same key. */
+export function useProjectViews(projectId: string | null) {
+  return useQuery<ProjectViewDto[]>({
+    queryKey: projectId
+      ? projectsKeys.views(projectId)
+      : ["projects", "views", "(none)"],
+    queryFn: () =>
+      projectId ? api.listProjectViews(projectId) : Promise.resolve([]),
+    enabled: !!projectId,
+    staleTime: 60_000,
+  });
+}
+
+/** `POST /projects/{id}/views` — create + append. */
+export function useCreateProjectView(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation<ProjectViewDto, Error, ProjectViewWriteBody>({
+    mutationFn: (body) => api.createProjectView(projectId, body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: projectsKeys.views(projectId) });
+    },
+  });
+}
+
+/** `PATCH /projects/{id}/views/{view_id}` — edit a saved view in
+ *  place (used by the dirty "Save changes" affordance). */
+export function useUpdateProjectView(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation<
+    ProjectViewDto,
+    Error,
+    { viewId: string; body: ProjectViewWriteBody }
+  >({
+    mutationFn: ({ viewId, body }) =>
+      api.updateProjectView(projectId, viewId, body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: projectsKeys.views(projectId) });
+    },
+  });
+}
+
+/** `DELETE /projects/{id}/views/{view_id}` — idempotent. */
+export function useDeleteProjectView(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation<void, Error, string>({
+    mutationFn: (viewId) => api.deleteProjectView(projectId, viewId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: projectsKeys.views(projectId) });
+    },
+  });
+}
+
+/** `POST /projects/{id}/views/reorder` — atomic position rewrite. */
+export function useReorderProjectViews(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation<ProjectViewDto[], Error, string[]>({
+    mutationFn: (orderedIds) =>
+      api.reorderProjectViews(projectId, orderedIds),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: projectsKeys.views(projectId) });
+    },
+  });
+}
+
+// -- milestones (PROJECT-VIEW.md §5.5, Slice 1) ------------------------
+
+/** `GET /projects/{id}/milestones` — milestones across every linked
+ *  repo, sorted soonest-due first. `includeClosed = false` returns
+ *  only `state = "open"` (the strip's primary case); `true` appends
+ *  closed rows so the `▸ Show closed` toggle can render. */
+export function useProjectMilestones(
+  projectId: string | null,
+  includeClosed = false,
+) {
+  return useQuery<MilestoneDto[]>({
+    queryKey: projectId
+      ? projectsKeys.milestones(projectId, includeClosed)
+      : ["projects", "milestones", "(none)", includeClosed],
+    queryFn: () =>
+      projectId
+        ? api.listProjectMilestones(projectId, includeClosed)
+        : Promise.resolve([]),
+    enabled: !!projectId,
+    staleTime: 60_000,
+  });
+}
+
+/** `POST /projects/{id}/adopt-milestone` — set or clear the
+ *  project's primary milestone. Invalidates the project detail
+ *  query (the `★ primary` chip lives on `ProjectDto`) and the
+ *  milestones list so the strip re-renders with the new badge. */
+export function useAdoptProjectMilestone(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation<ProjectDto, Error, string | null>({
+    mutationFn: (milestoneId) =>
+      api.adoptProjectMilestone(projectId, milestoneId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: projectsKeys.detail(projectId) });
+      qc.invalidateQueries({
+        queryKey: ["projects", "milestones", projectId],
+      });
+    },
   });
 }
 

@@ -15,8 +15,14 @@
  *   `[Re-link]` follow-up that unlinks + re-opens the dialog).
  */
 
-import { useState } from "react";
-import { SettingsIcon } from "lucide-react";
+import { type ReactNode, useEffect, useState } from "react";
+import {
+  CheckCircle2Icon,
+  CircleDotIcon,
+  LinkIcon,
+  PencilIcon,
+  SettingsIcon,
+} from "lucide-react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -27,6 +33,18 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Progress } from "@/components/ui/progress";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { cn } from "@/lib/utils";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -43,15 +61,17 @@ import { navigate, projectDetailRoute, projectSelectedIssue, useRoute } from "..
 import { IssueEditCard } from "../workflow/issues-page.js";
 
 import { LinkBoardDialog } from "./link-board-dialog.js";
-import { AddIssuesDialog } from "./add-issues-dialog.js";
+import { MilestonesStrip } from "./milestones-strip.js";
 import { ManageReposDialog } from "./project-repos-card.js";
+import { ProjectWorkbench } from "./project-workbench.js";
 import {
   useArchiveProject,
+  useAdoptProjectMilestone,
   useBoardLinks,
   useDeleteBoardLink,
   usePatchProject,
   useProject,
-  useProjectIssues,
+  useProjectMilestones,
   useProjectRepos,
   useRemoveIssueFromProject,
 } from "./use-projects-data.js";
@@ -145,9 +165,12 @@ function ProjectDetailBody({ project }: { project: ProjectDto }): JSX.Element {
   const [linkBoardOpen, setLinkBoardOpen] = useState(false);
   const [manageReposOpen, setManageReposOpen] = useState(false);
   const [archiveConfirmOpen, setArchiveConfirmOpen] = useState(false);
+  const [editDatesOpen, setEditDatesOpen] = useState(false);
   const links = useBoardLinks(project.id);
   const deleteLink = useDeleteBoardLink(project.id);
   const repoLinks = useProjectRepos(project.id);
+  const milestones = useProjectMilestones(project.id);
+  const adoptMilestone = useAdoptProjectMilestone(project.id);
   const archive = useArchiveProject(project.id);
   const patch = usePatchProject(project.id);
   const isArchived = project.status === "archived";
@@ -166,11 +189,6 @@ function ProjectDetailBody({ project }: { project: ProjectDto }): JSX.Element {
       );
     }
   };
-
-  const pctClosed =
-    project.issue_count > 0
-      ? Math.round((project.closed_issue_count / project.issue_count) * 100)
-      : 0;
 
   const openIssue = (id: string | null): void => {
     navigate(projectDetailRoute(project.id, id));
@@ -276,29 +294,35 @@ function ProjectDetailBody({ project }: { project: ProjectDto }): JSX.Element {
         }
       />
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Meta</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm md:grid-cols-4">
-            <MetaCell label="Start" value={fmtDate(project.start_at)} />
-            <MetaCell label="Due" value={fmtDate(project.due_at)} />
-            <MetaCell
-              label="Issues"
-              value={`${project.closed_issue_count}/${project.issue_count} closed (${pctClosed}%)`}
-              testId="project-detail-progress"
-            />
-            <MetaCell
-              label="Linked boards"
-              value={String(project.board_link_count)}
-              testId="project-detail-board-count"
-            />
-          </dl>
-        </CardContent>
-      </Card>
+      <ProjectKpiGrid
+        project={project}
+        boardCount={links.data?.length ?? project.board_link_count}
+        repoCount={repoLinks.data?.length ?? 0}
+        onEditTimeline={() => setEditDatesOpen(true)}
+      />
 
-      <ProjectIssuesCard project={project} onSelectIssue={openIssue} selectedIssueId={selectedIssueId} />
+      <MilestonesStrip
+        milestones={milestones.data ?? []}
+        primaryMilestoneId={project.primary_milestone_id ?? null}
+        onAdoptPrimary={(mid) => adoptMilestone.mutate(mid)}
+        adoptBusy={adoptMilestone.isPending}
+        isPending={milestones.isPending}
+      />
+
+      <ProjectWorkbench
+        project={project}
+        selectedIssueId={selectedIssueId}
+        onSelectIssue={openIssue}
+        renderRow={(row, selected) => (
+          <ProjectIssueRowWired
+            key={row.id}
+            project={project}
+            row={row}
+            selected={selected}
+            onSelect={() => openIssue(row.id)}
+          />
+        )}
+      />
 
       <LinkBoardDialog
         open={linkBoardOpen}
@@ -312,6 +336,12 @@ function ProjectDetailBody({ project }: { project: ProjectDto }): JSX.Element {
         onOpenChange={setManageReposOpen}
         projectId={project.id}
         projectOrgId={project.org_id}
+      />
+
+      <EditDatesDialog
+        open={editDatesOpen}
+        onOpenChange={setEditDatesOpen}
+        project={project}
       />
 
       <AlertDialog open={archiveConfirmOpen} onOpenChange={setArchiveConfirmOpen}>
@@ -356,113 +386,257 @@ function ProjectDetailBody({ project }: { project: ProjectDto }): JSX.Element {
   );
 }
 
-function MetaCell({
-  label,
-  value,
-  testId,
-}: {
-  label: string;
-  value: string;
-  testId?: string;
-}): JSX.Element {
-  return (
-    <div className="flex flex-col">
-      <dt className="text-xs font-medium uppercase text-muted-foreground">
-        {label}
-      </dt>
-      <dd className="font-mono text-sm" data-testid={testId}>
-        {value}
-      </dd>
-    </div>
-  );
-}
-
 function fmtDate(s: string | null | undefined): string {
   if (!s) return "—";
   return new Date(s).toLocaleDateString("en-AU");
 }
 
 // ---------------------------------------------------------------------------
-// §6.3 Issues card — paginated membership list with `[+ Add issues]`
-// and per-row remove. Uses the existing IssueListItem shape (the
-// same row the workflow surface uses), giving the user a single
-// click through to the triage detail pane via the
-// `workflowIssuesRoute({ issueId })` deep link.
+// §6.3 KPI grid — replaces the old plain "Meta" dl with four
+// at-a-glance tiles: progress (with bar), timeline (with relative
+// due pill), issue mix (open vs closed), and linked surfaces
+// (boards + repos). Computed entirely from the data already on
+// the page — no extra round trips.
 // ---------------------------------------------------------------------------
 
-function ProjectIssuesCard({ project, onSelectIssue, selectedIssueId }: { project: ProjectDto; onSelectIssue: (id: string | null) => void; selectedIssueId: string | null }): JSX.Element {
-  const [dialogOpen, setDialogOpen] = useState(false);
-  const issues = useProjectIssues(project.id, { state: "all", limit: 100 });
-  const remove = useRemoveIssueFromProject(project.id);
-
-  const rows = issues.data?.rows ?? [];
+function ProjectKpiGrid({
+  project,
+  boardCount,
+  repoCount,
+  onEditTimeline,
+}: {
+  project: ProjectDto;
+  boardCount: number;
+  repoCount: number;
+  onEditTimeline: () => void;
+}): JSX.Element {
+  const total = project.issue_count;
+  const closed = project.closed_issue_count;
+  const open = Math.max(0, total - closed);
+  const pct = total > 0 ? Math.round((closed / total) * 100) : 0;
+  const complete = total > 0 && closed === total;
+  const due = relativeDue(project.due_at);
 
   return (
-    <Card data-testid="project-issues">
-      <CardHeader className="flex flex-row items-center justify-between">
-        <CardTitle className="text-base">
-          Issues{" "}
-          <span className="ml-2 text-sm font-normal text-muted-foreground">
-            ({project.closed_issue_count}/{project.issue_count} closed)
-          </span>
-        </CardTitle>
-        <Button
-          size="sm"
-          onClick={() => setDialogOpen(true)}
-          data-testid="project-add-issues-button"
-        >
-          + Add issues
-        </Button>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-2">
-        {issues.isPending && (
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Spinner /> Loading issues…
-          </div>
-        )}
-        {issues.isError && (
-          <Alert variant="destructive">
-            <AlertTitle>Couldn't load issues</AlertTitle>
-            <AlertDescription>{issues.error.message}</AlertDescription>
-          </Alert>
-        )}
-        {!issues.isPending && !issues.isError && rows.length === 0 && (
-          <p
-            className="py-6 text-center text-sm text-muted-foreground"
-            data-testid="project-issues-empty"
+    <div
+      className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4"
+      data-testid="project-detail-kpis"
+    >
+      <KpiTile
+        label="Progress"
+        icon={
+          complete ? (
+            <CheckCircle2Icon className="h-4 w-4 text-emerald-600" />
+          ) : (
+            <CircleDotIcon className="h-4 w-4 text-muted-foreground" />
+          )
+        }
+      >
+        <div className="flex items-baseline gap-2">
+          <span
+            className={cn(
+              "text-2xl font-semibold tabular-nums",
+              complete && "text-emerald-600",
+            )}
+            data-testid="project-detail-progress"
           >
-            No issues in this project yet. Click [+ Add issues] to attach work from the workflow surface.
-          </p>
-        )}
-        {rows.map((row) => (
-          <ProjectIssueRow
-            key={row.id}
-            row={row}
-            selected={row.id === selectedIssueId}
-            onSelect={() => onSelectIssue(row.id)}
-            onRemove={() =>
-              remove.mutate({
-                issueId: row.id,
-                expectedVersion: project.version,
-              })
-            }
-            removePending={remove.isPending}
-          />
-        ))}
-        {remove.error && (
-          <Alert variant="destructive">
-            <AlertTitle>Remove failed</AlertTitle>
-            <AlertDescription>{remove.error.message}</AlertDescription>
-          </Alert>
-        )}
-      </CardContent>
+            {pct}%
+          </span>
+          <span className="text-xs text-muted-foreground">
+            {closed} / {total} closed
+          </span>
+        </div>
+        <Progress
+          value={pct}
+          className={cn(
+            "mt-3 h-1.5",
+            complete && "[&>[data-slot=progress-indicator]]:bg-emerald-500",
+          )}
+        />
+      </KpiTile>
 
-      <AddIssuesDialog
-        open={dialogOpen}
-        onOpenChange={setDialogOpen}
-        project={project}
-      />
+      <KpiTile
+        label="Timeline"
+        icon={
+          <button
+            type="button"
+            onClick={onEditTimeline}
+            className="inline-flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
+            aria-label="Edit start and due dates"
+            data-testid="project-detail-edit-dates"
+          >
+            <PencilIcon className="h-3.5 w-3.5" />
+          </button>
+        }
+      >
+        <div className="flex flex-col gap-1">
+          <span className="text-2xl font-semibold tabular-nums">
+            {fmtDate(project.due_at)}
+          </span>
+          <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            <span>Started {fmtDate(project.start_at)}</span>
+            {due && (
+              <Badge
+                variant="outline"
+                className={cn(
+                  "h-5 px-1.5 text-[10px] font-medium",
+                  due.tone === "overdue" &&
+                    "border-red-300 bg-red-50 text-red-700 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-300",
+                  due.tone === "soon" &&
+                    "border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-300",
+                  due.tone === "ok" &&
+                    "border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/40 dark:text-emerald-300",
+                )}
+              >
+                {due.label}
+              </Badge>
+            )}
+          </div>
+        </div>
+      </KpiTile>
+
+      <KpiTile
+        label="Issues"
+        icon={<CircleDotIcon className="h-4 w-4 text-muted-foreground" />}
+      >
+        <div className="flex items-baseline gap-2">
+          <span className="text-2xl font-semibold tabular-nums">{open}</span>
+          <span className="text-xs text-muted-foreground">open</span>
+        </div>
+        <div
+          className="mt-2 flex h-1.5 w-full overflow-hidden rounded-full bg-muted"
+          aria-hidden
+        >
+          {total > 0 && (
+            <>
+              <div
+                className="bg-emerald-500"
+                style={{ width: `${(closed / total) * 100}%` }}
+                title={`${closed} closed`}
+              />
+              <div
+                className="bg-sky-500"
+                style={{ width: `${(open / total) * 100}%` }}
+                title={`${open} open`}
+              />
+            </>
+          )}
+        </div>
+        <div className="mt-1 flex justify-between text-[10px] text-muted-foreground">
+          <span>{closed} closed</span>
+          <span>{total} total</span>
+        </div>
+      </KpiTile>
+
+      <KpiTile
+        label="Linked surfaces"
+        icon={<LinkIcon className="h-4 w-4 text-muted-foreground" />}
+      >
+        <div className="flex items-baseline gap-4">
+          <div className="flex items-baseline gap-1.5">
+            <span
+              className="text-2xl font-semibold tabular-nums"
+              data-testid="project-detail-board-count"
+            >
+              {boardCount}
+            </span>
+            <span className="text-xs text-muted-foreground">
+              {boardCount === 1 ? "board" : "boards"}
+            </span>
+          </div>
+          <div className="flex items-baseline gap-1.5">
+            <span className="text-2xl font-semibold tabular-nums">
+              {repoCount}
+            </span>
+            <span className="text-xs text-muted-foreground">
+              {repoCount === 1 ? "repo" : "repos"}
+            </span>
+          </div>
+        </div>
+      </KpiTile>
+    </div>
+  );
+}
+
+function KpiTile({
+  label,
+  icon,
+  children,
+}: {
+  label: string;
+  icon: ReactNode;
+  children: ReactNode;
+}): JSX.Element {
+  return (
+    <Card className="gap-2 py-4">
+      <CardHeader className="px-4">
+        <div className="flex items-center justify-between">
+          <CardTitle className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+            {label}
+          </CardTitle>
+          {icon}
+        </div>
+      </CardHeader>
+      <CardContent className="px-4">{children}</CardContent>
     </Card>
+  );
+}
+
+/** Renders a project's due_at as a coloured pill: "due in 6d",
+ *  "due today", "5d overdue", or `null` when no date is set. */
+function relativeDue(
+  due: string | null | undefined,
+): { label: string; tone: "ok" | "soon" | "overdue" } | null {
+  if (!due) return null;
+  const target = new Date(due).getTime();
+  if (Number.isNaN(target)) return null;
+  const now = Date.now();
+  const oneDay = 86_400_000;
+  const days = Math.round((target - now) / oneDay);
+  if (days < 0) {
+    return { label: `${Math.abs(days)}d overdue`, tone: "overdue" };
+  }
+  if (days === 0) {
+    return { label: "due today", tone: "soon" };
+  }
+  if (days <= 7) {
+    return { label: `due in ${days}d`, tone: "soon" };
+  }
+  return { label: `due in ${days}d`, tone: "ok" };
+}
+
+// ---------------------------------------------------------------------------
+// §6.3 issue row — the dense card shape rendered by both the flat
+// list and the §5.1 sectioned views (PROJECT-VIEW.md). The
+// workbench owns layout + grouping; this row owns its remove
+// affordance + the click-through to the detail pane.
+// ---------------------------------------------------------------------------
+
+function ProjectIssueRowWired({
+  project,
+  row,
+  selected,
+  onSelect,
+}: {
+  project: ProjectDto;
+  row: IssueListItem;
+  selected: boolean;
+  onSelect: () => void;
+}): JSX.Element {
+  const remove = useRemoveIssueFromProject(project.id);
+  return (
+    <ProjectIssueRow
+      row={row}
+      selected={selected}
+      onSelect={onSelect}
+      onRemove={() =>
+        remove.mutate({
+          issueId: row.id,
+          expectedVersion: project.version,
+        })
+      }
+      removePending={remove.isPending}
+    />
   );
 }
 
@@ -510,5 +684,129 @@ function ProjectIssueRow({
         Remove
       </Button>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Edit-dates dialog — small inline editor for the Timeline KPI
+// tile. Mirrors the new-project dialog's date handling
+// (`<input type="date">` ⇒ `YYYY-MM-DDT00:00:00Z`). Empty input
+// clears the field server-side (`null`). CAS via `expected_version`.
+// ---------------------------------------------------------------------------
+
+function EditDatesDialog({
+  open,
+  onOpenChange,
+  project,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  project: ProjectDto;
+}): JSX.Element {
+  const patch = usePatchProject(project.id);
+  const [startAt, setStartAt] = useState("");
+  const [dueAt, setDueAt] = useState("");
+
+  // Seed the inputs whenever the dialog re-opens — picking up the
+  // latest server values rather than whatever was typed last time.
+  useEffect(() => {
+    if (!open) {
+      patch.reset();
+      return;
+    }
+    setStartAt(project.start_at ? project.start_at.slice(0, 10) : "");
+    setDueAt(project.due_at ? project.due_at.slice(0, 10) : "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, project.start_at, project.due_at]);
+
+  const toIso = (v: string): string | null =>
+    v ? `${v}T00:00:00Z` : null;
+
+  const onSubmit = (e: React.FormEvent): void => {
+    e.preventDefault();
+    patch.mutate(
+      {
+        expected_version: project.version,
+        start_at: toIso(startAt),
+        due_at: toIso(dueAt),
+      },
+      { onSuccess: () => onOpenChange(false) },
+    );
+  };
+
+  const rangeError =
+    startAt && dueAt && new Date(startAt) > new Date(dueAt)
+      ? "Start must be on or before Due."
+      : null;
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent
+        className="sm:max-w-md"
+        data-testid="edit-dates-dialog"
+      >
+        <DialogHeader>
+          <DialogTitle>Edit timeline</DialogTitle>
+          <DialogDescription>
+            Set the project's start and due dates. Leave a field blank
+            to clear it.
+          </DialogDescription>
+        </DialogHeader>
+
+        <form className="flex flex-col gap-4" onSubmit={onSubmit}>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="edit-dates-start">Start</Label>
+              <Input
+                id="edit-dates-start"
+                data-testid="edit-dates-start"
+                type="date"
+                value={startAt}
+                onChange={(e) => setStartAt(e.target.value)}
+              />
+            </div>
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="edit-dates-due">Due</Label>
+              <Input
+                id="edit-dates-due"
+                data-testid="edit-dates-due"
+                type="date"
+                value={dueAt}
+                onChange={(e) => setDueAt(e.target.value)}
+              />
+            </div>
+          </div>
+
+          {rangeError && (
+            <p className="text-xs text-destructive">{rangeError}</p>
+          )}
+
+          {patch.isError && (
+            <Alert variant="destructive" data-testid="edit-dates-error">
+              <AlertTitle>Save failed</AlertTitle>
+              <AlertDescription>{patch.error.message}</AlertDescription>
+            </Alert>
+          )}
+
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => onOpenChange(false)}
+              disabled={patch.isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              data-testid="edit-dates-submit"
+              disabled={patch.isPending || rangeError !== null}
+            >
+              {patch.isPending ? "Saving…" : "Save"}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
   );
 }

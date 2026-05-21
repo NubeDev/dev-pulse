@@ -84,7 +84,9 @@ use dp_fetcher::webhook::{self, WebhookMetrics, WebhookSecretSource, WebhookStat
 use dp_rest::{
     admin_router, app_permissions_router, board_links_router, directory_router, inbox_router,
     issue_dates_router, issues_read_router, issues_write_router, me_identities_router,
-    pins_router, project_issues_router, project_repos_router, projects_router, repos_router,
+    pins_router, project_issues_router, project_milestones_router, project_repos_router,
+    project_views_router,
+    projects_router, repos_router,
     reports_router, settings_router,
     tags_router, AdminState, AppState as RestAppState, DevPulseApi,
 };
@@ -303,6 +305,15 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
     // picker to narrow candidates to repos the operator has
     // associated with the project.
     let project_repos = project_repos_router(rest_state.clone());
+    // Per-(project, user) saved views (PROJECT-VIEW.md §6.1 /
+    // §7.1, Slice 4). Same `(projects, read|write)` lanes as the
+    // §7.1 CRUD spine; the store layer scopes every read by
+    // `owner_user_id`, so cross-user view access is invisible.
+    let project_views = project_views_router(rest_state.clone());
+    // Active milestones across linked repos (PROJECT-VIEW.md
+    // §5.5, Slice 1). Read-only; `(projects, read)` lane. Adopt-
+    // as-primary lands in Slice 5.
+    let project_milestones = project_milestones_router(rest_state.clone());
     // First-class Project ↔ GitHub Projects v2 board picker + link
     // CRUD (linear-projects-v2.md §7.3). Replaces the retired
     // per-repo admin surface on the primary path; the §6.4 dialog
@@ -348,6 +359,8 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
         .merge(projects)
         .merge(project_issues)
         .merge(project_repos)
+        .merge(project_views)
+        .merge(project_milestones)
         .merge(board_links)
         .merge(tags)
         .merge(repos)

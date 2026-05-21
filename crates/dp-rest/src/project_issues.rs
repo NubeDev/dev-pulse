@@ -52,7 +52,7 @@ use dp_domain::store::StoreError;
 use crate::audit::{self, Principal};
 use crate::error::ApiError;
 use crate::issues_read::{
-    attach_repo_slugs, IssueDto, IssueListResponse,
+    attach_repo_slugs, IssueBucket, IssueDto, IssueListResponse,
 };
 use crate::projects::ProjectDto;
 use crate::repos::{clamp_limit, clamp_offset};
@@ -171,6 +171,35 @@ pub struct ListProjectIssuesQuery {
     /// Page offset, 0-based.
     #[serde(default)]
     pub offset: Option<i64>,
+    /// Group-by dimension (PROJECT-VIEW.md §5.1 / §7.2). Accepted:
+    /// `status`, `tag:<key>`. Unknown values return
+    /// `400 invalid_group_by`. When absent, the response is the
+    /// flat list (no `buckets` sidecar).
+    #[serde(default)]
+    pub group_by: Option<String>,
+    /// AND-combined filter chips (PROJECT-VIEW.md §5.2 / §5.4).
+    /// Wire form: `<dim>:<value>;<dim>:<value>;…` with `;` as
+    /// the chip separator and `:` as the dim/value separator
+    /// (§5.4 — `,` is unsafe inside tag values, `;` is not legal
+    /// in tag values nor UUIDs). Tag values themselves may
+    /// contain `:` (e.g. `team:backend:v2`); the parser splits on
+    /// the **first** `:` after the dim. Accepted dims this slice:
+    ///
+    /// * `status:open` / `status:closed`
+    /// * `assignee:<login>`
+    /// * `label:<text>`
+    /// * `tag:<key>:<value>`
+    ///
+    /// Unknown dims return `400 invalid_filter`. Filters apply
+    /// **before** bucket counts, so the `buckets` sidecar always
+    /// reflects post-filter totals (§5.2).
+    #[serde(default)]
+    pub filter: Option<String>,
+    /// Sort order (PROJECT-VIEW.md §5.3). Accepted:
+    /// `updated_desc` (default), `updated_asc`, `title_asc`.
+    /// Unknown values return `400 invalid_sort`.
+    #[serde(default)]
+    pub sort: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -213,11 +242,14 @@ fn map_cas_error(project_id: Uuid, err: StoreError) -> ApiError {
     get,
     path = "/projects/{id}/issues",
     params(
-        ("id"     = Uuid,           Path,  description = "Project id"),
-        ("state"  = Option<String>, Query, description = "open|closed|all (default all)"),
-        ("q"      = Option<String>, Query, description = "Substring search on title"),
-        ("limit"  = Option<i64>,    Query, description = "Page size (1..=200, default 50)"),
-        ("offset" = Option<i64>,    Query, description = "Page offset (default 0)"),
+        ("id"       = Uuid,           Path,  description = "Project id"),
+        ("state"    = Option<String>, Query, description = "open|closed|all (default all)"),
+        ("q"        = Option<String>, Query, description = "Substring search on title"),
+        ("limit"    = Option<i64>,    Query, description = "Page size (1..=200, default 50)"),
+        ("offset"   = Option<i64>,    Query, description = "Page offset (default 0)"),
+        ("group_by" = Option<String>, Query, description = "Bucket dimension: status | tag:<key> (PROJECT-VIEW.md §5.1)"),
+        ("filter"   = Option<String>, Query, description = "AND-combined chips: <dim>:<value>;… — status|assignee|label|tag:<key> (PROJECT-VIEW.md §5.2/§5.4)"),
+        ("sort"     = Option<String>, Query, description = "updated_desc (default) | updated_asc | title_asc"),
     ),
     responses(
         (status = 200, description = "Paginated issue list scoped to the project", body = IssueListResponse),
@@ -254,6 +286,12 @@ pub async fn list_project_issues(
     };
     let q_str = q.q.as_deref().map(|s| s.trim().to_lowercase());
 
+    // Parse group_by / filter / sort upfront so a malformed param
+    // doesn't waste a DB round-trip.
+    let group_by = parse_group_by(q.group_by.as_deref())?;
+    let filter_clauses = parse_filter(q.filter.as_deref())?;
+    let sort_order = parse_sort(q.sort.as_deref())?;
+
     let ids = state.store.list_issue_ids_for_project(project_id).await?;
     // Resolve each issue row. Missing rows (target FK was hard-deleted
     // out from under us — unlikely given `ON DELETE CASCADE` but
@@ -274,6 +312,24 @@ pub async fn list_project_issues(
     if let Some(needle) = q_str.as_deref().filter(|s| !s.is_empty()) {
         issues.retain(|i| i.title.to_lowercase().contains(needle));
     }
+    // §5.2 — filter chips apply **before** group-by bucket counts,
+    // so the `buckets` sidecar always reflects post-filter totals.
+    apply_filter_clauses(&*state.store, project_id, &filter_clauses, &mut issues).await?;
+
+    // Build the per-issue bucket assignments + counts. Done **after**
+    // filtering so the counts the client renders next to each
+    // collapsed section match what's inside (§5.2 — post-filter
+    // counts are non-negotiable for triage surfaces).
+    let bucketing = match &group_by {
+        Some(g) => Some(build_buckets(&*state.store, project_id, g, &issues).await?),
+        None => None,
+    };
+
+    // Sort post-filter, pre-pagination (§5.3). Stable sort so equal
+    // keys retain the existing `added_at ASC, issue_id ASC` order
+    // that `list_issue_ids_for_project` already gives us.
+    apply_sort(&mut issues, sort_order);
+
     let total = issues.len() as i64;
     let limit = clamp_limit(q.limit);
     let offset = clamp_offset(q.offset);
@@ -286,12 +342,433 @@ pub async fn list_project_issues(
     };
     let mut dtos: Vec<IssueDto> = page.into_iter().map(IssueDto::from).collect();
     attach_repo_slugs(&*state.store, &mut dtos).await?;
+
+    // Attach `bucket_keys` per row from the precomputed assignment
+    // map. Issues that fell into the "No <key>" bucket carry a
+    // single-element `[None]` so the client always knows the grouping
+    // is active.
+    let buckets_out = if let Some(b) = bucketing {
+        for d in dtos.iter_mut() {
+            let keys = b
+                .assignments
+                .get(&d.id)
+                .cloned()
+                .unwrap_or_else(|| vec![None]);
+            d.bucket_keys = Some(keys);
+        }
+        Some(b.buckets)
+    } else {
+        None
+    };
+
     Ok(Json(IssueListResponse {
         rows: dtos,
         total,
         limit,
         offset,
+        buckets: buckets_out,
     }))
+}
+
+/// Parsed group-by dimension (PROJECT-VIEW.md §5.1).
+#[derive(Debug, Clone)]
+enum GroupBy {
+    /// Bucket by `dp_issues.state` — two buckets, `open` and
+    /// `closed`. The "No <key>" bucket never fires (state is
+    /// non-null).
+    Status,
+    /// Bucket by `dp_tags.value` joined through `dp_tag_links`
+    /// where `dp_tags.key = <key>` and `kind='kv'`. Issues with no
+    /// matching link surface under the synthetic "No <key>" bucket.
+    Tag { key: String },
+}
+
+fn parse_group_by(raw: Option<&str>) -> Result<Option<GroupBy>, ApiError> {
+    let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+    if raw == "status" {
+        return Ok(Some(GroupBy::Status));
+    }
+    if let Some(key) = raw.strip_prefix("tag:") {
+        if !is_valid_tag_key(key) {
+            return Err(ApiError::BadRequest {
+                code: "invalid_group_by",
+                message: format!("invalid tag key in group_by: {key:?}"),
+            });
+        }
+        return Ok(Some(GroupBy::Tag { key: key.to_owned() }));
+    }
+    Err(ApiError::BadRequest {
+        code: "invalid_group_by",
+        message: format!("unsupported group_by dimension: {raw:?}"),
+    })
+}
+
+/// Mirrors `tagging.md` §3 — kv keys are `[a-z0-9][a-z0-9-]*` up to
+/// 50 chars. Keeps the parser identical to what the tag-write path
+/// will enforce so views and tags can't drift.
+fn is_valid_tag_key(s: &str) -> bool {
+    if s.is_empty() || s.len() > 50 {
+        return false;
+    }
+    let mut chars = s.chars();
+    let first = chars.next().unwrap();
+    if !first.is_ascii_lowercase() && !first.is_ascii_digit() {
+        return false;
+    }
+    chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+/// One parsed filter clause (PROJECT-VIEW.md §5.2). AND-combined
+/// across the wire `filter=` param.
+#[derive(Debug, Clone)]
+enum FilterClause {
+    Status(dp_domain::issue::IssueState),
+    Assignee(String),
+    Label(String),
+    Tag { key: String, value: String },
+    /// `milestone:<dp_milestones.id>` — narrows the issue set to
+    /// those pointing at the given milestone (PROJECT-VIEW.md
+    /// §5.4, Slice 3↔1 bridge). The value is the dev-pulse
+    /// surrogate UUID, not the GitHub number or title, so the
+    /// filter survives milestone renames and disambiguates
+    /// same-title milestones in different repos.
+    Milestone(Uuid),
+}
+
+/// Parse the wire `filter=` param (PROJECT-VIEW.md §5.4). `;`
+/// separates clauses; the first `:` in each clause separates the
+/// dim from the value (so tag values like `team:backend:v2` round-
+/// trip). Empty clauses (`a;;b`) are ignored. An empty / absent
+/// param parses to an empty vec.
+fn parse_filter(raw: Option<&str>) -> Result<Vec<FilterClause>, ApiError> {
+    let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::new();
+    for chunk in raw.split(';') {
+        let chunk = chunk.trim();
+        if chunk.is_empty() {
+            continue;
+        }
+        let (dim, value) = chunk.split_once(':').ok_or_else(|| ApiError::BadRequest {
+            code: "invalid_filter",
+            message: format!("filter clause missing ':' separator: {chunk:?}"),
+        })?;
+        let dim = dim.trim();
+        let value = value.trim();
+        if value.is_empty() {
+            return Err(ApiError::BadRequest {
+                code: "invalid_filter",
+                message: format!("filter clause has empty value: {chunk:?}"),
+            });
+        }
+        match dim {
+            "status" => match value {
+                "open" => out.push(FilterClause::Status(dp_domain::issue::IssueState::Open)),
+                "closed" => out.push(FilterClause::Status(dp_domain::issue::IssueState::Closed)),
+                other => {
+                    return Err(ApiError::BadRequest {
+                        code: "invalid_filter",
+                        message: format!("status filter must be 'open' or 'closed', got {other:?}"),
+                    });
+                }
+            },
+            "assignee" => out.push(FilterClause::Assignee(value.to_owned())),
+            "label" => out.push(FilterClause::Label(value.to_owned())),
+            "milestone" => {
+                let id = Uuid::parse_str(value).map_err(|_| ApiError::BadRequest {
+                    code: "invalid_filter",
+                    message: format!(
+                        "milestone filter value must be a milestone UUID, got {value:?}"
+                    ),
+                })?;
+                out.push(FilterClause::Milestone(id));
+            }
+            "tag" => {
+                let (key, tag_value) = value.split_once(':').ok_or_else(|| {
+                    ApiError::BadRequest {
+                        code: "invalid_filter",
+                        message: format!("tag filter must be 'tag:<key>:<value>', got {chunk:?}"),
+                    }
+                })?;
+                if !is_valid_tag_key(key) {
+                    return Err(ApiError::BadRequest {
+                        code: "invalid_filter",
+                        message: format!("invalid tag key in filter: {key:?}"),
+                    });
+                }
+                if tag_value.is_empty() {
+                    return Err(ApiError::BadRequest {
+                        code: "invalid_filter",
+                        message: format!("tag filter has empty value: {chunk:?}"),
+                    });
+                }
+                out.push(FilterClause::Tag {
+                    key: key.to_owned(),
+                    value: tag_value.to_owned(),
+                });
+            }
+            other => {
+                return Err(ApiError::BadRequest {
+                    code: "invalid_filter",
+                    message: format!("unknown filter dim: {other:?}"),
+                });
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Apply parsed [`FilterClause`]s in-memory against the project's
+/// issue set. Tag filters resolve through the store's
+/// `list_project_issue_tag_values` so the SQL is the same one the
+/// group-by path uses — keeps "filter by category:firmware ⇒ group
+/// by gate" totals aligned with the bucket counts (§5.2).
+async fn apply_filter_clauses(
+    store: &dyn dp_domain::store::Store,
+    project_id: Uuid,
+    clauses: &[FilterClause],
+    issues: &mut Vec<dp_domain::issue::Issue>,
+) -> Result<(), ApiError> {
+    use std::collections::HashSet;
+    for clause in clauses {
+        match clause {
+            FilterClause::Status(s) => {
+                issues.retain(|i| i.state == *s);
+            }
+            FilterClause::Assignee(login) => {
+                let needle = login.to_ascii_lowercase();
+                issues.retain(|i| {
+                    i.assignees
+                        .iter()
+                        .any(|a| a.eq_ignore_ascii_case(&needle))
+                });
+            }
+            FilterClause::Label(label) => {
+                let needle = label.to_ascii_lowercase();
+                issues.retain(|i| {
+                    i.labels.iter().any(|l| l.eq_ignore_ascii_case(&needle))
+                });
+            }
+            FilterClause::Tag { key, value } => {
+                let pairs = store
+                    .list_project_issue_tag_values(project_id, key)
+                    .await?;
+                let matching: HashSet<Uuid> = pairs
+                    .into_iter()
+                    .filter(|(_, v)| v == value)
+                    .map(|(id, _)| id)
+                    .collect();
+                issues.retain(|i| matching.contains(&i.id));
+            }
+            FilterClause::Milestone(mid) => {
+                // Resolve via `list_project_milestones` so the
+                // filter only matches milestones already adopted
+                // by this project — a stale URL pointing at a
+                // milestone from another project (or a deleted
+                // one) collapses to an empty result, not an
+                // accidental cross-project leak. Until
+                // `dp_issues.milestone_id` ships, match by
+                // (repo_id, title) — milestone titles are
+                // unique per repo on the GitHub side.
+                let milestones = store
+                    .list_project_milestones(project_id, /* include_closed */ true)
+                    .await?;
+                let Some(m) = milestones.into_iter().find(|m| m.id == *mid) else {
+                    issues.clear();
+                    continue;
+                };
+                issues.retain(|i| {
+                    i.repo_id == m.repo_id
+                        && i.milestone.as_deref() == Some(m.title.as_str())
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Sort order (PROJECT-VIEW.md §5.3).
+#[derive(Debug, Clone, Copy, Default)]
+enum SortOrder {
+    #[default]
+    UpdatedDesc,
+    UpdatedAsc,
+    TitleAsc,
+}
+
+fn parse_sort(raw: Option<&str>) -> Result<SortOrder, ApiError> {
+    match raw.map(str::trim).filter(|s| !s.is_empty()) {
+        None | Some("updated_desc") => Ok(SortOrder::UpdatedDesc),
+        Some("updated_asc") => Ok(SortOrder::UpdatedAsc),
+        Some("title_asc") => Ok(SortOrder::TitleAsc),
+        Some(other) => Err(ApiError::BadRequest {
+            code: "invalid_sort",
+            message: format!("unknown sort: {other:?}"),
+        }),
+    }
+}
+
+fn apply_sort(issues: &mut [dp_domain::issue::Issue], sort: SortOrder) {
+    match sort {
+        SortOrder::UpdatedDesc => {
+            issues.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        }
+        SortOrder::UpdatedAsc => {
+            issues.sort_by(|a, b| a.updated_at.cmp(&b.updated_at));
+        }
+        SortOrder::TitleAsc => {
+            issues.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
+        }
+    }
+}
+
+/// Output of [`build_buckets`]: the ordered bucket list returned in
+/// the response plus a per-issue-id assignment map used to stamp
+/// `IssueDto::bucket_keys` after pagination.
+struct Bucketing {
+    buckets: Vec<IssueBucket>,
+    /// `issue_id → bucket_keys`. An issue can map to multiple keys
+    /// when grouping by a multi-valued tag (e.g. an issue tagged
+    /// `category:firmware` and `category:hardware`). `None` in the
+    /// vector means the synthetic "No <key>" bucket.
+    assignments: std::collections::HashMap<Uuid, Vec<Option<String>>>,
+}
+
+async fn build_buckets(
+    store: &dyn dp_domain::store::Store,
+    project_id: Uuid,
+    group_by: &GroupBy,
+    issues: &[dp_domain::issue::Issue],
+) -> Result<Bucketing, ApiError> {
+    use std::collections::{HashMap, HashSet};
+
+    let issue_ids: HashSet<Uuid> = issues.iter().map(|i| i.id).collect();
+    let mut assignments: HashMap<Uuid, Vec<Option<String>>> =
+        HashMap::with_capacity(issues.len());
+
+    match group_by {
+        GroupBy::Status => {
+            let mut open = 0i64;
+            let mut closed = 0i64;
+            for i in issues {
+                match i.state {
+                    dp_domain::issue::IssueState::Open => {
+                        open += 1;
+                        assignments.insert(i.id, vec![Some("open".to_owned())]);
+                    }
+                    dp_domain::issue::IssueState::Closed => {
+                        closed += 1;
+                        assignments.insert(i.id, vec![Some("closed".to_owned())]);
+                    }
+                }
+            }
+            // Hide empty status buckets — post-filter (§5.2). When
+            // the user filtered to `state=closed` there's no point
+            // rendering an empty `Open` section.
+            let mut buckets = Vec::new();
+            if open > 0 {
+                buckets.push(IssueBucket {
+                    key: Some("open".into()),
+                    label: "Open".into(),
+                    open,
+                    closed: 0,
+                });
+            }
+            if closed > 0 {
+                buckets.push(IssueBucket {
+                    key: Some("closed".into()),
+                    label: "Closed".into(),
+                    open: 0,
+                    closed,
+                });
+            }
+            Ok(Bucketing { buckets, assignments })
+        }
+        GroupBy::Tag { key } => {
+            // Pull every (issue_id, value) link for this key across
+            // the project's issues. The store fn already restricts
+            // to `kind='kv'` and non-archived tags.
+            let rows = store
+                .list_project_issue_tag_values(project_id, key)
+                .await?;
+
+            // Per-bucket open/closed counters. The issues vector is
+            // already post-filter — use it as the source of truth
+            // for issue states so a stale tag link on a filtered-out
+            // issue doesn't get counted.
+            let state_by_id: HashMap<Uuid, dp_domain::issue::IssueState> =
+                issues.iter().map(|i| (i.id, i.state)).collect();
+
+            let mut counts: HashMap<String, (i64, i64)> = HashMap::new();
+            for (issue_id, value) in &rows {
+                if !issue_ids.contains(issue_id) {
+                    continue; // filtered out by state/q
+                }
+                let entry = assignments.entry(*issue_id).or_default();
+                if !entry.iter().any(|v| v.as_deref() == Some(value.as_str())) {
+                    entry.push(Some(value.clone()));
+                }
+                let bucket = counts.entry(value.clone()).or_insert((0, 0));
+                match state_by_id.get(issue_id).copied() {
+                    Some(dp_domain::issue::IssueState::Open) => bucket.0 += 1,
+                    Some(dp_domain::issue::IssueState::Closed) => bucket.1 += 1,
+                    None => {}
+                }
+            }
+
+            // Synthetic "No <key>" bucket: every project issue that
+            // didn't receive any assignment above.
+            let mut no_key_open = 0i64;
+            let mut no_key_closed = 0i64;
+            for i in issues {
+                if !assignments.contains_key(&i.id) {
+                    assignments.insert(i.id, vec![None]);
+                    match i.state {
+                        dp_domain::issue::IssueState::Open => no_key_open += 1,
+                        dp_domain::issue::IssueState::Closed => no_key_closed += 1,
+                    }
+                }
+            }
+
+            // Order: count desc, then key asc as a deterministic
+            // tie-breaker. The ordinal-taxonomy override
+            // (PROJECT-VIEW.md §5.1 — gate/priority) lands with the
+            // config table; for now even `gate` falls under count
+            // desc. The synthetic "No <key>" bucket is pinned last
+            // and only emitted when non-empty (§5.2).
+            let mut bucket_entries: Vec<(String, i64, i64)> = counts
+                .into_iter()
+                .map(|(k, (o, c))| (k, o, c))
+                .collect();
+            bucket_entries.sort_by(|a, b| {
+                (b.1 + b.2)
+                    .cmp(&(a.1 + a.2))
+                    .then_with(|| a.0.cmp(&b.0))
+            });
+            let mut buckets: Vec<IssueBucket> = bucket_entries
+                .into_iter()
+                .map(|(k, o, c)| IssueBucket {
+                    label: format!("{key}:{k}"),
+                    key: Some(k),
+                    open: o,
+                    closed: c,
+                })
+                .collect();
+            if no_key_open + no_key_closed > 0 {
+                buckets.push(IssueBucket {
+                    key: None,
+                    label: format!("No {key}"),
+                    open: no_key_open,
+                    closed: no_key_closed,
+                });
+            }
+
+            Ok(Bucketing { buckets, assignments })
+        }
+    }
 }
 
 /// `POST /projects/{id}/issues` — bulk add (§7.2). Returns
@@ -414,6 +891,94 @@ pub async fn get_project_for_issue(
     Ok(Json(project.map(ProjectDto::from)))
 }
 
+/// One entry in [`GroupByOptionsResponse::dims`].
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct GroupByOptionDto {
+    /// Wire-form dim id passed back as `?group_by=<id>` — e.g.
+    /// `status`, `tag:gate`.
+    pub id: String,
+    /// Display label. For `tag:<key>` this is the key title-cased
+    /// in v1; richer labels (gate prefix, milestone titles) ride in
+    /// when the ordinal-taxonomy config lands (PROJECT-VIEW.md §10.1).
+    pub label: String,
+}
+
+/// Body for `GET /projects/{id}/group-by-options` — dynamic
+/// dimension catalogue powering the Group-by dropdown
+/// (PROJECT-VIEW.md §5.1 / §7.3).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct GroupByOptionsResponse {
+    /// Ordered list of dimensions the toolbar can show. `status`
+    /// is always present; one `tag:<key>` entry per distinct kv
+    /// key observable on the project's issues. Sticky keys from
+    /// saved views (§5.1) will be merged in when slice 4 lands.
+    pub dims: Vec<GroupByOptionDto>,
+}
+
+/// `GET /projects/{id}/group-by-options` — dynamic dim list for
+/// the Group-by dropdown (PROJECT-VIEW.md §7.3).
+///
+/// Slice 2: `status` is the only fixed dim; every distinct
+/// `dp_tags.key` linked to one of the project's issues (non-
+/// archived, `kind='kv'`) becomes a `tag:<key>` entry. Cache /
+/// invalidation per §7.3 is deferred — the query is cheap enough
+/// on the slice-A target (≤100 issues per project) to run inline.
+#[utoipa::path(
+    get,
+    path = "/projects/{id}/group-by-options",
+    params(("id" = Uuid, Path, description = "Project id")),
+    responses(
+        (status = 200, description = "Available group-by dimensions", body = GroupByOptionsResponse),
+        (status = 404, description = "No such project"),
+    ),
+    tag = "projects",
+)]
+pub async fn list_group_by_options(
+    State(state): State<AppState>,
+    Path(project_id): Path<Uuid>,
+) -> Result<Json<GroupByOptionsResponse>, ApiError> {
+    let _ = state
+        .store
+        .get_project(project_id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound {
+            code: "project_not_found",
+            message: format!("no project with id {project_id}"),
+        })?;
+    let mut dims = vec![GroupByOptionDto {
+        id: "status".into(),
+        label: "Status".into(),
+    }];
+    let keys = state
+        .store
+        .list_project_issue_tag_keys(project_id)
+        .await?;
+    for k in keys {
+        dims.push(GroupByOptionDto {
+            label: title_case_dim(&k),
+            id: format!("tag:{k}"),
+        });
+    }
+    Ok(Json(GroupByOptionsResponse { dims }))
+}
+
+/// `gate` → `Gate`, `priority` → `Priority`. Multi-word kv keys
+/// aren't legal under the §3 grammar (no `_` / no spaces), so a
+/// straight first-letter uppercase is enough.
+fn title_case_dim(key: &str) -> String {
+    let mut out = String::with_capacity(key.len());
+    let mut chars = key.chars();
+    if let Some(first) = chars.next() {
+        for c in first.to_uppercase() {
+            out.push(c);
+        }
+    }
+    for c in chars {
+        out.push(c);
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
@@ -429,6 +994,10 @@ pub fn project_issues_router(state: Arc<AppState>) -> Router {
         .merge(with_permission(
             Router::new()
                 .route("/projects/{id}/issues", get(list_project_issues))
+                .route(
+                    "/projects/{id}/group-by-options",
+                    get(list_group_by_options),
+                )
                 .route("/issues/{id}/project", get(get_project_for_issue)),
             "projects",
             "read",
@@ -813,6 +1382,7 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             version: 1,
+            primary_milestone_id: None,
         };
         store.projects.lock().unwrap().push(p.clone());
         p
@@ -1208,5 +1778,464 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // ---- PROJECT-VIEW.md §7.2 — group-by + buckets sidecar -----
+
+    #[tokio::test]
+    async fn group_by_status_returns_open_and_closed_buckets() {
+        let store = Arc::new(MemStore::default());
+        let org = Uuid::new_v4();
+        let project = seed_project(&store, org);
+        let open_a = seed_issue(&store, org, IssueState::Open, "open A");
+        let open_b = seed_issue(&store, org, IssueState::Open, "open B");
+        let closed_a = seed_issue(&store, org, IssueState::Closed, "closed A");
+        for id in [open_a.id, open_b.id, closed_a.id] {
+            store.memberships.lock().unwrap().push((project.id, id));
+        }
+        let app = build_app(store, Uuid::new_v4());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/projects/{}/issues?group_by=status",
+                        project.id
+                    ))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = json_of(resp).await;
+        let buckets = v["buckets"].as_array().expect("buckets sidecar");
+        assert_eq!(buckets.len(), 2);
+        // Order is count desc → open (2) before closed (1).
+        assert_eq!(buckets[0]["key"], "open");
+        assert_eq!(buckets[0]["open"], 2);
+        assert_eq!(buckets[0]["closed"], 0);
+        assert_eq!(buckets[1]["key"], "closed");
+        assert_eq!(buckets[1]["closed"], 1);
+        // Every row carries a single-element `bucket_keys`.
+        for row in v["rows"].as_array().unwrap() {
+            let keys = row["bucket_keys"].as_array().expect("bucket_keys");
+            assert_eq!(keys.len(), 1);
+            let expected = if row["state"] == "open" { "open" } else { "closed" };
+            assert_eq!(keys[0], expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn group_by_tag_with_no_links_yields_no_key_bucket() {
+        // MemStore's default `list_project_issue_tag_values` returns
+        // empty, so every project issue falls into the synthetic
+        // `No <key>` bucket (PROJECT-VIEW.md §5.1).
+        let store = Arc::new(MemStore::default());
+        let org = Uuid::new_v4();
+        let project = seed_project(&store, org);
+        let i = seed_issue(&store, org, IssueState::Open, "untagged");
+        store.memberships.lock().unwrap().push((project.id, i.id));
+        let app = build_app(store, Uuid::new_v4());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/projects/{}/issues?group_by=tag:gate",
+                        project.id
+                    ))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = json_of(resp).await;
+        let buckets = v["buckets"].as_array().expect("buckets sidecar");
+        assert_eq!(buckets.len(), 1);
+        assert!(buckets[0]["key"].is_null());
+        assert_eq!(buckets[0]["label"], "No gate");
+        assert_eq!(buckets[0]["open"], 1);
+        let row_keys = v["rows"][0]["bucket_keys"].as_array().unwrap();
+        assert_eq!(row_keys.len(), 1);
+        assert!(row_keys[0].is_null());
+    }
+
+    #[tokio::test]
+    async fn group_by_rejects_unknown_dim_with_400() {
+        let store = Arc::new(MemStore::default());
+        let org = Uuid::new_v4();
+        let project = seed_project(&store, org);
+        let app = build_app(store, Uuid::new_v4());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/projects/{}/issues?group_by=assignee",
+                        project.id
+                    ))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let v = json_of(resp).await;
+        assert_eq!(v["code"], "invalid_group_by");
+    }
+
+    #[tokio::test]
+    async fn group_by_rejects_invalid_tag_key_with_400() {
+        let store = Arc::new(MemStore::default());
+        let org = Uuid::new_v4();
+        let project = seed_project(&store, org);
+        let app = build_app(store, Uuid::new_v4());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/projects/{}/issues?group_by=tag:Bad_Key",
+                        project.id
+                    ))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let v = json_of(resp).await;
+        assert_eq!(v["code"], "invalid_group_by");
+    }
+
+    #[tokio::test]
+    async fn no_group_by_omits_buckets_field() {
+        let store = Arc::new(MemStore::default());
+        let org = Uuid::new_v4();
+        let project = seed_project(&store, org);
+        let i = seed_issue(&store, org, IssueState::Open, "x");
+        store.memberships.lock().unwrap().push((project.id, i.id));
+        let app = build_app(store, Uuid::new_v4());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/projects/{}/issues", project.id))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let v = json_of(resp).await;
+        // `skip_serializing_if = "Option::is_none"` ⇒ field absent.
+        assert!(v.get("buckets").is_none());
+        assert!(v["rows"][0].get("bucket_keys").is_none());
+    }
+
+    #[tokio::test]
+    async fn group_by_options_includes_status_by_default() {
+        let store = Arc::new(MemStore::default());
+        let org = Uuid::new_v4();
+        let project = seed_project(&store, org);
+        let app = build_app(store, Uuid::new_v4());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/projects/{}/group-by-options", project.id))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = json_of(resp).await;
+        let dims = v["dims"].as_array().expect("dims");
+        assert!(dims.iter().any(|d| d["id"] == "status"));
+    }
+
+    // ---- PROJECT-VIEW.md §5.2/§5.3/§5.4 — filter chips + sort -
+
+    fn seed_issue_with(
+        store: &MemStore,
+        org: Uuid,
+        state: IssueState,
+        title: &str,
+        assignees: Vec<String>,
+        labels: Vec<String>,
+        updated_at: chrono::DateTime<chrono::Utc>,
+    ) -> Issue {
+        let mut i = seed_issue(store, org, state, title);
+        // seed_issue inserts the row already; mutate in place so the
+        // store reflects the assignees/labels/updated_at.
+        let mut issues = store.issues.lock().unwrap();
+        let idx = issues.iter().position(|x| x.id == i.id).unwrap();
+        issues[idx].assignees = assignees.clone();
+        issues[idx].labels = labels.clone();
+        issues[idx].updated_at = updated_at;
+        i.assignees = assignees;
+        i.labels = labels;
+        i.updated_at = updated_at;
+        i
+    }
+
+    #[tokio::test]
+    async fn filter_by_status_and_assignee_anded() {
+        let store = Arc::new(MemStore::default());
+        let org = Uuid::new_v4();
+        let project = seed_project(&store, org);
+        let now = chrono::Utc::now();
+        let want = seed_issue_with(
+            &store,
+            org,
+            IssueState::Open,
+            "match",
+            vec!["alice".into()],
+            vec![],
+            now,
+        );
+        let wrong_state = seed_issue_with(
+            &store,
+            org,
+            IssueState::Closed,
+            "closed",
+            vec!["alice".into()],
+            vec![],
+            now,
+        );
+        let wrong_assignee = seed_issue_with(
+            &store,
+            org,
+            IssueState::Open,
+            "wrong assignee",
+            vec!["bob".into()],
+            vec![],
+            now,
+        );
+        for id in [want.id, wrong_state.id, wrong_assignee.id] {
+            store.memberships.lock().unwrap().push((project.id, id));
+        }
+        let app = build_app(store, Uuid::new_v4());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/projects/{}/issues?filter=status:open;assignee:alice",
+                        project.id
+                    ))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = json_of(resp).await;
+        assert_eq!(v["total"], 1);
+        assert_eq!(v["rows"][0]["title"], "match");
+    }
+
+    #[tokio::test]
+    async fn filter_by_label_case_insensitive() {
+        let store = Arc::new(MemStore::default());
+        let org = Uuid::new_v4();
+        let project = seed_project(&store, org);
+        let now = chrono::Utc::now();
+        let bug = seed_issue_with(
+            &store,
+            org,
+            IssueState::Open,
+            "with bug label",
+            vec![],
+            vec!["Bug".into()],
+            now,
+        );
+        let other = seed_issue_with(
+            &store,
+            org,
+            IssueState::Open,
+            "feature",
+            vec![],
+            vec!["feature".into()],
+            now,
+        );
+        for id in [bug.id, other.id] {
+            store.memberships.lock().unwrap().push((project.id, id));
+        }
+        let app = build_app(store, Uuid::new_v4());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/projects/{}/issues?filter=label:bug",
+                        project.id
+                    ))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let v = json_of(resp).await;
+        assert_eq!(v["total"], 1);
+        assert_eq!(v["rows"][0]["title"], "with bug label");
+    }
+
+    #[tokio::test]
+    async fn filter_rejects_unknown_dim_with_400() {
+        let store = Arc::new(MemStore::default());
+        let org = Uuid::new_v4();
+        let project = seed_project(&store, org);
+        let app = build_app(store, Uuid::new_v4());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/projects/{}/issues?filter=mystery:42",
+                        project.id
+                    ))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let v = json_of(resp).await;
+        assert_eq!(v["code"], "invalid_filter");
+    }
+
+    #[tokio::test]
+    async fn filter_milestone_rejects_non_uuid_value() {
+        // `milestone:<uuid>` value must parse as a UUID
+        // (PROJECT-VIEW.md §5.4 — milestone filter wire grammar).
+        let store = Arc::new(MemStore::default());
+        let org = Uuid::new_v4();
+        let project = seed_project(&store, org);
+        let app = build_app(store, Uuid::new_v4());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/projects/{}/issues?filter=milestone:not-a-uuid",
+                        project.id
+                    ))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let v = json_of(resp).await;
+        assert_eq!(v["code"], "invalid_filter");
+    }
+
+    #[tokio::test]
+    async fn filter_milestone_unknown_id_collapses_to_empty() {
+        // A UUID that isn't in the project's adopted-milestone set
+        // must collapse to zero rows, not leak issues from another
+        // project (PROJECT-VIEW.md §5.4 / Slice 3↔1 bridge).
+        let store = Arc::new(MemStore::default());
+        let org = Uuid::new_v4();
+        let project = seed_project(&store, org);
+        let now = chrono::Utc::now();
+        let issue = seed_issue_with(
+            &store,
+            org,
+            IssueState::Open,
+            "needs-milestone",
+            vec![],
+            vec![],
+            now,
+        );
+        store
+            .memberships
+            .lock()
+            .unwrap()
+            .push((project.id, issue.id));
+        let app = build_app(store, Uuid::new_v4());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/projects/{}/issues?filter=milestone:{}",
+                        project.id,
+                        Uuid::new_v4()
+                    ))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = json_of(resp).await;
+        assert_eq!(v["total"], 0);
+    }
+
+    #[tokio::test]
+    async fn filter_tag_clause_preserves_colon_inside_value() {
+        // `tag:team:backend:v2` must parse as key=`team`,
+        // value=`backend:v2` (PROJECT-VIEW.md §5.4 — first-colon
+        // split inside the tag clause).
+        let store = Arc::new(MemStore::default());
+        let org = Uuid::new_v4();
+        let project = seed_project(&store, org);
+        let app = build_app(store, Uuid::new_v4());
+        // No tag links — but parser must accept the form so we just
+        // expect 200 with zero rows, not 400.
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/projects/{}/issues?filter=tag:team:backend:v2",
+                        project.id
+                    ))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = json_of(resp).await;
+        assert_eq!(v["total"], 0);
+    }
+
+    #[tokio::test]
+    async fn sort_title_asc_orders_by_lowercase_title() {
+        let store = Arc::new(MemStore::default());
+        let org = Uuid::new_v4();
+        let project = seed_project(&store, org);
+        let now = chrono::Utc::now();
+        let banana = seed_issue_with(&store, org, IssueState::Open, "banana", vec![], vec![], now);
+        let apple = seed_issue_with(&store, org, IssueState::Open, "Apple", vec![], vec![], now);
+        for id in [banana.id, apple.id] {
+            store.memberships.lock().unwrap().push((project.id, id));
+        }
+        let app = build_app(store, Uuid::new_v4());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/projects/{}/issues?sort=title_asc", project.id))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let v = json_of(resp).await;
+        assert_eq!(v["rows"][0]["title"], "Apple");
+        assert_eq!(v["rows"][1]["title"], "banana");
+    }
+
+    #[tokio::test]
+    async fn sort_rejects_unknown_with_400() {
+        let store = Arc::new(MemStore::default());
+        let org = Uuid::new_v4();
+        let project = seed_project(&store, org);
+        let app = build_app(store, Uuid::new_v4());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/projects/{}/issues?sort=oldest", project.id))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let v = json_of(resp).await;
+        assert_eq!(v["code"], "invalid_sort");
     }
 }

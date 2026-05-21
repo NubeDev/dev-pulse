@@ -34,9 +34,11 @@ pub mod issue;
 pub mod issue_dates;
 pub mod issue_mutation;
 pub mod membership;
+pub mod milestone;
 pub mod org;
 pub mod pin;
 pub mod project;
+pub mod project_view;
 pub mod repo;
 pub mod setting;
 pub mod store;
@@ -63,6 +65,7 @@ pub use issue_dates::{
 };
 pub use issue_mutation::{IssueMutation, IssueMutationOp, IssueMutationResult};
 pub use membership::{Membership, MembershipRole};
+pub use milestone::{Milestone, MilestoneState, MilestoneUpsert};
 pub use org::Org;
 pub use pin::{Pin, PinKind, PIN_CAP};
 pub use project::{

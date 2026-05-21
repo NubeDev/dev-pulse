@@ -2255,3 +2255,95 @@ async fn board_link_crud_and_item_outcomes() {
     assert_eq!(leftover.len(), 1);
     assert_eq!(leftover[0].id, link2.id);
 }
+
+/// Milestones (tagging.md §9.3): natural-key upsert on
+/// `(repo_id, github_number)` preserves the surrogate `id` and
+/// resets `remote_missing_streak` to 0 on every observation;
+/// `list_milestones_for_repo` filters by state and orders by
+/// `due_on NULLS LAST`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Docker or DP_TEST_DATABASE_URL"]
+async fn milestone_upsert_and_list() {
+    use chrono::NaiveDate;
+    use dp_domain::milestone::{MilestoneState, MilestoneUpsert};
+
+    let f = fixture().await;
+    let s = f.store();
+    let org = seed_org(s, 9000, "milestones-co").await;
+    let repo = seed_repo(s, &org, 9100, "core").await;
+
+    // Insert an open milestone with a due date.
+    let m1 = s
+        .upsert_milestone(&MilestoneUpsert {
+            repo_id: repo.id,
+            github_number: 1,
+            github_node_id: "MI_kwDOABCD_1".into(),
+            title: "v1.0".into(),
+            description: Some("First release".into()),
+            state: MilestoneState::Open,
+            due_on: Some(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap()),
+            open_issues: 3,
+            closed_issues: 1,
+            created_at: Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
+            updated_at: Utc.with_ymd_and_hms(2026, 1, 5, 0, 0, 0).unwrap(),
+            closed_at: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(m1.title, "v1.0");
+    assert_eq!(m1.open_issues, 3);
+    assert_eq!(m1.remote_missing_streak, 0);
+
+    // Re-upsert with a new title and counter — `id` is preserved.
+    let m1b = s
+        .upsert_milestone(&MilestoneUpsert {
+            repo_id: repo.id,
+            github_number: 1,
+            github_node_id: "MI_kwDOABCD_1".into(),
+            title: "v1.0 GA".into(),
+            description: Some("First release (renamed)".into()),
+            state: MilestoneState::Open,
+            due_on: Some(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap()),
+            open_issues: 2,
+            closed_issues: 2,
+            created_at: Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
+            updated_at: Utc.with_ymd_and_hms(2026, 1, 10, 0, 0, 0).unwrap(),
+            closed_at: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(m1b.id, m1.id, "id stable across upsert");
+    assert_eq!(m1b.title, "v1.0 GA");
+    assert_eq!(m1b.open_issues, 2);
+
+    // Second milestone — closed, no due date.
+    let m2 = s
+        .upsert_milestone(&MilestoneUpsert {
+            repo_id: repo.id,
+            github_number: 2,
+            github_node_id: "MI_kwDOABCD_2".into(),
+            title: "Sprint 0".into(),
+            description: None,
+            state: MilestoneState::Closed,
+            due_on: None,
+            open_issues: 0,
+            closed_issues: 8,
+            created_at: Utc.with_ymd_and_hms(2025, 11, 1, 0, 0, 0).unwrap(),
+            updated_at: Utc.with_ymd_and_hms(2025, 12, 1, 0, 0, 0).unwrap(),
+            closed_at: Some(Utc.with_ymd_and_hms(2025, 12, 1, 0, 0, 0).unwrap()),
+        })
+        .await
+        .unwrap();
+    assert_eq!(m2.state, MilestoneState::Closed);
+
+    // Open-only list omits the closed sprint.
+    let open = s.list_milestones_for_repo(repo.id, false).await.unwrap();
+    assert_eq!(open.len(), 1);
+    assert_eq!(open[0].id, m1.id);
+
+    // Full list returns both; open sorts before closed.
+    let all = s.list_milestones_for_repo(repo.id, true).await.unwrap();
+    assert_eq!(all.len(), 2);
+    assert_eq!(all[0].state, MilestoneState::Open);
+    assert_eq!(all[1].state, MilestoneState::Closed);
+}

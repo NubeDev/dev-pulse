@@ -145,6 +145,10 @@ pub struct ProjectDto {
     pub created_at: DateTime<Utc>,
     /// Last accepted mutation.
     pub updated_at: DateTime<Utc>,
+    /// Adopted primary milestone (PROJECT-VIEW.md §5.5 / §9.5).
+    /// Set / cleared by `POST /projects/{id}/adopt-milestone`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary_milestone_id: Option<Uuid>,
 }
 
 impl From<Project> for ProjectDto {
@@ -169,6 +173,7 @@ impl From<Project> for ProjectDto {
             created_by: p.created_by,
             created_at: p.created_at,
             updated_at: p.updated_at,
+            primary_milestone_id: p.primary_milestone_id,
         }
     }
 }
@@ -788,6 +793,7 @@ mod tests {
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
                 version: 1,
+                primary_milestone_id: None,
             };
             self.projects.lock().unwrap().push(p.clone());
             Ok(p)
@@ -1001,6 +1007,7 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             version: 1,
+            primary_milestone_id: None,
         };
         let id = p.id;
         store.projects.lock().unwrap().push(p);
