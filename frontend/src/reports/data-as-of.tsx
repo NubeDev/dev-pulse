@@ -62,7 +62,7 @@ function pick(d: DataAsOf): { ts: string | null; source: string } {
 function formatTs(rfc3339: string): string {
   const d = new Date(rfc3339);
   if (Number.isNaN(d.getTime())) return rfc3339;
-  return d.toLocaleString(undefined, {
+  return d.toLocaleString("en-AU", {
     year: "numeric",
     month: "short",
     day: "2-digit",

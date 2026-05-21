@@ -9,6 +9,8 @@
 use dp_domain::event::{ActorRole, EventKind};
 use dp_domain::fetch::{FetchRunKind, ResourceKind};
 use dp_domain::membership::MembershipRole;
+use dp_domain::tag::TagScopeKind;
+use dp_domain::tag_link::TagLinkKind;
 
 // ---- ActorRole ------------------------------------------------------
 
@@ -152,6 +154,29 @@ pub(crate) fn fetch_run_kind_from_text(s: &str) -> Result<FetchRunKind, String> 
         "reconciler" => FetchRunKind::Reconciler,
         "backfill" => FetchRunKind::Backfill,
         other => return Err(format!("unknown fetch run kind: {other}")),
+    })
+}
+
+// ---- TagScopeKind ---------------------------------------------------
+
+pub(crate) fn tag_scope_kind_from_text(s: &str) -> Result<TagScopeKind, String> {
+    Ok(match s {
+        "user" => TagScopeKind::User,
+        "team" => TagScopeKind::Team,
+        "org" => TagScopeKind::Org,
+        other => return Err(format!("unknown tag scope kind: {other}")),
+    })
+}
+
+// ---- TagLinkKind ----------------------------------------------------
+
+pub(crate) fn tag_link_kind_from_text(s: &str) -> Result<TagLinkKind, String> {
+    Ok(match s {
+        "repo" => TagLinkKind::Repo,
+        "issue" => TagLinkKind::Issue,
+        "user" => TagLinkKind::User,
+        "team" => TagLinkKind::Team,
+        other => return Err(format!("unknown tag link kind: {other}")),
     })
 }
 

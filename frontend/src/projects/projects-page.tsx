@@ -283,7 +283,7 @@ function ProjectTable({ rows, orgMap }: { rows: ProjectDto[]; orgMap: Map<string
                 </div>
               </TableCell>
               <TableCell className="font-mono text-xs">
-                {p.due_at ? new Date(p.due_at).toLocaleDateString() : "—"}
+                {p.due_at ? new Date(p.due_at).toLocaleDateString("en-AU") : "—"}
               </TableCell>
               <TableCell className="text-right tabular-nums">
                 {p.closed_issue_count}/{p.issue_count}

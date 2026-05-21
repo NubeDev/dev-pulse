@@ -147,6 +147,7 @@ const NAV_MAIN: NavMainItem[] = [
     subTestId: "account-subnav",
     items: [
       { title: "Identities", url: "#/account/identities", icon: IconUser },
+      { title: "Tags", url: "#/account/tags", icon: IconTags },
       { title: "Settings", url: "#/account/settings", icon: IconSettings },
     ],
   },

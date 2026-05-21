@@ -18,6 +18,7 @@ import { NotFoundPage } from "./components/not-found.jsx";
 import { AppShell } from "./layout/app-shell.jsx";
 import { IdentitiesPage } from "./account/identities-page.jsx";
 import { SettingsPage } from "./account/settings-page.jsx";
+import { TagsPage } from "./account/tags-page.jsx";
 import { AdminUsersPage } from "./admin/users-page.jsx";
 import { RefreshPage } from "./admin/refresh-page.jsx";
 import { RunsPage } from "./admin/runs-page.jsx";
@@ -138,6 +139,8 @@ function AccountPane({ tab }: { tab: AccountTab }): JSX.Element {
       return <IdentitiesPage />;
     case "settings":
       return <SettingsPage />;
+    case "tags":
+      return <TagsPage />;
   }
 }
 

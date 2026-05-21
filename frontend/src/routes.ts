@@ -102,15 +102,23 @@ export function projectSelectedIssue(route: string): string | null {
  *  `identities` — the link / unlink / transfer / set-primary
  *  surface (`linear-projects-idea.md` §10 multi-identity).
  *  `settings` is the per-user K/V settings page (GitHub PAT,
- *  future preferences). */
-export type AccountTab = "identities" | "settings";
+ *  future preferences). `tags` is the cross-org grouping
+ *  primitive CRUD surface (SCOPE-PROJECTS §7). */
+export type AccountTab = "identities" | "settings" | "tags";
 
 /** Parse `#/account/...` → the active sub-tab. */
 export function accountTabOf(route: string): AccountTab {
   const pathPart = route.split("?")[0] ?? route;
   const parts = pathPart.replace(/^#/, "").replace(/^\/+/, "").split("/");
   if (parts[0] !== "account") return "identities";
-  return parts[1] === "settings" ? "settings" : "identities";
+  switch (parts[1]) {
+    case "settings":
+      return "settings";
+    case "tags":
+      return "tags";
+    default:
+      return "identities";
+  }
 }
 
 /** §14.1 deep-link selection — `#/workflow?issue=<uuid>` carries the
@@ -131,6 +139,21 @@ export function workflowSelectedRepoId(route: string): string | null {
   const params = new URLSearchParams(route.slice(q + 1));
   const id = params.get("repo_id");
   return id && id.length > 0 ? id : null;
+}
+
+/** Active label filter on the triage / issues route, parsed from
+ *  `?labels=bug,p1`. AND-semantics — every named label must be
+ *  carried by the row. Names are case-preserved (the backend
+ *  compares `dp_issues.labels` JSONB membership directly). */
+export function workflowSelectedLabels(route: string): string[] {
+  const q = route.indexOf("?");
+  if (q < 0) return [];
+  const raw = new URLSearchParams(route.slice(q + 1)).get("labels");
+  if (!raw) return [];
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
 }
 
 /** Build the `#/workflow/issues` route with optional repo / issue
@@ -214,11 +237,15 @@ export function workflowTriageRoute(opts: {
   view?: TriageView;
   repoId?: string | null;
   issueId?: string | null;
+  labels?: ReadonlyArray<string> | null;
 } = {}): string {
   const params = new URLSearchParams();
   if (opts.view && opts.view !== "mine") params.set("view", opts.view);
   if (opts.repoId) params.set("repo_id", opts.repoId);
   if (opts.issueId) params.set("issue", opts.issueId);
+  if (opts.labels && opts.labels.length > 0) {
+    params.set("labels", opts.labels.join(","));
+  }
   const qs = params.toString();
   return qs ? `#/workflow/triage?${qs}` : "#/workflow/triage";
 }

@@ -220,7 +220,7 @@ export function ReposPage(): JSX.Element {
                     </Badge>
                   </TableCell>
                   <TableCell className="text-sm text-muted-foreground">
-                    {r.last_activity_at ? new Date(r.last_activity_at).toLocaleString() : "—"}
+                    {r.last_activity_at ? new Date(r.last_activity_at).toLocaleString("en-AU") : "—"}
                   </TableCell>
                   <TableCell className="text-right">
                     <Button

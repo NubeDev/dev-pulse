@@ -74,6 +74,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Separator } from "@/components/ui/separator";
+import { LabelChipList } from "@/components/label-chip";
 
 import type { IssueListItem, ListIssuesQuery } from "../api/client.js";
 import {
@@ -81,6 +82,7 @@ import {
   triageView,
   useRoute,
   workflowSelectedIssue,
+  workflowSelectedLabels,
   workflowSelectedRepoId,
   workflowTriageRoute,
   type TriageView,
@@ -166,13 +168,18 @@ const VIEWS: ViewDef[] = [
  * `useIssueList`) lives in [`useTriageRows`] so the React-Query
  * cache key reflects the view.
  */
-function filterFor(view: TriageView, repoId: string | null): ListIssuesQuery {
+function filterFor(
+  view: TriageView,
+  repoId: string | null,
+  labels: ReadonlyArray<string>,
+): ListIssuesQuery {
   const base: ListIssuesQuery = {
     limit: PAGE_SIZE,
     offset: 0,
     state: "open",
   };
   if (repoId) base.repo_id = repoId;
+  if (labels.length > 0) base.labels = [...labels];
   if (view === "untriaged") {
     base.untriaged = true;
     return base;
@@ -195,8 +202,12 @@ function filterFor(view: TriageView, repoId: string | null): ListIssuesQuery {
  * `/me/queue/snoozed` endpoint — for now both branches resolve to
  * empty + an "empty state" pane.
  */
-function useTriageRows(view: TriageView, repoId: string | null) {
-  const q = filterFor(view, repoId);
+function useTriageRows(
+  view: TriageView,
+  repoId: string | null,
+  labels: ReadonlyArray<string>,
+) {
+  const q = filterFor(view, repoId, labels);
   const queue = useMyQueue(q);
   const list = useIssueList(q);
   if (view === "all") return list;
@@ -221,9 +232,10 @@ export function TriagePage(): JSX.Element {
   const route = useRoute();
   const view = triageView(route);
   const repoId = workflowSelectedRepoId(route);
+  const selectedLabels = workflowSelectedLabels(route);
   const selectedIssueId = workflowSelectedIssue(route);
 
-  const rowsQ = useTriageRows(view, repoId);
+  const rowsQ = useTriageRows(view, repoId, selectedLabels);
   const allRows: IssueListItem[] = rowsQ.data?.rows ?? [];
 
   // Per-row date fetch — bounded by `PAGE_SIZE`, react-query
@@ -285,6 +297,27 @@ export function TriagePage(): JSX.Element {
   // filtered `visible_link_count` and rides on the same DTO.
   const tags = useTags();
 
+  // tagging.md §9.6 step 2: name → colour lookup for the inline
+  // label chips. Keyed by lowercased tag name so a label string of
+  // any case resolves cleanly; tags without a matching entry fall
+  // through to the muted-border fallback inside `LabelChipList`.
+  const labelColorByName = useMemo<Map<string, string>>(() => {
+    const m = new Map<string, string>();
+    for (const t of tags.data ?? []) {
+      if (t.archived_at) continue;
+      m.set(t.name.toLowerCase(), t.color);
+    }
+    return m;
+  }, [tags.data]);
+
+  // Lowercased set of currently-filtered labels for chip
+  // active-state highlighting + the active-filter strip above the
+  // list. Source of truth is the URL (`?labels=`).
+  const activeLabelSet = useMemo<Set<string>>(
+    () => new Set(selectedLabels.map((l) => l.toLowerCase())),
+    [selectedLabels],
+  );
+
   const markSeen = useMarkInboxSeen();
   const setInboxState = useSetInboxState();
   const toggleState = useToggleIssueState();
@@ -337,14 +370,24 @@ export function TriagePage(): JSX.Element {
   const [paletteOpen, setPaletteOpen] = useState(false);
 
   const goToView = (v: TriageView) =>
-    navigate(workflowTriageRoute({ view: v, repoId, issueId: selectedIssueId }));
+    navigate(workflowTriageRoute({ view: v, repoId, issueId: selectedIssueId, labels: selectedLabels }));
   const goToRepo = (next: string | null) =>
-    navigate(workflowTriageRoute({ view, repoId: next, issueId: selectedIssueId }));
+    navigate(workflowTriageRoute({ view, repoId: next, issueId: selectedIssueId, labels: selectedLabels }));
+  const goToLabels = (next: ReadonlyArray<string>) =>
+    navigate(workflowTriageRoute({ view, repoId, issueId: selectedIssueId, labels: next }));
+  const toggleLabel = (name: string) => {
+    const lower = name.toLowerCase();
+    const has = selectedLabels.some((l) => l.toLowerCase() === lower);
+    const next = has
+      ? selectedLabels.filter((l) => l.toLowerCase() !== lower)
+      : [...selectedLabels, name];
+    goToLabels(next);
+  };
   const openIssue = (id: string | null) => {
     // §3.8 — opening a row in the peek panel marks it seen. Best
     // effort; the mutation swallows failures.
     if (id) markSeen.mutate([id]);
-    navigate(workflowTriageRoute({ view, repoId, issueId: id }));
+    navigate(workflowTriageRoute({ view, repoId, issueId: id, labels: selectedLabels }));
   };
 
   // ----- Keyboard nav (linear-projects-idea.md §3.7) ---------------------
@@ -914,6 +957,39 @@ export function TriagePage(): JSX.Element {
           </div>
         )}
 
+        {selectedLabels.length > 0 && (
+          <div
+            className="flex flex-wrap items-center gap-1.5 border-b border-border bg-muted/30 px-4 py-2"
+            data-testid="triage-active-labels"
+          >
+            <span className="text-xs text-muted-foreground">
+              Filtering by labels:
+            </span>
+            {selectedLabels.map((name) => (
+              <button
+                key={name}
+                type="button"
+                onClick={() => toggleLabel(name)}
+                data-testid="triage-active-label"
+                data-label={name}
+                className="inline-flex items-center gap-1 rounded-full border border-border bg-background px-2 py-0 text-[11px] font-medium leading-5 text-foreground hover:bg-accent"
+                title={`Remove filter: ${name}`}
+              >
+                <span>{name}</span>
+                <span aria-hidden className="text-muted-foreground">×</span>
+              </button>
+            ))}
+            <button
+              type="button"
+              onClick={() => goToLabels([])}
+              data-testid="triage-active-labels-clear"
+              className="ml-auto text-xs text-muted-foreground hover:text-foreground"
+            >
+              Clear
+            </button>
+          </div>
+        )}
+
         <ol
           className="flex-1 overflow-y-auto"
           data-testid="triage-list"
@@ -996,6 +1072,15 @@ export function TriagePage(): JSX.Element {
                 >
                   {row.title}
                 </span>
+                {row.labels.length > 0 && (
+                  <LabelChipList
+                    labels={row.labels}
+                    colorByName={labelColorByName}
+                    activeLabels={activeLabelSet}
+                    onLabelClick={toggleLabel}
+                    max={3}
+                  />
+                )}
                 {row.repo_slug && (
                   <span className="ml-auto shrink-0 text-xs text-muted-foreground">
                     {row.repo_slug}
@@ -1328,7 +1413,7 @@ function formatDueLabel(iso: string): string {
   if (days < 0) return `${days}d`;
   if (days === 0) return "today";
   if (days <= 7) return `${days}d`;
-  return new Date(iso).toLocaleDateString(undefined, {
+  return new Date(iso).toLocaleDateString("en-AU", {
     month: "short",
     day: "numeric",
   });
@@ -1345,7 +1430,7 @@ function formatRelative(iso: string): string {
   if (hrs < 24) return `${hrs}h`;
   const days = Math.floor(hrs / 24);
   if (days < 7) return `${days}d`;
-  return new Date(iso).toLocaleDateString(undefined, {
+  return new Date(iso).toLocaleDateString("en-AU", {
     month: "short",
     day: "numeric",
   });

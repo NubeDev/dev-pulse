@@ -556,3 +556,401 @@ same follow-up that ships the prune command.
 
 Each step ships independently; the existing tag UI keeps working at
 every point because every change is additive.
+
+---
+
+## 9. Other GitHub primitives to leverage
+
+§2–§8 cover the tag ↔ label/topic story. GitHub ships **two more**
+typed primitives that already exist on the issues we fetch and
+that the workflow surface (triage + projects) currently ignores:
+**Issue Types** and **Milestones**. They are not tags — they have
+their own grammar, their own GitHub API, and their own UX role —
+but they belong in this document because the question "what
+classification do we surface on an issue row?" has *one* answer
+for the user even though the storage has three. Defining the
+boundaries here keeps the chips from collapsing into a single
+opaque blob downstream.
+
+### 9.1 The classification primitives, side-by-side
+
+| Primitive       | GitHub source                  | Cardinality on an issue | DP storage today           | Sync direction |
+|-----------------|--------------------------------|-------------------------|----------------------------|----------------|
+| **Label**       | repo `labels`                  | 0..N                    | `dp_issues.labels` JSONB   | Bidirectional via §2–§8 (tags) |
+| **Issue type**  | org-level issue types (GraphQL only — no REST surface lists them) | 0..1                    | *not fetched yet*          | Read-only mirror (no DP-side mutation in v1) |
+| **Milestone**   | repo `milestones`              | 0..1                    | *not fetched yet*          | Read-only mirror (no DP-side mutation in v1) |
+
+The asymmetry is deliberate:
+
+- **Labels** are the user's free-form classification — already
+  bidirectional in this doc because users *want* to add new ones.
+- **Issue types** are an org-admin concept (Bug / Feature / Task,
+  defined once per org). Letting DP create them would mean a new
+  GitHub App permission and a per-org admin UI; not worth it for
+  v1. We **read** them so the triage chip is honest.
+- **Milestones** are repo-scoped, due-date-bearing, and already
+  modelled in dev-pulse via `dp_projects` + per-issue
+  `dp_issue_dates`. The DP project is the **strictly-larger**
+  concept (cross-repo, cross-org, polymorphic membership). We
+  mirror milestones **in** so a project can adopt one as its
+  source of truth for `due_at` if the user wants; we do not
+  mirror them **out** because the user already has DP projects
+  for the cross-repo case.
+
+### 9.2 What we surface and where
+
+This document defines the **storage and sync** of types and
+milestones. The **issue-row chip order** is a triage-surface
+concern and lives in the workflow/triage spec — adding a chip
+here without updating that spec leaves two sources of truth.
+Cross-reference the triage spec when you wire the chips; do not
+encode row layout in this document.
+
+Triage rail gains two sections:
+
+- **Types** — one entry per org-defined type (count = open
+  issues with that type, viewer-filtered).
+- **Milestones** — one entry per *active* milestone (state=open
+  on GitHub), grouped by repo, with progress (`closed/total`)
+  and due-date relative label. Closed milestones live behind a
+  "show closed" toggle.
+
+Project detail page gains a **Milestones** card (§9.5 below) that
+lists milestones from any linked repo and lets the user adopt one
+as the project's primary milestone.
+
+### 9.3 Storage
+
+One migration, in the next free odd slot per the
+`STAGE-1-COORDINATION.md` convention (do not hard-code a number
+here — the on-disk migration list is the source of truth, and
+concrete numbers in long-lived design docs drift the moment
+another branch lands).
+
+```sql
+-- Org-level issue types. Refreshed by the fetcher on org tick.
+-- GraphQL is the only surface that lists these, so we key on
+-- the opaque node id, not the numeric databaseId.
+CREATE TABLE dp_issue_types (
+    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id         UUID NOT NULL REFERENCES dp_orgs(id) ON DELETE CASCADE,
+    github_node_id TEXT NOT NULL,            -- e.g. "IT_kwDOABCD..."
+    name           TEXT NOT NULL,            -- "Bug", "Feature", "Task"
+    description    TEXT NULL,
+    color          TEXT NULL,                -- semantic palette name (see §7.2)
+    is_enabled     BOOLEAN NOT NULL DEFAULT TRUE,
+    fetched_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (org_id, github_node_id)
+);
+CREATE INDEX dp_issue_types_org_idx ON dp_issue_types (org_id) WHERE is_enabled;
+
+-- Repo milestones. Refreshed per-repo by the fetcher. The
+-- `github_node_id` follows the precedent set by migration
+-- `0021_issue_github_node_id.sql` (Projects v2 mirror) — node
+-- ids are how every GraphQL join in this codebase reconciles
+-- REST-fetched rows with GraphQL-only surfaces.
+CREATE TABLE dp_milestones (
+    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    repo_id        UUID NOT NULL REFERENCES dp_repos(id) ON DELETE CASCADE,
+    github_number  INTEGER NOT NULL,         -- repo-scoped `number`
+    github_node_id TEXT NOT NULL,            -- for Projects v2 / GraphQL joins
+    title          TEXT NOT NULL,
+    description    TEXT NULL,
+    state          TEXT NOT NULL CHECK (state IN ('open', 'closed')),
+    -- GitHub's `due_on` is a calendar date, not a timestamp.
+    -- Storing it as TIMESTAMPTZ forces a timezone interpretation
+    -- ("UTC midnight") that displays as the *previous day* west
+    -- of UTC. DATE keeps it tz-agnostic; the §9.5 follow-the-
+    -- milestone path doesn't need finer precision.
+    due_on         DATE NULL,
+    open_issues    INTEGER NOT NULL DEFAULT 0,
+    closed_issues  INTEGER NOT NULL DEFAULT 0,
+    created_at     TIMESTAMPTZ NOT NULL,
+    updated_at     TIMESTAMPTZ NOT NULL,
+    closed_at      TIMESTAMPTZ NULL,
+    fetched_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- §9.4 N=3 quarantine counter; same shape as `dp_tag_links`
+    -- in §4.2. Reset to 0 on any pull that re-observes the row.
+    remote_missing_streak INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (repo_id, github_number)
+);
+CREATE INDEX dp_milestones_repo_state_idx ON dp_milestones (repo_id, state);
+CREATE INDEX dp_milestones_due_idx ON dp_milestones (due_on) WHERE state = 'open';
+
+-- Per-issue pointers. Both nullable, both populated by the fetcher.
+ALTER TABLE dp_issues
+    ADD COLUMN issue_type_id UUID NULL REFERENCES dp_issue_types(id) ON DELETE SET NULL,
+    ADD COLUMN milestone_id  UUID NULL REFERENCES dp_milestones(id) ON DELETE SET NULL;
+
+CREATE INDEX dp_issues_milestone_idx ON dp_issues (milestone_id) WHERE milestone_id IS NOT NULL;
+CREATE INDEX dp_issues_type_idx      ON dp_issues (issue_type_id) WHERE issue_type_id IS NOT NULL;
+
+-- Project ↔ milestone adoption (§9.5). `due_at_overridden`
+-- flips to TRUE when the user edits `due_at` directly while a
+-- primary milestone is set; the fetcher checks this flag before
+-- re-syncing and `[Adopt]` / `[Re-sync]` clears it.
+ALTER TABLE dp_projects
+    ADD COLUMN primary_milestone_id UUID NULL REFERENCES dp_milestones(id) ON DELETE SET NULL,
+    ADD COLUMN due_at_overridden    BOOLEAN NOT NULL DEFAULT FALSE;
+```
+
+Why each choice:
+
+- **`issue_type_id` / `milestone_id` as FKs, not denormalised
+  text**, because the renames are frequent enough on GitHub
+  (especially milestone titles) that a JSONB-of-strings would
+  drift fast. The FK forces the fetcher to converge.
+- **`ON DELETE SET NULL`** so a GitHub-side deletion of a
+  milestone doesn't cascade to issues — the issue keeps its
+  history, the chip just disappears.
+- **No `dp_projects.milestone_links`** many-to-many table. A
+  project adopting *one* milestone is the load-bearing case (§9.5);
+  if multi-milestone projects become real, that's a follow-up
+  migration with its own scope review.
+
+### 9.4 Fetcher additions
+
+Same worker loop, same pacing primitives as the §5 reconcilers.
+The "do not run in parallel with the Projects v2 dates mirror"
+constraint from §1 applies here too.
+
+Per-org tick (new):
+
+1. `client.list_issue_types(org)` — GraphQL, returns the org's
+   defined types.
+2. Upsert into `dp_issue_types`. Disabled types stay in the table
+   with `is_enabled = false` so historical issue rows still
+   resolve their chip.
+
+Per-repo tick (additions to the existing flow):
+
+1. `client.list_milestones(owner, repo, state=all)` — REST, cheap.
+2. Upsert into `dp_milestones`. Milestones absent from the
+   response follow the **same N=3 quarantine pattern as §5.1
+   step 5**, with the same "complete page set, no 5xx, no
+   token-scope 404" guard before the streak counter advances.
+   A partial GraphQL response or a downgraded token looks like
+   absence too; diverging the quarantine semantics across
+   primitives invites silent data loss without buying anything.
+   The streak counter for milestones lives on the row as
+   `remote_missing_streak INTEGER NOT NULL DEFAULT 0` (same
+   shape as `dp_tag_links` in §4.2).
+3. Per-issue fetch already returns `milestone` and `type` fields;
+   resolve to the local FK by `(repo_id, github_number)` and
+   `(org_id, github_id)` respectively. No new API call.
+
+The `client.list_issue_types` and `client.list_milestones`
+methods are the only new fetcher surface — the issue body itself
+already carries both fields in the payloads we discard today.
+
+### 9.5 Projects ↔ milestones (the "adopt a milestone" affordance)
+
+A DP project's `due_at` (and Meta block) currently live in
+`dp_projects` as free-floating timestamps the user types in.
+Once milestones are fetched, the project detail page gains:
+
+- A **Milestones** card listing every milestone from any
+  `dp_project_repo_links` repo, with `closed/total` progress and
+  relative due-date label.
+- Each row has an `[Adopt as primary]` button. **Adoption is
+  idempotent**: every click of `[Adopt]` re-copies the
+  milestone's current `due_on` into the project's `due_at` and
+  resumes the follow-the-milestone behaviour. This is the only
+  affordance — there is no separate `[Follow again]` action.
+  Adopting:
+  1. Sets `dp_projects.primary_milestone_id = <milestone.id>`.
+  2. Copies the milestone's `due_on` into the project's `due_at`.
+  3. From this point on, a fetcher tick that observes a new
+     `due_on` on the milestone re-syncs the project's `due_at`.
+- **Local override behaviour.** If the user edits `due_at`
+  directly on the project while a primary milestone is adopted,
+  the override is sticky — fetcher ticks stop overwriting it
+  and the Meta block's `Due` cell renders `Apr 12 · overrides
+  milestone "v2.4"` with an inline `[Re-sync]` action.
+  `[Re-sync]` is functionally identical to `[Adopt as primary]`
+  on the same milestone: it re-copies the current `due_on` and
+  resumes follow. The user therefore has exactly one verb
+  ("adopt this milestone's date, now") whether they're starting
+  fresh or recovering from an override.
+- The Meta block's `Due` cell renders `Apr 12 · from milestone
+  "v2.4"` when adoption is active and the override is not set,
+  and the milestone title is a link back to the Milestones card.
+
+How "override is set" is detected: the project carries an
+existing `version: int` (CAS token from the issues write path,
+§8). A user-initiated `PATCH /projects/{id}` that touches
+`due_at` while `primary_milestone_id` is non-null sets a
+sibling `due_at_overridden BOOLEAN NOT NULL DEFAULT FALSE`
+column. The fetcher checks this flag before re-syncing;
+`[Adopt]` / `[Re-sync]` clears it back to `FALSE`. One flag,
+one verb, no third state.
+
+Why this shape:
+
+- **One milestone per project, not many.** A project is the
+  cross-cutting concept; if a project genuinely spans multiple
+  milestones, those milestones each track their own work
+  independently and the project's `due_at` is the *latest* of
+  them — which is the same answer as "no primary milestone, use
+  the user-typed value." Multi-milestone wins nothing here.
+- **No outbound writes.** Adopting a milestone is a DP-side
+  pointer change; we never `PATCH /repos/{o}/{r}/milestones/{n}`.
+  The user changes milestone dates on GitHub (their existing
+  workflow), DP follows.
+- **Smart view: "Due in current milestone".** Once primary
+  milestones exist, the triage rail's `Due this week` smart view
+  gains a sibling `Current milestone` that scopes to issues
+  whose milestone matches the user's pinned project's primary
+  milestone. Cheap once the FK is in place. Edge cases:
+  - **No pinned project, or no pin with a primary milestone** —
+    the rail entry stays visible but disabled, with hover text
+    "Pin a project with an adopted milestone to use this view."
+    Clicking is a no-op. Hiding the entry entirely makes the
+    feature undiscoverable for new users.
+  - **Multiple pinned projects with primary milestones** — the
+    view unions the milestones (`milestone_id IN (m1, m2, …)`).
+    No picker UI; the user already expressed intent by pinning
+    every project they care about. If the union grows past a
+    reasonable cap (working assumption: 10 milestones), the
+    rail entry surfaces a "(N milestones)" badge so the
+    cardinality is honest.
+
+### 9.6 Labels — the existing-data-on-the-floor fix
+
+`dp_issues.labels` is already populated by the fetcher (`JSONB`
+array of label name strings) and not surfaced anywhere in the
+triage or project UI. This is the cheapest win in this doc.
+
+Three additive changes, all read-only:
+
+1. **`IssueListItem` DTO gains `labels: string[]`.** The column
+   is already in the SELECT — just stop discarding it.
+2. **Triage row renders up to 3 label chips** between the title
+   and the assignees, with `+N more` overflow. Colour is resolved
+   from the org-scope tag of matching name (§7.1 — same chip the
+   tag surface renders); labels without a corresponding tag row
+   fall back to the muted-border default.
+3. **Triage rail gains a `Labels` section** mirroring `Saved
+   views` (§3 of the existing tagging surface) — one entry per
+   org-scope tag of `kind='single'`, count = open issues carrying
+   that label, viewer-filtered. Clicking sets the list query to
+   `?labels=<name>`.
+
+This **deliberately overlaps** with the §2–§8 tag-as-label sync.
+That overlap is fine: §2–§8 makes the *tag entity* the source of
+truth for chip metadata (colour, description, scope); §9.6 makes
+the *issue's GitHub label string* render as that same chip even
+before the §2–§8 push-side reconciler runs. When the user later
+edits the chip's colour, §7.3's fan-out propagates to GitHub —
+no separate code path.
+
+**Bootstrap sequencing — be honest about what ships when.** On
+day one, `dp_tags` carries no rows for any GitHub label, so
+every §9.6 chip renders with the muted-border fallback. The
+**§5.1 pull reconciler** is what creates the org-scope tag rows
+from observed labels and populates their colours. So:
+
+- §9.6 ships the chip-render component and the data-on-the-floor
+  fix (labels in `IssueListItem`), with the fallback colour.
+- §5.1 ships the colours by populating `dp_tags` rows.
+
+These are **sequenced, not independent**. §9.6 is safe to land
+before §5.1 (the fallback colour is honest, not broken), but
+"ships behind nothing" was the wrong framing — it ships behind
+the §9.9 step 11 ordering. §5.1 must follow for the chips to
+look like the design intent.
+
+### 9.7 Filter and group-by axes
+
+Triage's existing group-by axes (`status` / `assignee` / `repo`)
+gain three more:
+
+| Axis        | Bucket key                          | Empty-state label              |
+|-------------|-------------------------------------|--------------------------------|
+| `type`      | `issue_type.name` or `"Untyped"`    | "No issue type assigned"       |
+| `milestone` | `milestone.title` or `"No milestone"` | "Not in any milestone"       |
+| `label`     | one row per label, issues repeat    | "Unlabelled"                   |
+
+`label` is the only axis where a single issue appears in **more
+than one** group — same double-counting semantics as the §7.7
+tag-as-report-dimension contract. **Reuse §7.7's chosen UX
+pattern verbatim** (the "all orgs combined" de-dup footnote
+shape) — do not introduce a second disclosure idiom for the same
+problem. If §7.7's pattern is updated, §9.7's footer updates
+with it; one source of truth.
+
+Filter params (additive to `GET /issues`):
+
+- `?type_id=<uuid>` — exact match.
+- `?milestone_id=<uuid>` — exact match.
+- `?labels=bug,p1` — comma-separated; all-of semantics (issue
+  must carry every named label).
+- `?no_milestone=true` — escape hatch for the "Untyped" bucket
+  use case as a flat filter.
+
+**Divergence from GitHub's own URL grammar.** GitHub's issue
+search UI uses `+` as the label separator (e.g.
+`?labels=bug+p1`); dev-pulse uses `,`. Both are all-of; the
+separator is the only difference. We pick `,` for readability
+and consistency with the other comma-separated params on
+`GET /issues`. **Anyone pasting a GitHub URL will get an
+"unknown label" result** because `+` is URL-decoded to space,
+not split. Surface this as a soft hint in the filter chip when
+the parsed label list contains whitespace.
+
+### 9.8 What stays out of scope
+
+Explicit non-goals so the §9 surface doesn't grow without a
+review:
+
+- **No DP-side creation of issue types.** Org admins define them
+  on GitHub; DP reads only. If a v1 deployment wants to mass-
+  apply a type, they do it on GitHub and the next fetcher tick
+  picks it up.
+- **No DP-side milestone CRUD.** Same reason — milestone admin
+  is a GitHub-side workflow; DP-side creation would need a new
+  permission and a per-repo admin UI for one cross-repo concept
+  that DP projects already cover.
+- **No milestone ↔ tag sync.** A milestone is *not* a tag (it's
+  due-date-bearing, repo-scoped, 0..1 per issue). Modelling it
+  as a `kv` tag would lose the due date and the progress count.
+  They stay separate primitives.
+- **No issue-type ↔ tag sync.** An issue type is *not* a label
+  (it's org-scoped, 0..1, with its own colour from the org's
+  type palette). Mirroring it into a tag would create a chip the
+  user can't edit through the tag surface without it diverging
+  from GitHub on the next pull. Stays separate.
+- **Milestones and issue types are NOT first-class targets for
+  `dp_tag_links`.** The `dp_tag_links.kind` CHECK constraint
+  stays `IN ('repo', 'issue', 'user', 'team')` — no
+  `'milestone'`, no `'issue_type'`. A tag can link to an *issue
+  that belongs to a milestone*, but the milestone itself is not
+  link-able. Adding either kind to the CHECK would imply
+  symmetry between tags and these primitives that this section
+  explicitly rejects (different cardinality, different sync
+  semantics, different ownership).
+
+### 9.9 Rollout order (extends §8)
+
+Slotting in after the §8 sequence:
+
+9.  Schema migration (next free odd slot per
+    `STAGE-1-COORDINATION.md` — do not pick a number until the
+    branch lands, see §9.3) — schema only.
+10. Fetcher: `list_issue_types` + `list_milestones`, populate
+    `dp_issue_types` / `dp_milestones`, resolve per-issue FKs.
+11. `IssueListItem` carries `labels`, `type`, `milestone`. Triage
+    row renders the three chips in the §9.2 order. **Ships
+    behind nothing — purely additive read-side.**
+12. Triage rail: Types and Milestones sections; Labels section
+    (the §9.6 read-side half of §2–§8).
+13. `GET /issues` filter params (`type_id`, `milestone_id`,
+    `labels`, `no_milestone`). Group-by axes added.
+14. Project detail page: Milestones card + `[Adopt as primary]`.
+    `dp_projects.primary_milestone_id` becomes load-bearing for
+    the Meta `Due` cell.
+15. Smart view: "Current milestone" (depends on §9.5 adoption).
+
+Each step ships independently — the §2–§8 tag-sync surface and
+this §9 classification surface share zero code paths and one
+shared chip-render component (the Label chip, §9.6 step 2).

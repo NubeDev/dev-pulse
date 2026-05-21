@@ -189,7 +189,7 @@ function SettingCard({ setting }: { setting: SettingDto }): JSX.Element {
           <p className="text-xs text-muted-foreground">
             {savedNote ??
               (setting.updated_at
-                ? `Last updated ${new Date(setting.updated_at).toLocaleString()}`
+                ? `Last updated ${new Date(setting.updated_at).toLocaleString("en-AU")}`
                 : "Never set.")}
           </p>
           <div className="flex gap-2">

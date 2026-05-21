@@ -102,7 +102,7 @@ export function ProjectReposCard({
                 key={row.repo_id}
                 className="rounded-md border border-border bg-muted/30 px-2 py-1 font-mono text-xs"
                 data-testid="project-repos-row"
-                title={`Linked ${new Date(row.added_at).toLocaleString()}`}
+                title={`Linked ${new Date(row.added_at).toLocaleString("en-AU")}`}
               >
                 {row.repo_name}
               </li>

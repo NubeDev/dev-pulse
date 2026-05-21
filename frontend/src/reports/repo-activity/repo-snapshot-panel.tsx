@@ -174,9 +174,9 @@ function SnapshotBody({
 
       <div className="text-xs text-muted-foreground">
         {pushed ? (
-          <>Last push to GitHub: {pushed.toLocaleString()} · </>
+          <>Last push to GitHub: {pushed.toLocaleString("en-AU")} · </>
         ) : null}
-        Snapshot recorded {updated.toLocaleString()}
+        Snapshot recorded {updated.toLocaleString("en-AU")}
       </div>
     </div>
   );

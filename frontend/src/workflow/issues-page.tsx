@@ -110,11 +110,13 @@ import {
   useMarkInboxSeen,
   useMyQueue,
   useSetInboxState,
+  useTags,
   useToggleIssueState,
   useUpdateIssue,
   useUpdateIssueDates,
   writesUnavailableOrg,
 } from "./use-workflow-data.js";
+import { LabelChipList } from "@/components/label-chip";
 import { WritesGate } from "./writes-banner.js";
 
 const PAGE_SIZE = 50;
@@ -265,6 +267,19 @@ export function IssuesPage(): JSX.Element {
   const markSeen = useMarkInboxSeen();
   const setInboxState = useSetInboxState();
   const toggleState = useToggleIssueState();
+
+  // tagging.md §9.6 step 2: name → colour lookup for inline label
+  // chips on the row. Lowercased keys; misses fall back to the
+  // muted-border default inside `LabelChipList`.
+  const tags = useTags();
+  const labelColorByName = useMemo<Map<string, string>>(() => {
+    const m = new Map<string, string>();
+    for (const t of tags.data ?? []) {
+      if (t.archived_at) continue;
+      m.set(t.name.toLowerCase(), t.color);
+    }
+    return m;
+  }, [tags.data]);
 
   const goTo = (next: Partial<IssuesPageQuery>): void => {
     navigate(buildRoute({ ...parsed, ...next, offset: 0 }, selectedIssueId));
@@ -580,10 +595,19 @@ export function IssuesPage(): JSX.Element {
                   </TableCell>
                   <TableCell className="font-mono text-muted-foreground">{row.number}</TableCell>
                   <TableCell>
-                    <div className="flex flex-col">
-                      <span className={row.unread ? "font-semibold" : "font-medium"}>
-                        {row.title}
-                      </span>
+                    <div className="flex flex-col gap-1">
+                      <div className="flex items-center gap-2">
+                        <span className={row.unread ? "font-semibold" : "font-medium"}>
+                          {row.title}
+                        </span>
+                        {row.labels.length > 0 && (
+                          <LabelChipList
+                            labels={row.labels}
+                            colorByName={labelColorByName}
+                            max={3}
+                          />
+                        )}
+                      </div>
                       {row.repo_slug && (
                         <span className="text-xs text-muted-foreground">{row.repo_slug}</span>
                       )}
@@ -596,7 +620,7 @@ export function IssuesPage(): JSX.Element {
                     {row.assignees.length === 0 ? "—" : row.assignees.join(", ")}
                   </TableCell>
                   <TableCell className="text-sm text-muted-foreground">
-                    {new Date(row.updated_at).toLocaleString()}
+                    {new Date(row.updated_at).toLocaleString("en-AU")}
                   </TableCell>
                   <TableCell className="text-right">
                     {/* Per-row inbox actions (`linear-projects-idea.md`
