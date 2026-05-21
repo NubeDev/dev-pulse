@@ -1,0 +1,23 @@
+name: projects-v2
+goal: |
+  Ship the first-class Projects surface per linear-projects-v2.md:
+  a dev-pulse-owned `dp_projects` object with cross-repo issue
+  membership, in-context controls in the workflow detail pane, a
+  sidebar section, bulk-add from triage, and an org-scoped GitHub
+  Projects v2 board link dialog that retires the per-repo admin
+  pane. End state: a user can create a project, add 10 issues
+  from triage, edit a date and see it mirror to a linked GitHub
+  board — with zero node-id paste fields on the primary path.
+
+stages:
+  - storage — migrations 0022 (dp_projects + dp_project_issues), domain types (Project, ProjectUpsert), and Store trait methods (CRUD + membership), with pg impls and unit tests
+  - REVIEW schema shape, soft-delete + version columns, index coverage, and the issue-belongs-to-many-projects open question (§14.4) before touching the API
+  - REST projects CRUD — DTOs, handlers, routes from §7.1 in linear-projects-v2.md, OpenAPI registration, audit verbs, CAS via expected_version
+  - REST project ↔ issue membership — §7.2 endpoints (bulk add, single delete, "what's this issue's project?"), with the BulkAddResult per-row shape matching SCOPE-PROJECTS.md §7
+  - frontend slice A — sidebar Projects section + counts, #/projects list page, #/projects/{id} detail page (reuse triage list row component), workflow detail pane Project chip with quick-pick add/change/remove, bulk-add from triage selection toolbar
+  - REVIEW slice A end-to-end — create project, add 10 issues from triage, see them grouped on the detail page; confirm there are zero references to repo_project_link in any user-facing copy and that the new sidebar entry replaces Admin · Projects
+  - migrations 0023 + 0024 — dp_project_board_links table, retire dp_repo_project_link (DROP TABLE), domain + Store methods, pg impls
+  - REST board picker + link CRUD — org-scoped GET /orgs/{org_id}/projects-v2 picker, /projects/{id}/board-links CRUD per §7.3, mirror fan-out in OctocrabProjectV2Mirror (one mirror call per linked board), per-link last_mirror_at / last_mirror_error surfacing
+  - frontend slice B — Link-a-board dialog replacing the admin page (org-scoped dropdown, field mapping, no node-id paste field on primary path), per-link mirror status in the project detail page, move admin pane to #/admin/project-sync as the escape hatch
+  - REVIEW slice B end-to-end — link a board from the project page, edit a date in the workflow detail pane, see "Synced HH:mm:ss to <board name>" within 5s, confirm no node-id paste field appears in the primary flow
+  - cleanup + acceptance — grep the workspace for `repo_project_link`, ensure only the migration retiring it remains; run cargo test --workspace, UPDATE_OPENAPI_SNAPSHOT=1 to regenerate, pnpm exec tsc --noEmit; update linear-projects-v2.md §0 progress log
