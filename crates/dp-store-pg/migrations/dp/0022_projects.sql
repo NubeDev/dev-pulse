@@ -4,12 +4,12 @@
 -- the team plans against. Two tables land here; the GitHub-side
 -- mirror plumbing (`dp_project_board_links`, `dp_project_board_items`,
 -- and the rename of the legacy `dp_repo_project_link`) is slice B
--- and ships under `0023_*` / `0024_*` once these foundations are
+-- and ships under `0025_*` / `0026_*` once these foundations are
 -- exercised by the API + UI.
 --
 -- Migration-numbering convention: projects-issues owns *even* slots
 -- this slice; `0021_*` (issue github node id) was the last even slot
--- before this one. `0023_*` and `0024_*` stay reserved for the
+-- before this one. `0025_*` and `0026_*` stay reserved for the
 -- board-link tables and the legacy-table rename respectively.
 --
 --   * `dp_projects` — owns name / description / lead / dates /

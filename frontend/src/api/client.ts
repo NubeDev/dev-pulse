@@ -657,6 +657,126 @@ export const RepoListResponseSchema = z.object({
 });
 export type RepoListResponse = z.infer<typeof RepoListResponseSchema>;
 
+/** `GET /repos/{id}/metadata` — per-repo snapshot of mutable
+ *  GitHub-side fields (stars / forks / language / default branch /
+ *  archival state / …) populated by the fetcher off every webhook
+ *  delivery's `repository` block. Returns `null` when no snapshot
+ *  has been recorded yet (fresh install before the first webhook
+ *  lands). */
+export const RepoMetadataDtoSchema = z.object({
+  stars: z.number().int(),
+  forks: z.number().int(),
+  watchers: z.number().int(),
+  open_issues_remote: z.number().int(),
+  primary_language: z.string().nullable().optional(),
+  default_branch: z.string().nullable().optional(),
+  description: z.string().nullable().optional(),
+  homepage: z.string().nullable().optional(),
+  is_archived: z.boolean(),
+  is_fork: z.boolean(),
+  is_private: z.boolean(),
+  pushed_at: isoDateTime.nullable().optional(),
+  metadata_updated_at: isoDateTime,
+});
+export type RepoMetadataDto = z.infer<typeof RepoMetadataDtoSchema>;
+
+/** p50 / p90 / p95 over a numeric distribution. Every field is
+ *  `null` when the sample is too small (SCOPE §15.9, `n < 5`). */
+export const PercentileTripleDtoSchema = z.object({
+  p50: z.number().nullable().optional(),
+  p90: z.number().nullable().optional(),
+  p95: z.number().nullable().optional(),
+});
+export type PercentileTripleDto = z.infer<typeof PercentileTripleDtoSchema>;
+
+/** `GET /repos/{id}/pr-size-stats` — repo-level pull-request size
+ *  distribution (percentiles over the JSONB payload of merged-PR
+ *  events). Every field describes the repo, not an individual
+ *  contributor (SCOPE §4). */
+export const RepoPrSizeStatsDtoSchema = z.object({
+  since: isoDateTime,
+  until: isoDateTime,
+  sample_n: z.number().int(),
+  additions: PercentileTripleDtoSchema,
+  deletions: PercentileTripleDtoSchema,
+  total_lines: PercentileTripleDtoSchema,
+  changed_files: PercentileTripleDtoSchema,
+  commits: PercentileTripleDtoSchema,
+});
+export type RepoPrSizeStatsDto = z.infer<typeof RepoPrSizeStatsDtoSchema>;
+
+/** `GET /repos/{id}/ci-stats` — repo-level CI workflow-run
+ *  statistics from the `workflow_run.completed` JSONB payload.
+ *  Counts split by `conclusion`; duration percentiles use
+ *  `updated_at - run_started_at` (seconds). SCOPE §4: describes
+ *  the repo's CI, not individual contributors. */
+export const RepoCiStatsDtoSchema = z.object({
+  since: isoDateTime,
+  until: isoDateTime,
+  total_runs: z.number().int(),
+  success: z.number().int(),
+  failure: z.number().int(),
+  cancelled: z.number().int(),
+  other: z.number().int(),
+  success_rate: z.number().nullable().optional(),
+  duration_sample_n: z.number().int(),
+  duration_seconds: PercentileTripleDtoSchema,
+});
+export type RepoCiStatsDto = z.infer<typeof RepoCiStatsDtoSchema>;
+
+/** One `(dow, hour)` cell in a [`RepoActivityHeatmapDto`]. */
+export const HeatmapBucketDtoSchema = z.object({
+  dow: z.number().int(),
+  hour: z.number().int(),
+  count: z.number().int(),
+});
+export type HeatmapBucketDto = z.infer<typeof HeatmapBucketDtoSchema>;
+
+/** `GET /repos/{id}/activity-heatmap` — dense 168-cell
+ *  `(day_of_week, hour_of_day)` grid in the requested timezone.
+ *  SCOPE §4: describes the repo's collaboration cadence, never
+ *  an individual contributor's. */
+export const RepoActivityHeatmapDtoSchema = z.object({
+  since: isoDateTime,
+  until: isoDateTime,
+  timezone: z.string(),
+  total: z.number().int(),
+  buckets: z.array(HeatmapBucketDtoSchema),
+});
+export type RepoActivityHeatmapDto = z.infer<
+  typeof RepoActivityHeatmapDtoSchema
+>;
+
+/** `GET /repos/{id}/review-velocity` — repo-level time-to-merge
+ *  percentile distribution from the `pull_request_merged` event
+ *  payload (`merged_at - created_at`, seconds). SCOPE §4:
+ *  describes the repo's merge cadence, not an individual
+ *  contributor's. */
+export const RepoReviewVelocityDtoSchema = z.object({
+  since: isoDateTime,
+  until: isoDateTime,
+  sample_n: z.number().int(),
+  time_to_merge_seconds: PercentileTripleDtoSchema,
+});
+export type RepoReviewVelocityDto = z.infer<
+  typeof RepoReviewVelocityDtoSchema
+>;
+
+/** `GET /repos/{id}/contributor-diversity` — repo-level "bus
+ *  factor" view. Carries no user identifiers; just concentration
+ *  metrics so the UI can flag risk without ranking anyone. */
+export const RepoContributorDiversityDtoSchema = z.object({
+  since: isoDateTime,
+  until: isoDateTime,
+  sample_n: z.number().int(),
+  distinct_authors: z.number().int(),
+  top1_share: z.number().nullable().optional(),
+  top3_share: z.number().nullable().optional(),
+});
+export type RepoContributorDiversityDto = z.infer<
+  typeof RepoContributorDiversityDtoSchema
+>;
+
 /** Query params for `GET /issues` and `GET /me/queue`. All optional;
  *  the server clamps `limit` into `1..=200` (default 50) and treats
  *  negative `offset` as zero. `state` defaults to `"open"` server-side.
@@ -1282,6 +1402,23 @@ export class DevPulseApi {
     }
   }
 
+  /** `GET /repos/{id}/metadata` — repo snapshot for the
+   *  repo-activity dashboard. Returns `null` when the snapshot has
+   *  not been recorded yet (the backend replies 404; the client
+   *  surfaces that as `null` so the UI can show a "snapshot
+   *  pending" placeholder rather than an error). */
+  async getRepoMetadata(repoId: string): Promise<RepoMetadataDto | null> {
+    try {
+      return await this.getJson(
+        `/repos/${encodeURIComponent(repoId)}/metadata`,
+        RepoMetadataDtoSchema,
+      );
+    } catch (e) {
+      if (e instanceof DpRestError && e.status === 404) return null;
+      throw e;
+    }
+  }
+
   // --- board links (linear-projects-v2.md §7.3, slice B) -----------
 
   /** `GET /orgs/{org_id}/projects-v2` — normalized org-wide board
@@ -1357,6 +1494,94 @@ export class DevPulseApi {
       if (e instanceof DpRestError && e.status === 404) return;
       throw e;
     }
+  }
+
+  /** `GET /repos/{id}/pr-size-stats` — repo-level PR-size
+   *  distribution. `since` / `until` default to a rolling 90-day
+   *  window when omitted. The server caps the span at 366 days. */
+  async getRepoPrSizeStats(
+    repoId: string,
+    q: { since?: string; until?: string } = {},
+  ): Promise<RepoPrSizeStatsDto> {
+    const params = new URLSearchParams();
+    if (q.since) params.set("since", q.since);
+    if (q.until) params.set("until", q.until);
+    const qs = params.toString();
+    return this.getJson(
+      `/repos/${encodeURIComponent(repoId)}/pr-size-stats${qs ? `?${qs}` : ""}`,
+      RepoPrSizeStatsDtoSchema,
+    );
+  }
+
+  /** `GET /repos/{id}/ci-stats` — repo-level CI workflow-run
+   *  health. `since` / `until` default to a rolling 90-day
+   *  window when omitted. The server caps the span at 366 days. */
+  async getRepoCiStats(
+    repoId: string,
+    q: { since?: string; until?: string } = {},
+  ): Promise<RepoCiStatsDto> {
+    const params = new URLSearchParams();
+    if (q.since) params.set("since", q.since);
+    if (q.until) params.set("until", q.until);
+    const qs = params.toString();
+    return this.getJson(
+      `/repos/${encodeURIComponent(repoId)}/ci-stats${qs ? `?${qs}` : ""}`,
+      RepoCiStatsDtoSchema,
+    );
+  }
+
+  /** `GET /repos/{id}/activity-heatmap` — dense 168-cell
+   *  `(dow, hour)` grid in the requested timezone (defaults to
+   *  the viewer's local zone via `Intl`). `since` / `until`
+   *  default to a rolling 90-day window when omitted. */
+  async getRepoActivityHeatmap(
+    repoId: string,
+    q: { since?: string; until?: string; timezone?: string } = {},
+  ): Promise<RepoActivityHeatmapDto> {
+    const params = new URLSearchParams();
+    if (q.since) params.set("since", q.since);
+    if (q.until) params.set("until", q.until);
+    if (q.timezone) params.set("timezone", q.timezone);
+    const qs = params.toString();
+    return this.getJson(
+      `/repos/${encodeURIComponent(repoId)}/activity-heatmap${qs ? `?${qs}` : ""}`,
+      RepoActivityHeatmapDtoSchema,
+    );
+  }
+
+  /** `GET /repos/{id}/review-velocity` — repo-level time-to-merge
+   *  percentile distribution. `since` / `until` default to a
+   *  rolling 90-day window when omitted. The server caps the span
+   *  at 366 days. */
+  async getRepoReviewVelocity(
+    repoId: string,
+    q: { since?: string; until?: string } = {},
+  ): Promise<RepoReviewVelocityDto> {
+    const params = new URLSearchParams();
+    if (q.since) params.set("since", q.since);
+    if (q.until) params.set("until", q.until);
+    const qs = params.toString();
+    return this.getJson(
+      `/repos/${encodeURIComponent(repoId)}/review-velocity${qs ? `?${qs}` : ""}`,
+      RepoReviewVelocityDtoSchema,
+    );
+  }
+
+  /** `GET /repos/{id}/contributor-diversity` — repo-level "bus
+   *  factor" view. `since` / `until` default to a rolling 90-day
+   *  window when omitted. */
+  async getRepoContributorDiversity(
+    repoId: string,
+    q: { since?: string; until?: string } = {},
+  ): Promise<RepoContributorDiversityDto> {
+    const params = new URLSearchParams();
+    if (q.since) params.set("since", q.since);
+    if (q.until) params.set("until", q.until);
+    const qs = params.toString();
+    return this.getJson(
+      `/repos/${encodeURIComponent(repoId)}/contributor-diversity${qs ? `?${qs}` : ""}`,
+      RepoContributorDiversityDtoSchema,
+    );
   }
 
   /** `POST /issues` — create. May throw `DpRestError` with

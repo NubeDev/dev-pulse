@@ -1,7 +1,7 @@
--- 0024_drop_repo_project_link.sql  (linear-projects-v2.md §11 — slice B)
+-- 0026_drop_repo_project_link.sql  (linear-projects-v2.md §11 — slice B)
 --
 -- Retire the §3.10 per-repo Projects v2 link table. The replacement
--- (`dp_project_board_links`, migration 0023) is project-scoped and
+-- (`dp_project_board_links`, migration 0025) is project-scoped and
 -- many-to-many: a Project can link several GitHub boards and the
 -- mirror writes fan out across them.
 --
@@ -29,6 +29,6 @@
 --     columns ahead of the rewire would strand the live mirror.
 --
 -- The drop is `IF EXISTS` so a re-run against a database that has
--- already moved past 0024 is a no-op rather than a hard error —
+-- already moved past 0026 is a no-op rather than a hard error —
 -- matches the pattern other slice-B migrations follow.
 DROP TABLE IF EXISTS dp_repo_project_link;

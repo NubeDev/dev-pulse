@@ -68,7 +68,7 @@ use dp_domain::project::{ProjectListFilter, ProjectStatus, ProjectUpsert};
 use dp_domain::fetch::{FetchCursor, FetchRunKind, ResourceKind};
 use dp_domain::membership::{Membership, MembershipRole};
 use dp_domain::org::Org;
-use dp_domain::repo::Repo;
+use dp_domain::repo::{Repo, RepoMetadata};
 use dp_domain::store::{Store, StoreError};
 use dp_domain::team::Team;
 use dp_domain::user::User;
@@ -310,6 +310,708 @@ async fn upsert_membership_preserves_home_org() {
         .await
         .unwrap_err();
     assert!(matches!(bogus, StoreError::NotFound { .. }));
+}
+
+/// `upsert_repo_metadata` round-trips, `get_repo_metadata` returns
+/// the latest values, and a second upsert with nullable text fields
+/// set to `None` does **not** wipe previously-recorded values (the
+/// COALESCE guard in `upsert_repo_metadata`'s ON CONFLICT clause).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Docker or DP_TEST_DATABASE_URL"]
+async fn repo_metadata_roundtrip_and_coalesce() {
+    let f = fixture().await;
+    let s = f.store();
+    let org = seed_org(s, 1, "octo").await;
+    let repo = seed_repo(s, &org, 100, "hello").await;
+
+    // No snapshot yet → None.
+    assert!(s.get_repo_metadata(repo.id).await.unwrap().is_none());
+
+    // First write — full payload.
+    let t0 = Utc.with_ymd_and_hms(2025, 1, 1, 12, 0, 0).unwrap();
+    s.upsert_repo_metadata(&RepoMetadata {
+        repo_id: repo.id,
+        stars: 42,
+        forks: 7,
+        watchers: 3,
+        open_issues_remote: 5,
+        primary_language: Some("Rust".into()),
+        default_branch: Some("main".into()),
+        description: Some("a thing".into()),
+        homepage: Some("https://example.com".into()),
+        is_archived: false,
+        is_fork: false,
+        is_private: false,
+        pushed_at: Some(t0),
+        metadata_updated_at: t0,
+    })
+    .await
+    .unwrap();
+
+    let got = s.get_repo_metadata(repo.id).await.unwrap().unwrap();
+    assert_eq!(got.stars, 42);
+    assert_eq!(got.primary_language.as_deref(), Some("Rust"));
+    assert_eq!(got.description.as_deref(), Some("a thing"));
+
+    // Second write — counter bump + nullable text fields set to None
+    // (simulates a partial webhook payload). Counters update, text
+    // fields are preserved by COALESCE.
+    let t1 = Utc.with_ymd_and_hms(2025, 1, 2, 12, 0, 0).unwrap();
+    s.upsert_repo_metadata(&RepoMetadata {
+        repo_id: repo.id,
+        stars: 50,
+        forks: 8,
+        watchers: 4,
+        open_issues_remote: 6,
+        primary_language: None,
+        default_branch: None,
+        description: None,
+        homepage: None,
+        is_archived: true,
+        is_fork: false,
+        is_private: false,
+        pushed_at: None,
+        metadata_updated_at: t1,
+    })
+    .await
+    .unwrap();
+
+    let got = s.get_repo_metadata(repo.id).await.unwrap().unwrap();
+    // Counters updated.
+    assert_eq!(got.stars, 50);
+    assert_eq!(got.forks, 8);
+    assert_eq!(got.open_issues_remote, 6);
+    // Flags updated unconditionally.
+    assert!(got.is_archived);
+    // Nullable text + pushed_at preserved by COALESCE.
+    assert_eq!(got.primary_language.as_deref(), Some("Rust"));
+    assert_eq!(got.default_branch.as_deref(), Some("main"));
+    assert_eq!(got.description.as_deref(), Some("a thing"));
+    assert_eq!(got.homepage.as_deref(), Some("https://example.com"));
+    assert_eq!(got.pushed_at, Some(t0));
+    assert_eq!(got.metadata_updated_at, t1);
+}
+
+/// `pr_size_stats_for_repo` returns p50/p90/p95 over the JSONB
+/// `additions` / `deletions` / `changed_files` / `commits` fields
+/// of `pull_request_merged` events, scoped to a repo + window.
+///
+/// Three cases in one test for speed:
+///
+/// 1. Below the §15.9 minimum (`n < 5`) — every percentile is
+///    `None` regardless of what was inserted.
+/// 2. At / above the minimum — percentiles match the values
+///    `compute_percentiles` would produce on the same input.
+/// 3. Window + repo + kind filters all apply.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Docker or DP_TEST_DATABASE_URL"]
+async fn pr_size_stats_for_repo_filters_and_guards_sample_size() {
+    let f = fixture().await;
+    let s = f.store();
+
+    let org = seed_org(s, 1, "octo").await;
+    let repo = seed_repo(s, &org, 100, "hello").await;
+    let other_repo = seed_repo(s, &org, 101, "other").await;
+
+    let t0 = Utc.with_ymd_and_hms(2025, 5, 10, 12, 0, 0).unwrap();
+    let mk_pr = |ts: chrono::DateTime<Utc>,
+                 repo_id: Uuid,
+                 ext: &str,
+                 add: i64,
+                 del: i64,
+                 cf: i64,
+                 commits: i64|
+     -> ActivityEvent {
+        ActivityEvent {
+            id: Uuid::new_v4(),
+            org_id: org.id,
+            repo_id,
+            kind: EventKind::PullRequestMerged,
+            ts,
+            external_id: ext.into(),
+            payload: json!({
+                "additions": add,
+                "deletions": del,
+                "changed_files": cf,
+                "commits": commits,
+            }),
+        }
+    };
+
+    // ----- case 1: only two merged PRs in window → n=2 < 5 ----
+    s.record_event(&mk_pr(t0, repo.id, "small-1", 10, 5, 2, 1)).await.unwrap();
+    s.record_event(&mk_pr(t0 + Duration::hours(1), repo.id, "small-2", 100, 50, 3, 2))
+        .await
+        .unwrap();
+
+    let since = t0 - Duration::days(1);
+    let until = t0 + Duration::days(1);
+    let stats = s.pr_size_stats_for_repo(repo.id, since, until).await.unwrap();
+    assert_eq!(stats.sample_n, 2);
+    assert!(stats.additions.p50.is_none(), "n<5 must mask p50");
+    assert!(stats.additions.p90.is_none());
+    assert!(stats.additions.p95.is_none());
+
+    // ----- case 2: top up to n=5 → percentiles populated -------
+    // additions sequence becomes: [10, 100, 20, 30, 40]
+    // sorted:                     [10, 20, 30, 40, 100]
+    // p50 (percentile_cont, linear interp on 4 intervals @ pos 2) → 30
+    s.record_event(&mk_pr(t0 + Duration::hours(2), repo.id, "m-3", 20, 10, 4, 2)).await.unwrap();
+    s.record_event(&mk_pr(t0 + Duration::hours(3), repo.id, "m-4", 30, 15, 5, 3)).await.unwrap();
+    s.record_event(&mk_pr(t0 + Duration::hours(4), repo.id, "m-5", 40, 20, 6, 4)).await.unwrap();
+
+    let stats = s.pr_size_stats_for_repo(repo.id, since, until).await.unwrap();
+    assert_eq!(stats.sample_n, 5);
+    let p50 = stats.additions.p50.expect("p50 populated at n=5");
+    assert!((p50 - 30.0).abs() < 1e-9, "p50 of [10,20,30,40,100] = 30, got {p50}");
+    assert!(stats.additions.p90.unwrap() > p50);
+    assert!(stats.additions.p95.unwrap() >= stats.additions.p90.unwrap());
+    // total_lines = additions + deletions; sorted: [15, 30, 45, 60, 150] → p50 = 45.
+    let tot_p50 = stats.total_lines.p50.unwrap();
+    assert!((tot_p50 - 45.0).abs() < 1e-9, "got {tot_p50}");
+
+    // ----- case 3: out-of-window + other-repo + wrong-kind events
+    // must NOT affect the stats. Insert one of each and assert the
+    // numbers are unchanged.
+    s.record_event(&mk_pr(t0 - Duration::days(5), repo.id, "old", 99999, 9, 9, 9))
+        .await
+        .unwrap();
+    s.record_event(&mk_pr(t0, other_repo.id, "wrong-repo", 99999, 9, 9, 9))
+        .await
+        .unwrap();
+    // Closed-without-merge PR — same payload shape, wrong kind.
+    s.record_event(&ActivityEvent {
+        id: Uuid::new_v4(),
+        org_id: org.id,
+        repo_id: repo.id,
+        kind: EventKind::PullRequestClosed,
+        ts: t0,
+        external_id: "closed-unmerged".into(),
+        payload: json!({
+            "additions": 99999, "deletions": 9, "changed_files": 9, "commits": 9
+        }),
+    })
+    .await
+    .unwrap();
+
+    let stats2 = s.pr_size_stats_for_repo(repo.id, since, until).await.unwrap();
+    assert_eq!(stats2.sample_n, 5, "n must not include out-of-scope rows");
+    assert_eq!(stats2.additions.p50, stats.additions.p50);
+
+    // Empty window → n=0, every triple None.
+    let empty = s
+        .pr_size_stats_for_repo(repo.id, t0 + Duration::days(30), t0 + Duration::days(40))
+        .await
+        .unwrap();
+    assert_eq!(empty.sample_n, 0);
+    assert!(empty.additions.p50.is_none());
+}
+
+/// `ci_stats_for_repo` aggregates `workflow_run` events: counts
+/// split by `conclusion`, success rate over (success+failure)
+/// only, and `updated_at - run_started_at` duration percentiles
+/// guarded by the §15.9 minimum-sample rule.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Docker or DP_TEST_DATABASE_URL"]
+async fn ci_stats_for_repo_counts_and_durations() {
+    let f = fixture().await;
+    let s = f.store();
+    let org = seed_org(s, 1, "octo").await;
+    let repo = seed_repo(s, &org, 100, "hello").await;
+    let other_repo = seed_repo(s, &org, 101, "other").await;
+
+    let t0 = Utc.with_ymd_and_hms(2025, 5, 10, 12, 0, 0).unwrap();
+    let mk_run = |ts: chrono::DateTime<Utc>,
+                  repo_id: Uuid,
+                  ext: &str,
+                  conclusion: &str,
+                  started_offset_s: i64,
+                  ended_offset_s: i64|
+     -> ActivityEvent {
+        let started = ts + Duration::seconds(started_offset_s);
+        let ended = ts + Duration::seconds(ended_offset_s);
+        ActivityEvent {
+            id: Uuid::new_v4(),
+            org_id: org.id,
+            repo_id,
+            kind: EventKind::WorkflowRun,
+            ts: ended,
+            external_id: ext.into(),
+            payload: json!({
+                "conclusion": conclusion,
+                "run_started_at": started.to_rfc3339(),
+                "updated_at":     ended.to_rfc3339(),
+            }),
+        }
+    };
+
+    // 6 successes (durations: 60, 120, 180, 240, 300, 600 s),
+    // 2 failures (durations: 90, 90 s),
+    // 1 cancelled (60 s), 1 skipped (0 s — no duration sample).
+    let runs = [
+        mk_run(t0, repo.id, "s-1", "success", 0, 60),
+        mk_run(t0, repo.id, "s-2", "success", 0, 120),
+        mk_run(t0, repo.id, "s-3", "success", 0, 180),
+        mk_run(t0, repo.id, "s-4", "success", 0, 240),
+        mk_run(t0, repo.id, "s-5", "success", 0, 300),
+        mk_run(t0, repo.id, "s-6", "success", 0, 600),
+        mk_run(t0, repo.id, "f-1", "failure", 0, 90),
+        mk_run(t0, repo.id, "f-2", "failure", 0, 90),
+        mk_run(t0, repo.id, "c-1", "cancelled", 0, 60),
+        // `updated_at == run_started_at` → duration_s = 0,
+        // filtered out of the duration sample but counted in the
+        // total. Conclusion "skipped" → counted under `other`.
+        mk_run(t0, repo.id, "k-1", "skipped", 0, 0),
+    ];
+    for r in &runs {
+        s.record_event(r).await.unwrap();
+    }
+
+    // Out-of-window + other-repo: must not affect any number.
+    s.record_event(&mk_run(t0 - Duration::days(5), repo.id, "old", "success", 0, 9999))
+        .await
+        .unwrap();
+    s.record_event(&mk_run(t0, other_repo.id, "wrong-repo", "failure", 0, 9999))
+        .await
+        .unwrap();
+    // Wrong event kind.
+    s.record_event(&ActivityEvent {
+        id: Uuid::new_v4(),
+        org_id: org.id,
+        repo_id: repo.id,
+        kind: EventKind::Commit,
+        ts: t0,
+        external_id: "commit-noise".into(),
+        payload: json!({"conclusion": "success", "run_started_at": "2025-01-01T00:00:00Z", "updated_at": "2025-01-01T00:00:01Z"}),
+    })
+    .await
+    .unwrap();
+
+    let since = t0 - Duration::days(1);
+    let until = t0 + Duration::days(1);
+    let stats = s.ci_stats_for_repo(repo.id, since, until).await.unwrap();
+
+    assert_eq!(stats.total_runs, 10);
+    assert_eq!(stats.success, 6);
+    assert_eq!(stats.failure, 2);
+    assert_eq!(stats.cancelled, 1);
+    assert_eq!(stats.other, 1, "skipped counts under other");
+
+    // success_rate = 6 / (6 + 2) = 0.75
+    let sr = stats.success_rate.expect("rate populated when success+failure > 0");
+    assert!((sr - 0.75).abs() < 1e-9, "got {sr}");
+
+    // Duration sample is the 9 runs with strictly-positive
+    // duration (the skipped run with delta=0 is excluded).
+    assert_eq!(stats.duration_sample_n, 9);
+    // Sorted durations: [60, 60, 90, 90, 120, 180, 240, 300, 600]
+    // percentile_cont(0.5) on 9 sorted values → element at
+    // 0.5 * (9-1) = 4.0 → 120.
+    let p50 = stats.duration_seconds.p50.expect("p50 populated at n>=5");
+    assert!((p50 - 120.0).abs() < 1e-9, "got {p50}");
+
+    // Empty window → zero counts, success_rate=None,
+    // duration_seconds all None.
+    let empty = s
+        .ci_stats_for_repo(repo.id, t0 + Duration::days(30), t0 + Duration::days(40))
+        .await
+        .unwrap();
+    assert_eq!(empty.total_runs, 0);
+    assert!(empty.success_rate.is_none());
+    assert_eq!(empty.duration_sample_n, 0);
+    assert!(empty.duration_seconds.p50.is_none());
+}
+
+/// `activity_heatmap_for_repo` produces a dense 168-cell
+/// `(dow, hour)` grid in the requested timezone, with zero
+/// counts for empty buckets, and respects repo / window filters.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Docker or DP_TEST_DATABASE_URL"]
+async fn activity_heatmap_for_repo_dense_grid_and_tz_shift() {
+    let f = fixture().await;
+    let s = f.store();
+    let org = seed_org(s, 1, "octo").await;
+    let repo = seed_repo(s, &org, 100, "hello").await;
+    let other_repo = seed_repo(s, &org, 101, "other").await;
+
+    // Pick a UTC instant that lands on different (dow, hour)
+    // cells in UTC vs. America/Los_Angeles so the tz shift is
+    // observable. 2025-05-12 (Mon) 04:00 UTC = 2025-05-11 (Sun)
+    // 21:00 PDT (UTC-7). ISO dow: Mon=0, Sun=6.
+    let utc_mon_4am = Utc.with_ymd_and_hms(2025, 5, 12, 4, 0, 0).unwrap();
+
+    let mk = |ts: chrono::DateTime<Utc>, repo_id: Uuid, ext: &str| ActivityEvent {
+        id: Uuid::new_v4(),
+        org_id: org.id,
+        repo_id,
+        kind: EventKind::Commit,
+        ts,
+        external_id: ext.into(),
+        payload: json!({}),
+    };
+
+    // 3 events in the same target bucket, plus 1 event one hour
+    // later (different bucket), plus noise that must NOT count:
+    //   * out-of-window event
+    //   * other-repo event
+    for i in 0..3 {
+        s.record_event(&mk(utc_mon_4am, repo.id, &format!("a-{i}"))).await.unwrap();
+    }
+    s.record_event(&mk(utc_mon_4am + Duration::hours(1), repo.id, "b"))
+        .await
+        .unwrap();
+    s.record_event(&mk(utc_mon_4am - Duration::days(60), repo.id, "old"))
+        .await
+        .unwrap();
+    s.record_event(&mk(utc_mon_4am, other_repo.id, "wrong-repo"))
+        .await
+        .unwrap();
+
+    let since = utc_mon_4am - Duration::days(1);
+    let until = utc_mon_4am + Duration::days(1);
+
+    // --- UTC view: 3 events at (Mon=0, 04), 1 at (Mon=0, 05).
+    let utc = s
+        .activity_heatmap_for_repo(repo.id, since, until, "UTC")
+        .await
+        .unwrap();
+    assert_eq!(utc.timezone, "UTC");
+    assert_eq!(utc.buckets.len(), 168, "grid must be dense");
+    assert_eq!(utc.total, 4);
+
+    let cell = |hm: &dp_domain::RepoActivityHeatmap, dow: i16, hour: i16| -> i64 {
+        hm.buckets
+            .iter()
+            .find(|b| b.dow == dow && b.hour == hour)
+            .expect("dense grid contains every (dow, hour)")
+            .count
+    };
+    assert_eq!(cell(&utc, 0, 4), 3);
+    assert_eq!(cell(&utc, 0, 5), 1);
+    // Spot-check a few unrelated cells are zero (not missing).
+    assert_eq!(cell(&utc, 6, 23), 0);
+    assert_eq!(cell(&utc, 3, 12), 0);
+
+    // --- PDT view: same UTC instant shifts to Sunday 21:00.
+    let la = s
+        .activity_heatmap_for_repo(repo.id, since, until, "America/Los_Angeles")
+        .await
+        .unwrap();
+    assert_eq!(la.total, 4);
+    assert_eq!(cell(&la, 6, 21), 3, "Sun 21:00 PDT");
+    assert_eq!(cell(&la, 6, 22), 1, "Sun 22:00 PDT");
+    // The UTC bucket must now be empty in the PDT view.
+    assert_eq!(cell(&la, 0, 4), 0);
+
+    // --- Empty window: still a dense grid, total = 0.
+    let empty = s
+        .activity_heatmap_for_repo(
+            repo.id,
+            utc_mon_4am + Duration::days(30),
+            utc_mon_4am + Duration::days(40),
+            "UTC",
+        )
+        .await
+        .unwrap();
+    assert_eq!(empty.total, 0);
+    assert_eq!(empty.buckets.len(), 168);
+    assert!(empty.buckets.iter().all(|b| b.count == 0));
+}
+
+/// `review_velocity_for_repo` derives time-to-merge from the
+/// `pull_request_merged` event payload (`merged_at -
+/// created_at`), applies the §15.9 sample-size guard, and
+/// excludes clock-skew negatives, wrong kind, wrong repo, and
+/// out-of-window events.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Docker or DP_TEST_DATABASE_URL"]
+async fn review_velocity_for_repo_time_to_merge_and_guards() {
+    let f = fixture().await;
+    let s = f.store();
+    let org = seed_org(s, 1, "octo").await;
+    let repo = seed_repo(s, &org, 100, "hello").await;
+    let other_repo = seed_repo(s, &org, 101, "other").await;
+
+    let t0 = Utc.with_ymd_and_hms(2025, 5, 10, 12, 0, 0).unwrap();
+    // Builds a PullRequestMerged event whose ts is the merge
+    // moment and whose payload carries the open / merge
+    // timestamps the SQL aggregator reads.
+    let mk_merged = |ts: chrono::DateTime<Utc>,
+                     repo_id: Uuid,
+                     ext: &str,
+                     ttm_secs: i64|
+     -> ActivityEvent {
+        let created = ts - Duration::seconds(ttm_secs);
+        ActivityEvent {
+            id: Uuid::new_v4(),
+            org_id: org.id,
+            repo_id,
+            kind: EventKind::PullRequestMerged,
+            ts,
+            external_id: ext.into(),
+            payload: json!({
+                "created_at": created.to_rfc3339(),
+                "merged_at":  ts.to_rfc3339(),
+            }),
+        }
+    };
+
+    // --- n=3 first: percentiles must be masked.
+    for (i, ttm) in [3600_i64, 7200, 14_400].iter().enumerate() {
+        s.record_event(&mk_merged(t0 + Duration::minutes(i as i64), repo.id, &format!("pr-small-{i}"), *ttm))
+            .await
+            .unwrap();
+    }
+    let since = t0 - Duration::days(1);
+    let until = t0 + Duration::days(1);
+    let small = s.review_velocity_for_repo(repo.id, since, until).await.unwrap();
+    assert_eq!(small.sample_n, 3);
+    assert!(small.time_to_merge_seconds.p50.is_none(), "n<5 must mask");
+
+    // --- Top up to n=5 (+ noise). Sorted: [3600, 7200, 14400,
+    // 28800, 86400]. percentile_cont(0.5) on 5 sorted values
+    // picks the element at 0.5 * (5-1) = 2.0 → 14400.
+    s.record_event(&mk_merged(t0 + Duration::hours(1), repo.id, "pr-big-1", 28_800))
+        .await
+        .unwrap();
+    s.record_event(&mk_merged(t0 + Duration::hours(2), repo.id, "pr-big-2", 86_400))
+        .await
+        .unwrap();
+
+    // Noise: clock-skew negative (excluded by `ttm_s > 0`).
+    let skew_ts = t0 + Duration::hours(3);
+    s.record_event(&ActivityEvent {
+        id: Uuid::new_v4(),
+        org_id: org.id,
+        repo_id: repo.id,
+        kind: EventKind::PullRequestMerged,
+        ts: skew_ts,
+        external_id: "pr-skew".into(),
+        payload: json!({
+            "created_at": (skew_ts + Duration::seconds(5)).to_rfc3339(),
+            "merged_at":  skew_ts.to_rfc3339(),
+        }),
+    })
+    .await
+    .unwrap();
+    // Noise: closed-not-merged (wrong kind).
+    s.record_event(&ActivityEvent {
+        id: Uuid::new_v4(),
+        org_id: org.id,
+        repo_id: repo.id,
+        kind: EventKind::PullRequestClosed,
+        ts: t0,
+        external_id: "pr-abandoned".into(),
+        payload: json!({
+            "created_at": (t0 - Duration::days(7)).to_rfc3339(),
+            "merged_at":  t0.to_rfc3339(),
+        }),
+    })
+    .await
+    .unwrap();
+    // Noise: wrong repo.
+    s.record_event(&mk_merged(t0, other_repo.id, "pr-wrong-repo", 999_999))
+        .await
+        .unwrap();
+    // Noise: out of window (must not count).
+    s.record_event(&mk_merged(t0 - Duration::days(10), repo.id, "pr-old", 999))
+        .await
+        .unwrap();
+
+    let v = s.review_velocity_for_repo(repo.id, since, until).await.unwrap();
+    assert_eq!(v.sample_n, 5, "5 valid in-window merged PRs");
+    let p50 = v.time_to_merge_seconds.p50.expect("populated at n>=5");
+    assert!((p50 - 14_400.0).abs() < 1e-6, "got {p50}");
+
+    // Empty window.
+    let empty = s
+        .review_velocity_for_repo(
+            repo.id,
+            t0 + Duration::days(30),
+            t0 + Duration::days(40),
+        )
+        .await
+        .unwrap();
+    assert_eq!(empty.sample_n, 0);
+    assert!(empty.time_to_merge_seconds.p50.is_none());
+}
+
+/// `contributor_diversity_for_repo` counts `(merged-PR, author)`
+/// pairs, derives top-1 / top-3 concentration shares, and
+/// applies the §15.9 mask. Reviewers, non-merged PRs, wrong-repo
+/// events, and out-of-window events must NOT count.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Docker or DP_TEST_DATABASE_URL"]
+async fn contributor_diversity_for_repo_counts_authors_and_shares() {
+    let f = fixture().await;
+    let s = f.store();
+    let org = seed_org(s, 1, "octo").await;
+    let repo = seed_repo(s, &org, 100, "hello").await;
+    let other_repo = seed_repo(s, &org, 101, "other").await;
+
+    // Four authors so the top-1 vs top-3 distinction is visible.
+    let alice = seed_user(s, 2001, "alice").await;
+    let bob = seed_user(s, 2002, "bob").await;
+    let carol = seed_user(s, 2003, "carol").await;
+    let dave = seed_user(s, 2004, "dave").await;
+
+    let t0 = Utc.with_ymd_and_hms(2025, 5, 10, 12, 0, 0).unwrap();
+
+    // Helper: record a merged-PR event and attach a single
+    // author. Returns the persisted event so the test can stitch
+    // co-authors on top.
+    async fn merged_with_author(
+        s: &PgStore,
+        org_id: Uuid,
+        repo_id: Uuid,
+        ts: chrono::DateTime<Utc>,
+        ext: &str,
+        author: Uuid,
+    ) -> ActivityEvent {
+        let ev = s
+            .record_event(&ActivityEvent {
+                id: Uuid::new_v4(),
+                org_id,
+                repo_id,
+                kind: EventKind::PullRequestMerged,
+                ts,
+                external_id: ext.into(),
+                payload: json!({}),
+            })
+            .await
+            .unwrap();
+        s.add_event_actors(&[EventActor {
+            event_id: ev.id,
+            user_id: author,
+            role: ActorRole::Author,
+        }])
+        .await
+        .unwrap();
+        ev
+    }
+
+    // --- Phase 1: n=3 — guard must mask the share fields.
+    for i in 0..3 {
+        merged_with_author(
+            s,
+            org.id,
+            repo.id,
+            t0 + Duration::minutes(i),
+            &format!("small-{i}"),
+            alice.id,
+        )
+        .await;
+    }
+
+    let since = t0 - Duration::days(1);
+    let until = t0 + Duration::days(1);
+    let small = s
+        .contributor_diversity_for_repo(repo.id, since, until)
+        .await
+        .unwrap();
+    assert_eq!(small.sample_n, 3);
+    assert_eq!(small.distinct_authors, 1);
+    assert!(small.top1_share.is_none(), "n<5 must mask");
+    assert!(small.top3_share.is_none());
+
+    // --- Phase 2: top up to a realistic shape.
+    // Distribution after this phase (author => count):
+    //   alice: 5 (3 from phase 1 + 2 here)
+    //   bob:   3
+    //   carol: 1
+    //   dave:  1   ← plus 1 co-author share on a bob-led PR
+    // sample_n = 5 + 3 + 1 + 1 + 1 = 11
+    // top1 = 5/11, top3 = (5+3+1)/11 = 9/11
+    for i in 0..2 {
+        merged_with_author(s, org.id, repo.id, t0 + Duration::hours(1 + i as i64), &format!("a-{i}"), alice.id).await;
+    }
+    let bob_evs = [
+        merged_with_author(s, org.id, repo.id, t0 + Duration::hours(3), "b-0", bob.id).await,
+        merged_with_author(s, org.id, repo.id, t0 + Duration::hours(4), "b-1", bob.id).await,
+        merged_with_author(s, org.id, repo.id, t0 + Duration::hours(5), "b-2", bob.id).await,
+    ];
+    merged_with_author(s, org.id, repo.id, t0 + Duration::hours(6), "c-0", carol.id).await;
+    merged_with_author(s, org.id, repo.id, t0 + Duration::hours(7), "d-0", dave.id).await;
+
+    // Co-author: add dave as a second author on bob's PR. The
+    // aggregate counts pairs, so this adds 1 to dave's tally
+    // (and to sample_n) without removing one from bob.
+    s.add_event_actors(&[EventActor {
+        event_id: bob_evs[0].id,
+        user_id: dave.id,
+        role: ActorRole::Author,
+    }])
+    .await
+    .unwrap();
+
+    // --- Noise that must NOT count toward the aggregate:
+    //   * a Reviewer role (wrong role — we filter on 'author')
+    //   * a closed-but-not-merged PR (wrong kind)
+    //   * the same login authoring on a different repo
+    //   * an out-of-window merged PR
+    let review_ev = s
+        .record_event(&ActivityEvent {
+            id: Uuid::new_v4(),
+            org_id: org.id,
+            repo_id: repo.id,
+            kind: EventKind::Review,
+            ts: t0 + Duration::hours(8),
+            external_id: "noise-review".into(),
+            payload: json!({}),
+        })
+        .await
+        .unwrap();
+    s.add_event_actors(&[EventActor {
+        event_id: review_ev.id,
+        user_id: carol.id,
+        role: ActorRole::Reviewer,
+    }])
+    .await
+    .unwrap();
+
+    let closed_ev = s
+        .record_event(&ActivityEvent {
+            id: Uuid::new_v4(),
+            org_id: org.id,
+            repo_id: repo.id,
+            kind: EventKind::PullRequestClosed,
+            ts: t0 + Duration::hours(9),
+            external_id: "noise-closed".into(),
+            payload: json!({}),
+        })
+        .await
+        .unwrap();
+    s.add_event_actors(&[EventActor {
+        event_id: closed_ev.id,
+        user_id: carol.id,
+        role: ActorRole::Author,
+    }])
+    .await
+    .unwrap();
+
+    merged_with_author(s, org.id, other_repo.id, t0, "wrong-repo", alice.id).await;
+    merged_with_author(s, org.id, repo.id, t0 - Duration::days(10), "old", alice.id).await;
+
+    let v = s
+        .contributor_diversity_for_repo(repo.id, since, until)
+        .await
+        .unwrap();
+    assert_eq!(v.sample_n, 11);
+    assert_eq!(v.distinct_authors, 4);
+    let t1 = v.top1_share.expect("populated at n>=5");
+    let t3 = v.top3_share.expect("populated at n>=5");
+    assert!((t1 - 5.0 / 11.0).abs() < 1e-9, "got top1={t1}");
+    assert!((t3 - 9.0 / 11.0).abs() < 1e-9, "got top3={t3}");
+
+    // --- Empty window: all zeros, share masked to None.
+    let empty = s
+        .contributor_diversity_for_repo(repo.id, t0 + Duration::days(30), t0 + Duration::days(40))
+        .await
+        .unwrap();
+    assert_eq!(empty.sample_n, 0);
+    assert_eq!(empty.distinct_authors, 0);
+    assert!(empty.top1_share.is_none());
+    assert!(empty.top3_share.is_none());
 }
 
 /// `put_cursor` / `get_cursor` must treat `repo_id IS NULL` as a

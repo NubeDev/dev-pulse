@@ -129,6 +129,14 @@ pub async fn apply_delivery(
 // ---------- shared upsert helpers ----------------------------------
 
 /// Upsert the `repository` block; returns `(org_id, repo_id)`.
+///
+/// Also opportunistically refreshes [`dp_domain::RepoMetadata`]
+/// from the same payload — GitHub webhook deliveries embed the
+/// full repo object (stars / forks / language / default branch /
+/// pushed_at / …), so the snapshot used by the repo-activity
+/// dashboard stays current with no extra API call. Partial
+/// payloads are fine: nullable text fields are COALESCEd on the
+/// store side so we never wipe known-good values.
 async fn upsert_repo_from_payload(
     store: &dyn Store,
     p: &Value,
@@ -157,7 +165,78 @@ async fn upsert_repo_from_payload(
             name: repo_name,
         })
         .await?;
+    // Best-effort metadata snapshot — never fails the handler.
+    // A payload missing the metric fields (rare but possible for
+    // synthetic deliveries / older fixtures) results in a row of
+    // zeros that the next real delivery overwrites.
+    let meta = metadata_from_repo_block(repo.id, repo_v);
+    store.upsert_repo_metadata(&meta).await?;
     Ok((org_id, repo.id))
+}
+
+/// Project a GitHub `repository` payload block into a
+/// [`dp_domain::RepoMetadata`] row. Missing numeric fields default
+/// to 0; missing string / timestamp fields become `None` and the
+/// store side COALESCEs them against the prior value.
+fn metadata_from_repo_block(repo_id: Uuid, repo_v: &Value) -> dp_domain::RepoMetadata {
+    use chrono::DateTime;
+    dp_domain::RepoMetadata {
+        repo_id,
+        stars: repo_v
+            .get("stargazers_count")
+            .and_then(Value::as_i64)
+            .unwrap_or(0),
+        forks: repo_v
+            .get("forks_count")
+            .and_then(Value::as_i64)
+            .unwrap_or(0),
+        // `subscribers_count` is the "watching" number on the GH UI;
+        // `watchers_count` is a legacy alias for `stargazers_count`
+        // and is intentionally not used here.
+        watchers: repo_v
+            .get("subscribers_count")
+            .and_then(Value::as_i64)
+            .unwrap_or(0),
+        open_issues_remote: repo_v
+            .get("open_issues_count")
+            .and_then(Value::as_i64)
+            .unwrap_or(0),
+        primary_language: repo_v
+            .get("language")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        default_branch: repo_v
+            .get("default_branch")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        description: repo_v
+            .get("description")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        homepage: repo_v
+            .get("homepage")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
+        is_archived: repo_v
+            .get("archived")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        is_fork: repo_v
+            .get("fork")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        is_private: repo_v
+            .get("private")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        pushed_at: repo_v
+            .get("pushed_at")
+            .and_then(Value::as_str)
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.with_timezone(&chrono::Utc)),
+        metadata_updated_at: chrono::Utc::now(),
+    }
 }
 
 async fn upsert_org_from(store: &dyn Store, owner_v: &Value) -> Result<Uuid, HandlerError> {
@@ -1109,6 +1188,79 @@ mod tests {
             "name": "dev-pulse",
             "owner": { "id": 42, "login": "nube-io" }
         })
+    }
+
+    #[test]
+    fn metadata_from_repo_block_extracts_full_payload() {
+        // A realistic GitHub webhook `repository` block carries
+        // every field the snapshot cares about. Synthetic
+        // deliveries (the rest of this test module) omit them and
+        // the extractor falls back to zeros / None — verified by
+        // the next test.
+        let v = json!({
+            "id": 1001,
+            "name": "dev-pulse",
+            "owner": { "id": 42, "login": "nube-io" },
+            "stargazers_count": 123,
+            "forks_count": 17,
+            "subscribers_count": 9,
+            "watchers_count": 999, // legacy alias — must NOT be read
+            "open_issues_count": 4,
+            "language": "Rust",
+            "default_branch": "main",
+            "description": "GitHub reporting + insights",
+            "homepage": "https://dev-pulse.example",
+            "archived": false,
+            "fork": false,
+            "private": true,
+            "pushed_at": "2025-06-01T12:34:56Z"
+        });
+        let repo_id = Uuid::new_v4();
+        let m = metadata_from_repo_block(repo_id, &v);
+        assert_eq!(m.repo_id, repo_id);
+        assert_eq!(m.stars, 123);
+        assert_eq!(m.forks, 17);
+        assert_eq!(m.watchers, 9, "must use subscribers_count, not legacy watchers_count");
+        assert_eq!(m.open_issues_remote, 4);
+        assert_eq!(m.primary_language.as_deref(), Some("Rust"));
+        assert_eq!(m.default_branch.as_deref(), Some("main"));
+        assert_eq!(m.description.as_deref(), Some("GitHub reporting + insights"));
+        assert_eq!(m.homepage.as_deref(), Some("https://dev-pulse.example"));
+        assert!(!m.is_archived);
+        assert!(!m.is_fork);
+        assert!(m.is_private);
+        assert_eq!(
+            m.pushed_at,
+            Some(chrono::DateTime::parse_from_rfc3339("2025-06-01T12:34:56Z").unwrap().with_timezone(&Utc))
+        );
+    }
+
+    #[test]
+    fn metadata_from_repo_block_handles_missing_and_empty_fields() {
+        // Minimal payload (the shape the rest of this test module
+        // uses). Numeric fields default to 0; nullable text fields
+        // to None; flags to false. An empty homepage string becomes
+        // None so the COALESCE on the store side preserves any
+        // previously-recorded non-empty value.
+        let v = json!({
+            "id": 1001,
+            "name": "dev-pulse",
+            "owner": { "id": 42, "login": "nube-io" },
+            "homepage": "",
+            "language": null
+        });
+        let m = metadata_from_repo_block(Uuid::new_v4(), &v);
+        assert_eq!(m.stars, 0);
+        assert_eq!(m.forks, 0);
+        assert_eq!(m.watchers, 0);
+        assert_eq!(m.open_issues_remote, 0);
+        assert!(m.primary_language.is_none());
+        assert!(m.default_branch.is_none());
+        assert!(m.homepage.is_none(), "empty homepage string becomes None");
+        assert!(m.pushed_at.is_none());
+        assert!(!m.is_archived);
+        assert!(!m.is_fork);
+        assert!(!m.is_private);
     }
 
     #[tokio::test]

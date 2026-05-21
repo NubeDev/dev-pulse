@@ -1,8 +1,8 @@
--- 0023_project_board_links.sql  (linear-projects-v2.md §5, §8 — slice B)
+-- 0025_project_board_links.sql  (linear-projects-v2.md §5, §8 — slice B)
 --
 -- Project → GitHub Projects v2 board mirror plumbing. Two tables
 -- land here; the legacy per-repo `dp_repo_project_link` table is
--- physically dropped by `0024_drop_repo_project_link.sql` once this
+-- physically dropped by `0026_drop_repo_project_link.sql` once this
 -- migration is in.
 --
 --   * `dp_project_board_links` — one row per (project, GitHub board)

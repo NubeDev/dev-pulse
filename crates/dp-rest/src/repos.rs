@@ -199,6 +199,609 @@ pub struct RepoSyncQueuedDto {
     pub queued: bool,
 }
 
+/// `GET /repos/{id}/metadata` response — the per-repo snapshot of
+/// mutable GitHub-side fields (stars / forks / language / default
+/// branch / archival state, …) populated by the fetcher off every
+/// webhook delivery's `repository` block.
+///
+/// All numeric fields default to `0`; nullable fields default to
+/// `null`. The endpoint returns `404` when no snapshot row has been
+/// recorded for the repo yet (fresh install before the first
+/// webhook lands) — the UI shows a "snapshot pending" placeholder
+/// rather than rendering zeros.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct RepoMetadataDto {
+    /// Stars on GitHub.
+    pub stars: i64,
+    /// Forks on GitHub.
+    pub forks: i64,
+    /// Watchers (`subscribers_count`, not the legacy alias).
+    pub watchers: i64,
+    /// Open issues + PRs as GitHub itself counts them. Differs
+    /// from the dev-pulse `open_issue_count` (issues only) by the
+    /// number of open PRs.
+    pub open_issues_remote: i64,
+    /// Primary language detected by GitHub, if any.
+    pub primary_language: Option<String>,
+    /// Default branch name.
+    pub default_branch: Option<String>,
+    /// Repo description.
+    pub description: Option<String>,
+    /// Repo homepage URL.
+    pub homepage: Option<String>,
+    /// GitHub's archived flag.
+    pub is_archived: bool,
+    /// GitHub's fork flag.
+    pub is_fork: bool,
+    /// GitHub's private flag.
+    pub is_private: bool,
+    /// GitHub's `pushed_at` — last push to any branch.
+    pub pushed_at: Option<DateTime<Utc>>,
+    /// Wall-clock the dev-pulse fetcher last refreshed this row.
+    pub metadata_updated_at: DateTime<Utc>,
+}
+
+impl From<dp_domain::RepoMetadata> for RepoMetadataDto {
+    fn from(m: dp_domain::RepoMetadata) -> Self {
+        Self {
+            stars: m.stars,
+            forks: m.forks,
+            watchers: m.watchers,
+            open_issues_remote: m.open_issues_remote,
+            primary_language: m.primary_language,
+            default_branch: m.default_branch,
+            description: m.description,
+            homepage: m.homepage,
+            is_archived: m.is_archived,
+            is_fork: m.is_fork,
+            is_private: m.is_private,
+            pushed_at: m.pushed_at,
+            metadata_updated_at: m.metadata_updated_at,
+        }
+    }
+}
+
+/// `GET /repos/{id}/metadata` — repo snapshot for the
+/// repo-activity dashboard. Authorisation: `("repos", "read")`.
+#[utoipa::path(
+    get,
+    path = "/repos/{id}/metadata",
+    params(("id" = Uuid, Path, description = "Repo id")),
+    responses(
+        (status = 200, description = "Repo metadata snapshot", body = RepoMetadataDto),
+        (status = 404, description = "No such repo, or no snapshot recorded yet"),
+    ),
+    tag = "repos",
+)]
+pub async fn get_repo_metadata(
+    State(state): State<AppState>,
+    Extension(_principal): Extension<Principal>,
+    axum::extract::Path(id): axum::extract::Path<Uuid>,
+) -> Result<Json<RepoMetadataDto>, ApiError> {
+    if state.store.get_repo(id).await?.is_none() {
+        return Err(ApiError::NotFound {
+            code: "repo_not_found",
+            message: format!("no repo with id {id}"),
+        });
+    }
+    let m = state.store.get_repo_metadata(id).await?.ok_or(ApiError::NotFound {
+        code: "repo_metadata_not_found",
+        message: format!("no metadata snapshot recorded for repo {id} yet"),
+    })?;
+    Ok(Json(m.into()))
+}
+
+/// `GET /repos/{id}/pr-size-stats` query — defaults to a rolling
+/// 90-day window if `since` / `until` are omitted, capped to a
+/// 366-day span so a runaway client can't request a year-and-a-half
+/// of percentiles.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct PrSizeStatsQuery {
+    /// Inclusive window start (UTC). Defaults to `now - 90 days`.
+    #[serde(default)]
+    pub since: Option<DateTime<Utc>>,
+    /// Exclusive window end (UTC). Defaults to `now`.
+    #[serde(default)]
+    pub until: Option<DateTime<Utc>>,
+}
+
+/// p50 / p90 / p95 over a numeric distribution. Every field is
+/// `null` when the sample is too small (SCOPE §15.9, `n < 5`); the
+/// `sample_n` on the parent response carries the actual count so
+/// the UI can render "n too small" instead of zeros.
+#[derive(Debug, Clone, Copy, Default, Serialize, ToSchema)]
+pub struct PercentileTripleDto {
+    /// 50th percentile (median).
+    pub p50: Option<f64>,
+    /// 90th percentile.
+    pub p90: Option<f64>,
+    /// 95th percentile.
+    pub p95: Option<f64>,
+}
+
+impl From<dp_domain::PercentileTriple> for PercentileTripleDto {
+    fn from(t: dp_domain::PercentileTriple) -> Self {
+        Self {
+            p50: t.p50,
+            p90: t.p90,
+            p95: t.p95,
+        }
+    }
+}
+
+/// `GET /repos/{id}/pr-size-stats` response — repo-level
+/// pull-request size distribution. Every field describes the
+/// repo, never an individual contributor (SCOPE §4).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct RepoPrSizeStatsDto {
+    /// Echoed window start.
+    pub since: DateTime<Utc>,
+    /// Echoed window end.
+    pub until: DateTime<Utc>,
+    /// Number of merged PRs whose payload carried diff-size fields
+    /// inside the window.
+    pub sample_n: i64,
+    /// `payload->>'additions'`.
+    pub additions: PercentileTripleDto,
+    /// `payload->>'deletions'`.
+    pub deletions: PercentileTripleDto,
+    /// `additions + deletions`.
+    pub total_lines: PercentileTripleDto,
+    /// `payload->>'changed_files'`.
+    pub changed_files: PercentileTripleDto,
+    /// `payload->>'commits'`.
+    pub commits: PercentileTripleDto,
+}
+
+/// `GET /repos/{id}/pr-size-stats` — repo-level PR-size
+/// distribution. Authorisation: `("repos", "read")`.
+#[utoipa::path(
+    get,
+    path = "/repos/{id}/pr-size-stats",
+    params(
+        ("id"    = Uuid, Path, description = "Repo id"),
+        ("since" = Option<DateTime<Utc>>, Query, description = "Inclusive window start (default: now - 90d)"),
+        ("until" = Option<DateTime<Utc>>, Query, description = "Exclusive window end (default: now)"),
+    ),
+    responses(
+        (status = 200, description = "Repo PR-size percentile distribution", body = RepoPrSizeStatsDto),
+        (status = 400, description = "Invalid window (since >= until, or span > 366d)"),
+        (status = 404, description = "No such repo"),
+    ),
+    tag = "repos",
+)]
+pub async fn get_repo_pr_size_stats(
+    State(state): State<AppState>,
+    Extension(_principal): Extension<Principal>,
+    axum::extract::Path(id): axum::extract::Path<Uuid>,
+    Query(q): Query<PrSizeStatsQuery>,
+) -> Result<Json<RepoPrSizeStatsDto>, ApiError> {
+    if state.store.get_repo(id).await?.is_none() {
+        return Err(ApiError::NotFound {
+            code: "repo_not_found",
+            message: format!("no repo with id {id}"),
+        });
+    }
+    let until = q.until.unwrap_or_else(Utc::now);
+    let since = q.since.unwrap_or_else(|| until - chrono::Duration::days(90));
+    if since >= until {
+        return Err(ApiError::BadRequest {
+            code: "invalid_window",
+            message: "since must be < until".to_string(),
+        });
+    }
+    if (until - since) > chrono::Duration::days(366) {
+        return Err(ApiError::BadRequest {
+            code: "invalid_window",
+            message: "window span exceeds the 366-day cap".to_string(),
+        });
+    }
+    let s = state.store.pr_size_stats_for_repo(id, since, until).await?;
+    Ok(Json(RepoPrSizeStatsDto {
+        since,
+        until,
+        sample_n: s.sample_n,
+        additions: s.additions.into(),
+        deletions: s.deletions.into(),
+        total_lines: s.total_lines.into(),
+        changed_files: s.changed_files.into(),
+        commits: s.commits.into(),
+    }))
+}
+
+/// `GET /repos/{id}/ci-stats` query — same window contract as
+/// `pr-size-stats`: defaults to a rolling 90 days, capped at a
+/// 366-day span.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct CiStatsQuery {
+    /// Inclusive window start (UTC). Defaults to `now - 90 days`.
+    #[serde(default)]
+    pub since: Option<DateTime<Utc>>,
+    /// Exclusive window end (UTC). Defaults to `now`.
+    #[serde(default)]
+    pub until: Option<DateTime<Utc>>,
+}
+
+/// `GET /repos/{id}/ci-stats` response — repo-level CI
+/// workflow-run health. Every field describes the repo's CI, not
+/// an individual contributor (SCOPE §4).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct RepoCiStatsDto {
+    /// Echoed window start.
+    pub since: DateTime<Utc>,
+    /// Echoed window end.
+    pub until: DateTime<Utc>,
+    /// Total workflow runs in the window.
+    pub total_runs: i64,
+    /// `conclusion = 'success'`.
+    pub success: i64,
+    /// `conclusion = 'failure'`.
+    pub failure: i64,
+    /// `conclusion = 'cancelled'`.
+    pub cancelled: i64,
+    /// `skipped`, `neutral`, `timed_out`, `action_required`, `stale`.
+    pub other: i64,
+    /// `success / (success + failure)` ∈ `[0.0, 1.0]`, or `null`
+    /// when there were no terminal success / failure runs.
+    pub success_rate: Option<f64>,
+    /// Runs whose payload carried both `run_started_at` and
+    /// `updated_at` and a strictly-positive delta.
+    pub duration_sample_n: i64,
+    /// p50 / p90 / p95 over `updated_at - run_started_at`, in
+    /// seconds. `null` triple when `duration_sample_n < 5`.
+    pub duration_seconds: PercentileTripleDto,
+}
+
+/// `GET /repos/{id}/ci-stats` — repo-level CI workflow-run
+/// statistics. Authorisation: `("repos", "read")`.
+#[utoipa::path(
+    get,
+    path = "/repos/{id}/ci-stats",
+    params(
+        ("id"    = Uuid, Path, description = "Repo id"),
+        ("since" = Option<DateTime<Utc>>, Query, description = "Inclusive window start (default: now - 90d)"),
+        ("until" = Option<DateTime<Utc>>, Query, description = "Exclusive window end (default: now)"),
+    ),
+    responses(
+        (status = 200, description = "Repo CI run statistics", body = RepoCiStatsDto),
+        (status = 400, description = "Invalid window (since >= until, or span > 366d)"),
+        (status = 404, description = "No such repo"),
+    ),
+    tag = "repos",
+)]
+pub async fn get_repo_ci_stats(
+    State(state): State<AppState>,
+    Extension(_principal): Extension<Principal>,
+    axum::extract::Path(id): axum::extract::Path<Uuid>,
+    Query(q): Query<CiStatsQuery>,
+) -> Result<Json<RepoCiStatsDto>, ApiError> {
+    if state.store.get_repo(id).await?.is_none() {
+        return Err(ApiError::NotFound {
+            code: "repo_not_found",
+            message: format!("no repo with id {id}"),
+        });
+    }
+    let until = q.until.unwrap_or_else(Utc::now);
+    let since = q.since.unwrap_or_else(|| until - chrono::Duration::days(90));
+    if since >= until {
+        return Err(ApiError::BadRequest {
+            code: "invalid_window",
+            message: "since must be < until".to_string(),
+        });
+    }
+    if (until - since) > chrono::Duration::days(366) {
+        return Err(ApiError::BadRequest {
+            code: "invalid_window",
+            message: "window span exceeds the 366-day cap".to_string(),
+        });
+    }
+    let s = state.store.ci_stats_for_repo(id, since, until).await?;
+    Ok(Json(RepoCiStatsDto {
+        since,
+        until,
+        total_runs: s.total_runs,
+        success: s.success,
+        failure: s.failure,
+        cancelled: s.cancelled,
+        other: s.other,
+        success_rate: s.success_rate,
+        duration_sample_n: s.duration_sample_n,
+        duration_seconds: s.duration_seconds.into(),
+    }))
+}
+
+/// `GET /repos/{id}/activity-heatmap` query parameters. Same
+/// window contract as the other repo-level aggregators; adds a
+/// `timezone` knob so heatmap cells line up with the viewer's
+/// local day.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ActivityHeatmapQuery {
+    /// Inclusive window start (UTC). Defaults to `now - 90 days`.
+    #[serde(default)]
+    pub since: Option<DateTime<Utc>>,
+    /// Exclusive window end (UTC). Defaults to `now`.
+    #[serde(default)]
+    pub until: Option<DateTime<Utc>>,
+    /// IANA timezone for bucketing (e.g. `America/Los_Angeles`).
+    /// Defaults to `UTC`.
+    #[serde(default)]
+    pub timezone: Option<String>,
+}
+
+/// One `(dow, hour)` cell in a [`RepoActivityHeatmapDto`].
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct HeatmapBucketDto {
+    /// 0 = Monday … 6 = Sunday (ISO 8601).
+    pub dow: i16,
+    /// 0..=23 in the response's timezone.
+    pub hour: i16,
+    /// Event count in this bucket.
+    pub count: i64,
+}
+
+impl From<dp_domain::HeatmapBucket> for HeatmapBucketDto {
+    fn from(b: dp_domain::HeatmapBucket) -> Self {
+        Self { dow: b.dow, hour: b.hour, count: b.count }
+    }
+}
+
+/// `GET /repos/{id}/activity-heatmap` response — dense 168-cell
+/// `(dow, hour)` grid of activity events for the repo. Describes
+/// the repo's collaboration cadence, never an individual's
+/// (SCOPE §4).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct RepoActivityHeatmapDto {
+    /// Echoed window start.
+    pub since: DateTime<Utc>,
+    /// Echoed window end.
+    pub until: DateTime<Utc>,
+    /// Echoed IANA timezone used for bucketing.
+    pub timezone: String,
+    /// Total events across all buckets in the window.
+    pub total: i64,
+    /// 168 cells, ordered by `(dow, hour)`.
+    pub buckets: Vec<HeatmapBucketDto>,
+}
+
+/// `GET /repos/{id}/activity-heatmap` — repo-level activity
+/// `(day_of_week, hour_of_day)` distribution.
+/// Authorisation: `("repos", "read")`.
+#[utoipa::path(
+    get,
+    path = "/repos/{id}/activity-heatmap",
+    params(
+        ("id"       = Uuid,                    Path,  description = "Repo id"),
+        ("since"    = Option<DateTime<Utc>>,   Query, description = "Inclusive window start (default: now - 90d)"),
+        ("until"    = Option<DateTime<Utc>>,   Query, description = "Exclusive window end (default: now)"),
+        ("timezone" = Option<String>,          Query, description = "IANA timezone for bucketing (default: UTC)"),
+    ),
+    responses(
+        (status = 200, description = "Repo activity heatmap", body = RepoActivityHeatmapDto),
+        (status = 400, description = "Invalid window or timezone"),
+        (status = 404, description = "No such repo"),
+    ),
+    tag = "repos",
+)]
+pub async fn get_repo_activity_heatmap(
+    State(state): State<AppState>,
+    Extension(_principal): Extension<Principal>,
+    axum::extract::Path(id): axum::extract::Path<Uuid>,
+    Query(q): Query<ActivityHeatmapQuery>,
+) -> Result<Json<RepoActivityHeatmapDto>, ApiError> {
+    if state.store.get_repo(id).await?.is_none() {
+        return Err(ApiError::NotFound {
+            code: "repo_not_found",
+            message: format!("no repo with id {id}"),
+        });
+    }
+    let until = q.until.unwrap_or_else(Utc::now);
+    let since = q.since.unwrap_or_else(|| until - chrono::Duration::days(90));
+    if since >= until {
+        return Err(ApiError::BadRequest {
+            code: "invalid_window",
+            message: "since must be < until".to_string(),
+        });
+    }
+    if (until - since) > chrono::Duration::days(366) {
+        return Err(ApiError::BadRequest {
+            code: "invalid_window",
+            message: "window span exceeds the 366-day cap".to_string(),
+        });
+    }
+    let tz = q.timezone.as_deref().unwrap_or("UTC");
+    // Validate the IANA name client-side so PG never sees a
+    // malformed value (which it would surface as a generic
+    // `invalid_parameter_value`). `chrono-tz` reuses the same
+    // tz database PG ships with, so anything parseable here is
+    // also valid there.
+    if tz.parse::<chrono_tz::Tz>().is_err() {
+        return Err(ApiError::BadRequest {
+            code: "invalid_timezone",
+            message: format!("'{tz}' is not a recognised IANA timezone"),
+        });
+    }
+    let h = state.store.activity_heatmap_for_repo(id, since, until, tz).await?;
+    Ok(Json(RepoActivityHeatmapDto {
+        since,
+        until,
+        timezone: h.timezone,
+        total: h.total,
+        buckets: h.buckets.into_iter().map(Into::into).collect(),
+    }))
+}
+
+/// `GET /repos/{id}/review-velocity` query — same window
+/// contract as the other repo-level aggregators: defaults to a
+/// rolling 90 days, capped at a 366-day span.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ReviewVelocityQuery {
+    /// Inclusive window start (UTC). Defaults to `now - 90 days`.
+    #[serde(default)]
+    pub since: Option<DateTime<Utc>>,
+    /// Exclusive window end (UTC). Defaults to `now`.
+    #[serde(default)]
+    pub until: Option<DateTime<Utc>>,
+}
+
+/// `GET /repos/{id}/review-velocity` response — repo-level
+/// time-to-merge percentile distribution. Every field describes
+/// the repo's merge cadence, not an individual contributor's
+/// (SCOPE §4).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct RepoReviewVelocityDto {
+    /// Echoed window start.
+    pub since: DateTime<Utc>,
+    /// Echoed window end.
+    pub until: DateTime<Utc>,
+    /// Merged PRs in the window whose payload carried both
+    /// `created_at` and `merged_at` with a positive delta.
+    pub sample_n: i64,
+    /// p50 / p90 / p95 over `merged_at - created_at`, in seconds.
+    /// `null` triple when `sample_n < 5`.
+    pub time_to_merge_seconds: PercentileTripleDto,
+}
+
+/// `GET /repos/{id}/review-velocity` — repo-level time-to-merge
+/// percentile distribution. Authorisation: `("repos", "read")`.
+#[utoipa::path(
+    get,
+    path = "/repos/{id}/review-velocity",
+    params(
+        ("id"    = Uuid, Path, description = "Repo id"),
+        ("since" = Option<DateTime<Utc>>, Query, description = "Inclusive window start (default: now - 90d)"),
+        ("until" = Option<DateTime<Utc>>, Query, description = "Exclusive window end (default: now)"),
+    ),
+    responses(
+        (status = 200, description = "Repo time-to-merge percentiles", body = RepoReviewVelocityDto),
+        (status = 400, description = "Invalid window (since >= until, or span > 366d)"),
+        (status = 404, description = "No such repo"),
+    ),
+    tag = "repos",
+)]
+pub async fn get_repo_review_velocity(
+    State(state): State<AppState>,
+    Extension(_principal): Extension<Principal>,
+    axum::extract::Path(id): axum::extract::Path<Uuid>,
+    Query(q): Query<ReviewVelocityQuery>,
+) -> Result<Json<RepoReviewVelocityDto>, ApiError> {
+    if state.store.get_repo(id).await?.is_none() {
+        return Err(ApiError::NotFound {
+            code: "repo_not_found",
+            message: format!("no repo with id {id}"),
+        });
+    }
+    let until = q.until.unwrap_or_else(Utc::now);
+    let since = q.since.unwrap_or_else(|| until - chrono::Duration::days(90));
+    if since >= until {
+        return Err(ApiError::BadRequest {
+            code: "invalid_window",
+            message: "since must be < until".to_string(),
+        });
+    }
+    if (until - since) > chrono::Duration::days(366) {
+        return Err(ApiError::BadRequest {
+            code: "invalid_window",
+            message: "window span exceeds the 366-day cap".to_string(),
+        });
+    }
+    let v = state.store.review_velocity_for_repo(id, since, until).await?;
+    Ok(Json(RepoReviewVelocityDto {
+        since,
+        until,
+        sample_n: v.sample_n,
+        time_to_merge_seconds: v.time_to_merge_seconds.into(),
+    }))
+}
+
+/// `GET /repos/{id}/contributor-diversity` query — same window
+/// contract as the other repo-level aggregators.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ContributorDiversityQuery {
+    /// Inclusive window start (UTC). Defaults to `now - 90 days`.
+    #[serde(default)]
+    pub since: Option<DateTime<Utc>>,
+    /// Exclusive window end (UTC). Defaults to `now`.
+    #[serde(default)]
+    pub until: Option<DateTime<Utc>>,
+}
+
+/// `GET /repos/{id}/contributor-diversity` response —
+/// repo-level "bus factor" view. Every field describes the
+/// repo's concentration risk, not an individual contributor
+/// (SCOPE §4). The wire shape deliberately carries no user
+/// identifiers.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct RepoContributorDiversityDto {
+    /// Echoed window start.
+    pub since: DateTime<Utc>,
+    /// Echoed window end.
+    pub until: DateTime<Utc>,
+    /// Total (merged-PR, author) pairs in the window.
+    pub sample_n: i64,
+    /// Distinct PR authors observed.
+    pub distinct_authors: i64,
+    /// Share of `sample_n` from the single top author, in
+    /// `[0.0, 1.0]`. `null` when `sample_n < 5`.
+    pub top1_share: Option<f64>,
+    /// Share of `sample_n` from the top 3 authors combined.
+    /// `null` when `sample_n < 5`.
+    pub top3_share: Option<f64>,
+}
+
+/// `GET /repos/{id}/contributor-diversity` — repo-level
+/// "bus factor" view. Authorisation: `("repos", "read")`.
+#[utoipa::path(
+    get,
+    path = "/repos/{id}/contributor-diversity",
+    params(
+        ("id"    = Uuid, Path, description = "Repo id"),
+        ("since" = Option<DateTime<Utc>>, Query, description = "Inclusive window start (default: now - 90d)"),
+        ("until" = Option<DateTime<Utc>>, Query, description = "Exclusive window end (default: now)"),
+    ),
+    responses(
+        (status = 200, description = "Repo contributor-diversity stats", body = RepoContributorDiversityDto),
+        (status = 400, description = "Invalid window (since >= until, or span > 366d)"),
+        (status = 404, description = "No such repo"),
+    ),
+    tag = "repos",
+)]
+pub async fn get_repo_contributor_diversity(
+    State(state): State<AppState>,
+    Extension(_principal): Extension<Principal>,
+    axum::extract::Path(id): axum::extract::Path<Uuid>,
+    Query(q): Query<ContributorDiversityQuery>,
+) -> Result<Json<RepoContributorDiversityDto>, ApiError> {
+    if state.store.get_repo(id).await?.is_none() {
+        return Err(ApiError::NotFound {
+            code: "repo_not_found",
+            message: format!("no repo with id {id}"),
+        });
+    }
+    let until = q.until.unwrap_or_else(Utc::now);
+    let since = q.since.unwrap_or_else(|| until - chrono::Duration::days(90));
+    if since >= until {
+        return Err(ApiError::BadRequest {
+            code: "invalid_window",
+            message: "since must be < until".to_string(),
+        });
+    }
+    if (until - since) > chrono::Duration::days(366) {
+        return Err(ApiError::BadRequest {
+            code: "invalid_window",
+            message: "window span exceeds the 366-day cap".to_string(),
+        });
+    }
+    let d = state.store.contributor_diversity_for_repo(id, since, until).await?;
+    Ok(Json(RepoContributorDiversityDto {
+        since,
+        until,
+        sample_n: d.sample_n,
+        distinct_authors: d.distinct_authors,
+        top1_share: d.top1_share,
+        top3_share: d.top3_share,
+    }))
+}
+
 /// `GET /repos/{id}/sync-status` — sync freshness badge data.
 /// Authorisation: `("repos", "read")`.
 #[utoipa::path(
@@ -311,6 +914,12 @@ pub fn repos_router(state: Arc<AppState>) -> Router {
     let reads = with_permission(
         Router::new()
             .route("/repos", get(list_repos))
+            .route("/repos/{id}/metadata", get(get_repo_metadata))
+            .route("/repos/{id}/pr-size-stats", get(get_repo_pr_size_stats))
+            .route("/repos/{id}/ci-stats", get(get_repo_ci_stats))
+            .route("/repos/{id}/activity-heatmap", get(get_repo_activity_heatmap))
+            .route("/repos/{id}/review-velocity", get(get_repo_review_velocity))
+            .route("/repos/{id}/contributor-diversity", get(get_repo_contributor_diversity))
             .route("/repos/{id}/sync-status", get(get_repo_sync_status)),
         "repos",
         "read",

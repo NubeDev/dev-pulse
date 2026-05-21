@@ -181,7 +181,7 @@ export function LeaderboardPage(): JSX.Element {
 
           <div className="grid gap-4 px-4 @5xl/main:grid-cols-3 lg:px-6">
             <div className="@5xl/main:col-span-2">
-              <ContributorBarChart rows={data.rows} />
+              <ContributorBarChart rows={data.rows} limit={data.rows.length} />
             </div>
             <ActivityMixChart mix={data.mix} grandTotal={data.grandTotal} />
           </div>
@@ -195,6 +195,7 @@ export function LeaderboardPage(): JSX.Element {
               rows={data.rows}
               grandTotal={data.grandTotal}
               directory={directory}
+              limit={data.rows.length}
             />
           </div>
         </>
