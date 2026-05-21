@@ -316,9 +316,19 @@ export function navigate(to: string): void {
 }
 
 /** Strip the leading `#`, return the first path segment. `#/reports/user/42`
- *  -> `"reports"`. Used by the layout to pick the active sidebar item. */
+ *  -> `"reports"`. Used by the layout to pick the active sidebar item.
+ *
+ *  Query strings are stripped before splitting on `/` so
+ *  `#/projects?status=active` resolves cleanly to the `projects`
+ *  section (the §6.1 sidebar filter rides in the query string).
+ *  Without this strip the head would be `"projects?status=active"`
+ *  and the §6.1 deep link would fall through `isKnownRoute` into
+ *  the NotFound page. */
 export function sectionOf(route: string): Section {
-  const path = route.replace(/^#/, "").replace(/^\/+/, "");
+  const path = route
+    .replace(/^#/, "")
+    .replace(/^\/+/, "")
+    .split("?")[0]!;
   const head = path.split("/")[0] ?? "";
   switch (head) {
     case "login":
@@ -353,7 +363,10 @@ export function isLoginRoute(route: string): boolean {
  * NotFound instead of silently rewriting.
  */
 export function isKnownRoute(route: string): boolean {
-  const path = route.replace(/^#/, "").replace(/^\/+/, "");
+  const path = route
+    .replace(/^#/, "")
+    .replace(/^\/+/, "")
+    .split("?")[0]!;
   const head = path.split("/")[0] ?? "";
   return (
     head === "" ||

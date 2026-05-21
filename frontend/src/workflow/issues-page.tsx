@@ -79,12 +79,19 @@ import {
 } from "../components/table.jsx";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import { Spinner } from "@/components/ui/spinner";
 import MDEditor from "@uiw/react-md-editor";
 import { useTheme } from "@kit/theme";
 
 import { api, type IssueDto, type ListIssuesQuery } from "../api/client.js";
 import { Markdown } from "../components/markdown.jsx";
 import { PageHeading } from "../components/page-heading.jsx";
+import {
+  useAddIssuesToProject,
+  useProjectForIssue,
+  useProjectList,
+  useRemoveIssueFromProject,
+} from "../projects/use-projects-data.js";
 import {
   navigate,
   useRoute,
@@ -978,6 +985,7 @@ function IssueFormBody({
           </span>
         </div>
       </form>
+      <IssueProjectChip issueId={issue.id} />
       <IssueDatesEditor issueId={issue.id} />
       <form className="flex flex-col gap-3 border-t border-border pt-4" onSubmit={onComment}>
         <Label>Add comment</Label>
@@ -1172,3 +1180,199 @@ function formatMirrorClock(iso: string): string {
   return `${hh}:${mm}:${ss}`;
 }
 
+
+// ---------------------------------------------------------------------------
+// §6.5 detail-pane Project chip. Shows the issue's project membership
+// inline above the dates editor — `[+ Add to project]` when none,
+// `● <name> [Change…] [Remove]` when set. v1 quick-pick is a plain
+// select over the org's active projects (autocomplete is §6 slice C,
+// deferred per `linear-projects-v2.md` §0 progress log).
+// ---------------------------------------------------------------------------
+
+function IssueProjectChip({ issueId }: { issueId: string }): JSX.Element {
+  const issueQ = useIssue(issueId);
+  const project = useProjectForIssue(issueId);
+  const [picking, setPicking] = useState(false);
+  const orgId = issueQ.data?.org_id ?? null;
+  const projectsQ = useProjectList(
+    orgId
+      ? { org_id: orgId, status: "active", limit: 200 }
+      : { limit: 200 },
+  );
+  const add = useAddIssuesToProject(project.data?.id ?? "");
+  // For the change/remove paths we need to mutate against the
+  // *current* project (when one exists). We instantiate a second
+  // mutation hook bound to it; the no-op `""` above is replaced
+  // inline below for the add-to-new case.
+  const remove = useRemoveIssueFromProject(project.data?.id ?? "");
+  const [target, setTarget] = useState<string>("");
+
+  if (issueQ.isPending || project.isPending) {
+    return (
+      <div className="flex items-center gap-2 border-t border-border pt-4 text-xs text-muted-foreground">
+        <Spinner /> Loading project membership…
+      </div>
+    );
+  }
+
+  const candidates = (projectsQ.data?.rows ?? []).filter(
+    (p) => p.id !== project.data?.id,
+  );
+
+  const onAdd = (): void => {
+    if (!target) return;
+    // Mint a fresh mutation bound to the chosen target. The
+    // hook-instance bound above (`add`) is only correct when an
+    // existing membership is present; for the "no project yet"
+    // path we call the API directly so we don't violate the
+    // rules-of-hooks by remounting the hook.
+    void api
+      .addIssuesToProject(target, {
+        // CAS against the chosen project's current version. We
+        // already have it in `projectsQ.data`.
+        expected_version:
+          projectsQ.data?.rows.find((p) => p.id === target)?.version ?? 0,
+        issue_ids: [issueId],
+      })
+      .then(() => {
+        project.refetch();
+        setPicking(false);
+        setTarget("");
+      });
+  };
+
+  // Existing membership.
+  if (project.data) {
+    const p = project.data;
+    return (
+      <div
+        className="flex flex-wrap items-center gap-2 border-t border-border pt-4 text-sm"
+        data-testid="issue-project-chip"
+      >
+        <span className="text-xs uppercase tracking-wide text-muted-foreground">
+          Project
+        </span>
+        <a
+          className="flex items-center gap-1.5 rounded-full bg-accent px-2.5 py-0.5 font-medium hover:underline"
+          href={`#/projects/${encodeURIComponent(p.id)}`}
+          data-testid="issue-project-chip-name"
+        >
+          <span className="size-1.5 rounded-full bg-primary" />
+          {p.name}
+        </a>
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={() => setPicking((v) => !v)}
+          data-testid="issue-project-chip-change"
+        >
+          Change…
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={() =>
+            remove.mutate(
+              { issueId, expectedVersion: p.version },
+              { onSuccess: () => project.refetch() },
+            )
+          }
+          disabled={remove.isPending}
+          data-testid="issue-project-chip-remove"
+        >
+          {remove.isPending ? "Removing…" : "Remove"}
+        </Button>
+        {picking && (
+          <div className="flex w-full items-center gap-2 pt-2">
+            <select
+              className="rounded-md border border-input bg-background px-2 py-1 text-sm"
+              value={target}
+              onChange={(e) => setTarget(e.target.value)}
+              data-testid="issue-project-chip-select"
+            >
+              <option value="">— pick a project —</option>
+              {candidates.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
+                </option>
+              ))}
+            </select>
+            <Button
+              size="sm"
+              onClick={() => {
+                // Change = remove from current then add to target.
+                remove.mutate(
+                  { issueId, expectedVersion: p.version },
+                  {
+                    onSuccess: () => {
+                      onAdd();
+                    },
+                  },
+                );
+              }}
+              disabled={!target}
+            >
+              Move
+            </Button>
+          </div>
+        )}
+        {(remove.error || add.error) && (
+          <span className="basis-full text-xs text-destructive">
+            {(remove.error ?? add.error)!.message}
+          </span>
+        )}
+      </div>
+    );
+  }
+
+  // No project yet.
+  return (
+    <div
+      className="flex flex-wrap items-center gap-2 border-t border-border pt-4 text-sm"
+      data-testid="issue-project-chip-empty"
+    >
+      <span className="text-xs uppercase tracking-wide text-muted-foreground">
+        Project
+      </span>
+      {!picking ? (
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => setPicking(true)}
+          data-testid="issue-project-chip-add"
+        >
+          + Add to project
+        </Button>
+      ) : (
+        <>
+          <select
+            className="rounded-md border border-input bg-background px-2 py-1 text-sm"
+            value={target}
+            onChange={(e) => setTarget(e.target.value)}
+            data-testid="issue-project-chip-select"
+          >
+            <option value="">— pick a project —</option>
+            {candidates.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+          </select>
+          <Button size="sm" onClick={onAdd} disabled={!target}>
+            Add
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => {
+              setPicking(false);
+              setTarget("");
+            }}
+          >
+            Cancel
+          </Button>
+        </>
+      )}
+    </div>
+  );
+}

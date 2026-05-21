@@ -87,6 +87,7 @@ import {
 } from "../routes.js";
 
 import { IssueEditCard } from "./issues-page.jsx";
+import { BulkAddToProjectDialog } from "./bulk-add-to-project-dialog.js";
 import {
   useBulkInbox,
   useIssueDatesBatch,
@@ -299,6 +300,7 @@ export function TriagePage(): JSX.Element {
       return next;
     });
   const clearSelected = () => setSelected(new Set());
+  const [bulkAddProjectOpen, setBulkAddProjectOpen] = useState(false);
 
   // ----- Middle-pane group/sort (slice 2) ----------------------------
   const [groupBy, setGroupBy] = useState<GroupBy>("none");
@@ -896,6 +898,14 @@ export function TriagePage(): JSX.Element {
             <Button
               variant="ghost"
               size="sm"
+              onClick={() => setBulkAddProjectOpen(true)}
+              data-testid="triage-bulk-add-to-project"
+            >
+              Add to project…
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
               onClick={clearSelected}
               data-testid="triage-bulk-clear"
             >
@@ -1281,6 +1291,21 @@ export function TriagePage(): JSX.Element {
           </dl>
         </DialogContent>
       </Dialog>
+
+      <BulkAddToProjectDialog
+        open={bulkAddProjectOpen}
+        onOpenChange={setBulkAddProjectOpen}
+        issueIds={Array.from(selected)}
+        orgId={
+          (() => {
+            const first = sortedRows.find((r) => selected.has(r.id));
+            return first?.org_id ?? null;
+          })()
+        }
+        onAdded={() => {
+          clearSelected();
+        }}
+      />
     </div>
   );
 }

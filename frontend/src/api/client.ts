@@ -591,6 +591,68 @@ export const CreateBoardLinkRequestSchema = z.object({
 });
 export type CreateBoardLinkRequest = z.infer<typeof CreateBoardLinkRequestSchema>;
 
+// --- Project write surface (linear-projects-v2.md §7.1 / §7.2) -----------
+//
+// Wire shapes for the create / patch / archive routes on `/projects`
+// and the bulk-add / detach / "what project owns this issue" routes
+// on `/projects/{id}/issues` and `/issues/{id}/project`. Mirrors
+// `crates/dp-rest/src/projects.rs` and
+// `crates/dp-rest/src/project_issues.rs`.
+
+export const CreateProjectRequestSchema = z.object({
+  org_id: uuid,
+  name: z.string().min(1).max(200),
+  description: z.string().nullable().optional(),
+  lead_user_id: uuid.nullable().optional(),
+  status: ProjectStatusDtoSchema.optional(),
+  start_at: isoDateTime.nullable().optional(),
+  due_at: isoDateTime.nullable().optional(),
+});
+export type CreateProjectRequest = z.infer<typeof CreateProjectRequestSchema>;
+
+/** Body for `PATCH /projects/{id}`. `description`, `lead_user_id`,
+ *  `start_at`, `due_at` use the double-optional convention
+ *  (`undefined` ⇒ leave unchanged; `null` ⇒ clear) — matches the
+ *  REST handler. */
+export interface PatchProjectRequest {
+  expected_version: number;
+  name?: string;
+  description?: string | null;
+  lead_user_id?: string | null;
+  status?: ProjectStatusDto;
+  start_at?: string | null;
+  due_at?: string | null;
+}
+
+export interface ArchiveProjectRequest {
+  expected_version: number;
+}
+
+/** Body for `POST /projects/{id}/issues` — CAS-gated bulk add. */
+export interface BulkAddIssuesRequest {
+  expected_version: number;
+  issue_ids: string[];
+}
+
+export const BulkAddSkipDtoSchema = z.object({
+  issue_id: uuid,
+  reason: z.string(),
+  existing_project_id: uuid.nullable().optional(),
+});
+export type BulkAddSkipDto = z.infer<typeof BulkAddSkipDtoSchema>;
+
+export const BulkAddResultSchema = z.object({
+  added: z.array(uuid),
+  skipped: z.array(BulkAddSkipDtoSchema),
+});
+export type BulkAddResult = z.infer<typeof BulkAddResultSchema>;
+
+/** Hard cap on `issue_ids` per `POST /projects/{id}/issues`
+ *  request, pinned in `linear-projects-v2.md` §7.2 / §9.3. The
+ *  §6.6 triage bulk affordance chunks larger selections
+ *  client-side. */
+export const BULK_ADD_ISSUE_CAP = 100;
+
 export const CreateCommentRequestSchema = z.object({
   expected_version: z.number().int(),
   body: z.string().min(1),
@@ -1400,6 +1462,104 @@ export class DevPulseApi {
       if (e instanceof DpRestError && e.status === 404) return null;
       throw e;
     }
+  }
+
+  /** `POST /projects` — create a project. The server stamps
+   *  `created_by` from the session principal and defaults `status`
+   *  to `active` when omitted. */
+  async createProject(body: CreateProjectRequest): Promise<ProjectDto> {
+    return this.sendJson("POST", "/projects", body, ProjectDtoSchema);
+  }
+
+  /** `PATCH /projects/{id}` — partial update under §8.2 CAS. */
+  async patchProject(
+    id: string,
+    body: PatchProjectRequest,
+  ): Promise<ProjectDto> {
+    return this.sendJson(
+      "PATCH",
+      `/projects/${encodeURIComponent(id)}`,
+      body,
+      ProjectDtoSchema,
+    );
+  }
+
+  /** `POST /projects/{id}/archive` — idempotent archive op. */
+  async archiveProject(
+    id: string,
+    body: ArchiveProjectRequest,
+  ): Promise<ProjectDto> {
+    return this.sendJson(
+      "POST",
+      `/projects/${encodeURIComponent(id)}/archive`,
+      body,
+      ProjectDtoSchema,
+    );
+  }
+
+  /** `GET /projects/{id}/issues` — paginated issues attached to a
+   *  project. `state` defaults to `all` server-side. */
+  async listProjectIssues(
+    projectId: string,
+    q: { state?: "open" | "closed" | "all"; q?: string; limit?: number; offset?: number } = {},
+  ): Promise<IssueListResponse> {
+    const params = new URLSearchParams();
+    if (q.state) params.set("state", q.state);
+    if (q.q) params.set("q", q.q);
+    if (q.limit !== undefined) params.set("limit", String(q.limit));
+    if (q.offset !== undefined) params.set("offset", String(q.offset));
+    const qs = params.toString();
+    return this.getJson(
+      `/projects/${encodeURIComponent(projectId)}/issues${qs ? `?${qs}` : ""}`,
+      IssueListResponseSchema,
+    );
+  }
+
+  /** `POST /projects/{id}/issues` — bulk add (capped at
+   *  `BULK_ADD_ISSUE_CAP`). Returns per-row outcomes so the UI
+   *  can render the `added` / `skipped` split inline. */
+  async addIssuesToProject(
+    projectId: string,
+    body: BulkAddIssuesRequest,
+  ): Promise<BulkAddResult> {
+    return this.sendJson(
+      "POST",
+      `/projects/${encodeURIComponent(projectId)}/issues`,
+      body,
+      BulkAddResultSchema,
+    );
+  }
+
+  /** `DELETE /projects/{id}/issues/{issue_id}?expected_version=` —
+   *  detach a single issue. 404 (already detached) is squashed to
+   *  a clean resolve so callers can treat it as idempotent. */
+  async removeIssueFromProject(
+    projectId: string,
+    issueId: string,
+    expectedVersion: number,
+  ): Promise<void> {
+    try {
+      await this.sendNoContent(
+        "DELETE",
+        `/projects/${encodeURIComponent(projectId)}/issues/${encodeURIComponent(issueId)}?expected_version=${expectedVersion}`,
+        undefined,
+      );
+    } catch (e) {
+      if (e instanceof DpRestError && e.status === 404) return;
+      throw e;
+    }
+  }
+
+  /** `GET /issues/{id}/project` — resolve the (single, per v1
+   *  `UNIQUE (issue_id)`) project for an issue, or `null` when
+   *  the issue is not currently in any project. Backs the §6.5
+   *  detail-pane chip. */
+  async getProjectForIssue(issueId: string): Promise<ProjectDto | null> {
+    const schema = z.union([ProjectDtoSchema, z.null()]);
+    return this.getJson(
+      `/issues/${encodeURIComponent(issueId)}/project`,
+      schema,
+    );
   }
 
   /** `GET /repos/{id}/metadata` — repo snapshot for the

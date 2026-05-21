@@ -103,6 +103,7 @@ export default defineConfig({
           "/admin": "http://localhost:8731",
           "/issues": "http://localhost:8731",
           "/repos": "http://localhost:8731",
+          "/projects": "http://localhost:8731",
           "/me": "http://localhost:8731",
           "/pins": "http://localhost:8731",
           "/tags": "http://localhost:8731",

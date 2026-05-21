@@ -21,10 +21,16 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   api,
+  type ArchiveProjectRequest,
   type BoardLinkDto,
+  type BulkAddIssuesRequest,
+  type BulkAddResult,
   type CreateBoardLinkRequest,
+  type CreateProjectRequest,
+  type IssueListResponse,
   type ListProjectsQuery,
   type OrgProjectPickerDto,
+  type PatchProjectRequest,
   type ProjectDto,
   type ProjectListResponse,
   type ProjectStatusDto,
@@ -41,7 +47,19 @@ export const projectsKeys = {
     ["projects", "board-links", projectId] as const,
   orgPicker: (orgId: string) =>
     ["projects", "org-picker", orgId] as const,
+  issues: (projectId: string, q: ListProjectIssuesQuery) =>
+    ["projects", "issues", projectId, q] as const,
+  forIssue: (issueId: string) =>
+    ["projects", "for-issue", issueId] as const,
 };
+
+/** Query shape for [`useProjectIssues`]. Mirrors the wire params. */
+export interface ListProjectIssuesQuery {
+  state?: "open" | "closed" | "all";
+  q?: string;
+  limit?: number;
+  offset?: number;
+}
 
 /** Per-status count probe, backed by `GET /projects?count_only=1`.
  *  Returns `0` while loading / on error so the sidebar never
@@ -150,5 +168,126 @@ export function useDeleteBoardLink(projectId: string) {
       qc.invalidateQueries({ queryKey: projectsKeys.boardLinks(projectId) });
       qc.invalidateQueries({ queryKey: projectsKeys.detail(projectId) });
     },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Write-side mutations — §6.2 [+ New project] modal, §6.3 detail
+// header edits / archive, §6.6 bulk-add from triage.
+// ---------------------------------------------------------------------------
+
+/** Invalidate every list / count probe after a write so the sidebar
+ *  badges and the §6.2 list page redraw without a manual refresh. */
+function invalidateProjectsRoot(qc: ReturnType<typeof useQueryClient>): void {
+  qc.invalidateQueries({ queryKey: ["projects"] });
+}
+
+/** `POST /projects` — create a project. The modal lives on the
+ *  §6.2 list page; success closes the dialog and the surrounding
+ *  page picks up the new row via the invalidation. */
+export function useCreateProject() {
+  const qc = useQueryClient();
+  return useMutation<ProjectDto, Error, CreateProjectRequest>({
+    mutationFn: (body) => api.createProject(body),
+    onSuccess: () => invalidateProjectsRoot(qc),
+  });
+}
+
+/** `PATCH /projects/{id}` — partial update under §8.2 CAS. */
+export function usePatchProject(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation<ProjectDto, Error, PatchProjectRequest>({
+    mutationFn: (body) => api.patchProject(projectId, body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: projectsKeys.detail(projectId) });
+      invalidateProjectsRoot(qc);
+    },
+  });
+}
+
+/** `POST /projects/{id}/archive` — idempotent archive. */
+export function useArchiveProject(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation<ProjectDto, Error, ArchiveProjectRequest>({
+    mutationFn: (body) => api.archiveProject(projectId, body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: projectsKeys.detail(projectId) });
+      invalidateProjectsRoot(qc);
+    },
+  });
+}
+
+/** `GET /projects/{id}/issues` — paginated issue membership for
+ *  the §6.3 issue list. */
+export function useProjectIssues(
+  projectId: string | null,
+  q: ListProjectIssuesQuery = {},
+) {
+  return useQuery<IssueListResponse>({
+    queryKey: projectId
+      ? projectsKeys.issues(projectId, q)
+      : ["projects", "issues", "(none)"],
+    queryFn: () =>
+      projectId
+        ? api.listProjectIssues(projectId, q)
+        : Promise.resolve({ rows: [], total: 0, limit: 0, offset: 0 }),
+    enabled: !!projectId,
+    staleTime: 15_000,
+  });
+}
+
+/** `POST /projects/{id}/issues` — bulk add (capped at 100 per
+ *  request, per `BULK_ADD_ISSUE_CAP`). Invalidates membership +
+ *  the issue→project cache for every accepted row so the §6.5
+ *  detail-pane chip and the §6.3 list refresh in lockstep. */
+export function useAddIssuesToProject(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation<BulkAddResult, Error, BulkAddIssuesRequest>({
+    mutationFn: (body) => api.addIssuesToProject(projectId, body),
+    onSuccess: (result) => {
+      qc.invalidateQueries({ queryKey: ["projects", "issues", projectId] });
+      qc.invalidateQueries({ queryKey: projectsKeys.detail(projectId) });
+      invalidateProjectsRoot(qc);
+      for (const issueId of result.added) {
+        qc.invalidateQueries({ queryKey: projectsKeys.forIssue(issueId) });
+      }
+    },
+  });
+}
+
+/** `DELETE /projects/{id}/issues/{issue_id}` — single detach.
+ *  Takes the project's `expected_version` plus the issue id; the
+ *  store advances `version` on success and the hook invalidates
+ *  the detail / membership / for-issue caches. */
+export function useRemoveIssueFromProject(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation<
+    void,
+    Error,
+    { issueId: string; expectedVersion: number }
+  >({
+    mutationFn: ({ issueId, expectedVersion }) =>
+      api.removeIssueFromProject(projectId, issueId, expectedVersion),
+    onSuccess: (_, { issueId }) => {
+      qc.invalidateQueries({ queryKey: ["projects", "issues", projectId] });
+      qc.invalidateQueries({ queryKey: projectsKeys.detail(projectId) });
+      qc.invalidateQueries({ queryKey: projectsKeys.forIssue(issueId) });
+      invalidateProjectsRoot(qc);
+    },
+  });
+}
+
+/** `GET /issues/{id}/project` — resolve the project for an issue,
+ *  or `null` when the issue is not currently in any project. Backs
+ *  the §6.5 detail-pane Project chip on the workflow surface. */
+export function useProjectForIssue(issueId: string | null) {
+  return useQuery<ProjectDto | null>({
+    queryKey: issueId
+      ? projectsKeys.forIssue(issueId)
+      : ["projects", "for-issue", "(none)"],
+    queryFn: () =>
+      issueId ? api.getProjectForIssue(issueId) : Promise.resolve(null),
+    enabled: !!issueId,
+    staleTime: 30_000,
   });
 }
