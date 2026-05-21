@@ -179,6 +179,30 @@ pub const PROJECT_VIEW_REORDER: &str = "project.view.reorder";
 /// `<project_id>:<milestone_id>` or `<project_id>:` on a clear.
 pub const PROJECT_MILESTONE_ADOPT: &str = "project.milestone.adopt";
 
+/// `project.milestone.create` — `POST /projects/{id}/milestones`.
+/// Two-way sync: dev-pulse calls GitHub `POST /repos/{o}/{r}/
+/// milestones`, then upserts the returned row into `dp_milestones`.
+/// Target carries `<project_id>:<repo_id>#<github_number>` so the
+/// audit row points at the GitHub-side row even before the local
+/// id is dereferenceable.
+pub const PROJECT_MILESTONE_CREATE: &str = "project.milestone.create";
+
+/// `project.milestone.update` — `PATCH /projects/{id}/milestones/{ms_id}`.
+/// Two-way sync. Target carries `<project_id>:<milestone_id>`.
+pub const PROJECT_MILESTONE_UPDATE: &str = "project.milestone.update";
+
+/// `project.milestone.close` — `PATCH …` with `state="closed"`.
+/// Same target shape as [`PROJECT_MILESTONE_UPDATE`].
+pub const PROJECT_MILESTONE_CLOSE: &str = "project.milestone.close";
+
+/// `project.milestone.reopen` — `PATCH …` with `state="open"`.
+/// Same target shape as [`PROJECT_MILESTONE_UPDATE`].
+pub const PROJECT_MILESTONE_REOPEN: &str = "project.milestone.reopen";
+
+/// `project.milestone.delete` — `DELETE /projects/{id}/milestones/{ms_id}`.
+/// Target carries `<project_id>:<milestone_id>`.
+pub const PROJECT_MILESTONE_DELETE: &str = "project.milestone.delete";
+
 /// `issue.pending_remote_timeout` — emitted by the §8.5 sweeper
 /// when a `dp_issues.pending_remote` flag has lingered past
 /// `issues.pending_remote_timeout_secs`. The audit target carries

@@ -2164,6 +2164,164 @@
             "description": "No such project"
           }
         }
+      },
+      "post": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "`POST /projects/{id}/milestones` — create a milestone on a\nlinked repo and mirror it into `dp_milestones`.",
+        "description": "1. Resolve the project; 404 if missing.\n2. Confirm `repo_id` is currently linked to this project; 400\n   `repo_not_linked` otherwise (so a stale UI can't create\n   milestones on arbitrary repos by id).\n3. Resolve repo → org for the install-permission check.\n4. [`require_issues_write`] gate; failure ⇒\n   `403 writes_not_available_for_org`.\n5. Call GitHub via [`MilestoneWriteBackend::create_milestone`].\n6. Parse the response with [`parse_milestone_upsert`] and\n   [`Store::upsert_milestone`] the row so the strip refreshes\n   immediately.\n7. Audit `project.milestone.create` with target\n   `<project_id>:<repo_id>#<github_number>`.",
+        "operationId": "create_project_milestone",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateMilestoneRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Milestone created on GitHub and mirrored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MilestoneDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed at GitHub, or repo not linked"
+          },
+          "403": {
+            "description": "Writes not available for the target org"
+          },
+          "404": {
+            "description": "No such project or repo"
+          }
+        }
+      }
+    },
+    "/projects/{id}/milestones/{milestone_id}": {
+      "delete": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "`DELETE /projects/{id}/milestones/{milestone_id}` — delete a\nmilestone from GitHub and from the local mirror.",
+        "description": "Hard delete on both sides. `dp_projects.primary_milestone_id`\npointers clear via the FK's `ON DELETE SET NULL` (migration\n0035). The handler returns 204 on success.",
+        "operationId": "delete_project_milestone",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "milestone_id",
+            "in": "path",
+            "description": "Milestone id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Milestone deleted on GitHub and locally"
+          },
+          "400": {
+            "description": "GitHub rejected the delete"
+          },
+          "403": {
+            "description": "Writes not available for the target org"
+          },
+          "404": {
+            "description": "No such project or milestone"
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "`PATCH /projects/{id}/milestones/{milestone_id}` — edit a\nmirrored milestone on GitHub and refresh the local row.",
+        "description": "The `state` field doubles as the close/reopen verb: setting\nit to `\"closed\"` audits as `project.milestone.close`,\n`\"open\"` as `project.milestone.reopen`. Any other field\nchange audits as `project.milestone.update`. When `state` is\nthe only field set the handler still re-upserts the local\nmirror from GitHub's response so `closed_at` lands in the\nsame tick.",
+        "operationId": "patch_project_milestone",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "milestone_id",
+            "in": "path",
+            "description": "Milestone id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchMilestoneRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Milestone updated on GitHub and mirrored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MilestoneDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed at GitHub"
+          },
+          "403": {
+            "description": "Writes not available for the target org"
+          },
+          "404": {
+            "description": "No such project or milestone"
+          }
+        }
       }
     },
     "/projects/{id}/repos": {
@@ -2730,6 +2888,30 @@
                 }
               }
             }
+          },
+          "400": {
+            "description": "Validation failed"
+          }
+        }
+      }
+    },
+    "/reports/project-portfolio": {
+      "post": {
+        "tags": [
+          "reports"
+        ],
+        "summary": "`POST /reports/project-portfolio`.",
+        "description": "Returns one row per visible project plus portfolio-level KPIs. The\nenvelope is a structured JSON body (not query string) because the\nrequest carries an optional `window` object — same reason\nSCOPE.md §15.6 chose POST for the activity-report envelope.\n\nVisibility: trusts the caller-supplied `orgs` list, gated by the\nouter `with_permission(\"reports\", \"read\")` layer. A stricter\n\"orgs the caller can see\" filter is an authz follow-up tracked\nin PORTFOLIO-REPORT-PROGRESS.md.",
+        "operationId": "project_portfolio_report",
+        "requestBody": {
+          "description": "ProjectPortfolioRequest — see dp-reports::project_portfolio.",
+          "content": {
+            "application/json": {}
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "One row per visible project + portfolio KPIs (ProjectPortfolioResponse)"
           },
           "400": {
             "description": "Validation failed"
@@ -4322,6 +4504,40 @@
           }
         }
       },
+      "CreateMilestoneRequest": {
+        "type": "object",
+        "description": "Body for [`create_project_milestone`].",
+        "required": [
+          "repo_id",
+          "title"
+        ],
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional long-form description. Markdown."
+          },
+          "due_on": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date",
+            "description": "Optional due date (`YYYY-MM-DD`)."
+          },
+          "repo_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The repo to create the milestone in. Must be currently\nlinked to the project (via `dp_project_repos`); otherwise\nthe handler returns `400 repo_not_linked`."
+          },
+          "title": {
+            "type": "string",
+            "description": "Milestone title (GitHub validates length / uniqueness)."
+          }
+        }
+      },
       "CreateProjectRequest": {
         "type": "object",
         "description": "Body for `POST /projects`. `status` is optional — when omitted\nthe server defaults to [`ProjectStatusDto::Active`] (§6.2 \"Status\ndefaults to `active`\"). `created_by` is filled from the\n[`Principal`], not the body.",
@@ -5421,6 +5637,41 @@
         ],
         "description": "Body for PATCH `/issues/{id}`."
       },
+      "PatchMilestoneRequest": {
+        "type": "object",
+        "description": "Body for [`patch_project_milestone`]. Mirrors the\n`Option<Option<_>>` shape of [`MilestonePatchInput`] on the\nwire so callers can distinguish \"leave as-is\" (omit the key)\nfrom \"clear\" (send `null`).\n\nSerde's `#[serde(default, deserialize_with = …)]` with\n`serde_with::rust::double_option` would be the canonical\nimplementation; we inline a small helper instead to avoid\npulling in a dependency for one struct.",
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Description. Omit to leave as-is; `null` to clear; string\nto replace."
+          },
+          "due_on": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date",
+            "description": "Due date. Omit / `null` / value — same tri-state as\n`description`."
+          },
+          "state": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`\"open\"` / `\"closed\"`. Omit to leave as-is."
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "New title. Omit to leave as-is."
+          }
+        }
+      },
       "PatchProjectRequest": {
         "type": "object",
         "description": "Body for `PATCH /projects/{id}`. Carries the §8.2\n`expected_version` plus the merged-in field set. Fields that\nare omitted are left untouched — the store layer takes a full\nupsert payload, so the handler reads the current row and\noverlays the partial body. This keeps the wire shape narrow\nwithout leaking the upsert's \"all fields required\" shape.",
@@ -5845,6 +6096,14 @@
             "type": "string",
             "description": "Tab label."
           },
+          "open_issue_count": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Open issues currently visible inside this view (post-filter,\npost-membership). `None` on write responses where the count\nwould be a wasted round-trip — only `GET /projects/{id}/views`\npopulates it."
+          },
           "owner_user_id": {
             "type": "string",
             "format": "uuid",
@@ -5863,6 +6122,14 @@
           "sort": {
             "type": "string",
             "description": "Sort order. `updated_desc` | `updated_asc` | `title_asc`."
+          },
+          "total_issue_count": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Total issues currently visible inside this view (open +\nclosed). Same population rule as [`Self::open_issue_count`]."
           },
           "updated_at": {
             "type": "string",

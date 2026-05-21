@@ -76,6 +76,16 @@ pub struct ProjectViewDto {
     pub created_at: DateTime<Utc>,
     /// Most recent mutation.
     pub updated_at: DateTime<Utc>,
+    /// Open issues currently visible inside this view (post-filter,
+    /// post-membership). `None` on write responses where the count
+    /// would be a wasted round-trip — only `GET /projects/{id}/views`
+    /// populates it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub open_issue_count: Option<i32>,
+    /// Total issues currently visible inside this view (open +
+    /// closed). Same population rule as [`Self::open_issue_count`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_issue_count: Option<i32>,
 }
 
 impl From<ProjectView> for ProjectViewDto {
@@ -97,6 +107,8 @@ impl From<ProjectView> for ProjectViewDto {
             visibility: v.visibility.as_str().to_string(),
             created_at: v.created_at,
             updated_at: v.updated_at,
+            open_issue_count: None,
+            total_issue_count: None,
         }
     }
 }
@@ -332,7 +344,45 @@ pub async fn list_project_views(
         .store
         .list_project_views(project_id, principal.actor_user_id)
         .await?;
-    Ok(Json(rows.into_iter().map(ProjectViewDto::from).collect()))
+
+    // PROJECT-VIEW.md §5.4 amendment — tab counts must match what
+    // `GET /projects/{id}/issues?view=<id>` renders: membership comes
+    // from `dp_project_view_issues`, then the view's stored filter
+    // clauses are applied in-memory, then we split open/closed. This
+    // mirrors the [`crate::project_issues::list_project_issues`] flow
+    // so the badge can't disagree with the list it labels.
+    let mut out: Vec<ProjectViewDto> = Vec::with_capacity(rows.len());
+    for view in rows {
+        let ids = state.store.list_issue_ids_for_view(view.id).await?;
+        let mut issues: Vec<dp_domain::issue::Issue> = Vec::with_capacity(ids.len());
+        for id in &ids {
+            if let Some(i) = state.store.get_issue(*id).await? {
+                issues.push(i);
+            }
+        }
+        let clauses: Vec<crate::project_issues::FilterClause> = view
+            .filter_clauses
+            .iter()
+            .filter_map(crate::project_issues::view_clause_to_filter)
+            .collect();
+        crate::project_issues::apply_filter_clauses(
+            &*state.store,
+            project_id,
+            &clauses,
+            &mut issues,
+        )
+        .await?;
+        let total = issues.len() as i32;
+        let open = issues
+            .iter()
+            .filter(|i| i.state == dp_domain::issue::IssueState::Open)
+            .count() as i32;
+        let mut dto = ProjectViewDto::from(view);
+        dto.open_issue_count = Some(open);
+        dto.total_issue_count = Some(total);
+        out.push(dto);
+    }
+    Ok(Json(out))
 }
 
 /// `POST /projects/{id}/views` — create + append.

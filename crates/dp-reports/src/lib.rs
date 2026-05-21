@@ -18,6 +18,7 @@ pub mod freshness;
 pub mod leaderboard;
 pub mod lenses;
 pub mod my_standing;
+pub mod project_portfolio;
 pub mod tag_filter;
 
 pub use aggregate::{
@@ -49,6 +50,11 @@ pub use leaderboard::{
     LEADERBOARD_BIND_ORDER_SUBJECT_IDS, LEADERBOARD_PAGE_SIZE_DEFAULT, LEADERBOARD_PAGE_SIZE_MAX,
     LEADERBOARD_SUBJECT_IDS_CAP, LEADERBOARD_TIE_BREAK_ORDER_BY_CLAUSE,
     USER_SINGLE_ORG_BIND_ORDER,
+};
+pub use project_portfolio::{
+    build_project_portfolio_sql, rollup_kpis, PortfolioKpis, PortfolioQueryFilter, PortfolioRawRow,
+    PortfolioSort, ProjectPortfolioRequest, ProjectPortfolioResponse, ProjectPortfolioRow,
+    UserChip, PORTFOLIO_LIMIT_DEFAULT, PORTFOLIO_LIMIT_MAX, PROJECT_PORTFOLIO_BIND_ORDER,
 };
 pub use my_standing::{
     anonymise_neighbour_row, build_my_standing_sql, compute_visible_headline,

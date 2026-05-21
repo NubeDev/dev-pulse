@@ -139,8 +139,11 @@ pub use project_repos::{
     ProjectRepoDto,
 };
 pub use project_milestones::{
-    adopt_milestone, list_project_milestones, project_milestones_router, AdoptMilestoneBody,
-    ListMilestonesQuery, MilestoneDto,
+    adopt_milestone, create_project_milestone, delete_project_milestone,
+    list_project_milestones, patch_project_milestone, project_milestones_router,
+    AdoptMilestoneBody, CreateMilestoneRequest, FetcherMilestoneWriter,
+    ListMilestonesQuery, MilestoneDto, MilestonePatchInput, MilestoneWriteBackend,
+    MilestoneWriteError, PatchMilestoneRequest, UnconfiguredMilestoneWriter,
 };
 pub use project_views::{
     create_project_view, delete_project_view, get_project_view, list_project_views,

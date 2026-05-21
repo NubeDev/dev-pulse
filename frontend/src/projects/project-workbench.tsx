@@ -45,6 +45,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
+import { HelpHint } from "@/components/help-hint";
 import {
   navigate,
   projectDetailRouteWithParams,
@@ -126,8 +127,16 @@ export function ProjectWorkbench({
 
   const groupBy =
     urlGroupBy ?? (activeView ? activeView.group_by : null);
+  // `urlFilterRaw === ""` is the explicit-empty override sentinel
+  // (see [`FILTER_EMPTY_OVERRIDE`] in routes.ts) — when set we must
+  // *not* fall back to the view's filter; the user is saying "no
+  // filter on this dirty tab".
   const filterRaw =
-    urlFilterRaw ?? (activeView ? viewFilterSerialised || null : null);
+    urlFilterRaw !== null
+      ? urlFilterRaw
+      : activeView
+        ? viewFilterSerialised || null
+        : null;
   const sort = urlSort ?? (activeView ? activeView.sort : null);
 
   const chips = useMemo(() => parseFilterString(filterRaw), [filterRaw]);
@@ -198,7 +207,17 @@ export function ProjectWorkbench({
 
   const setFilterChips = (next: FilterChip[]): void => {
     const serialised = serializeFilterChips(next);
-    patchUrl({ filter: serialised.length > 0 ? serialised : null });
+    // When a view is active and the user clears all chips, we must
+    // write an *explicit-empty* override (empty string) so the
+    // workbench knows the user intended to drop the view's stored
+    // filter — `null` would just remove the override and let the
+    // view's filter resurface. Without a view active, `null` is the
+    // right choice: it strips the `?filter=` param entirely.
+    if (serialised.length > 0) {
+      patchUrl({ filter: serialised });
+    } else {
+      patchUrl({ filter: activeView ? "" : null });
+    }
   };
 
   const setSort = (next: string | null): void => {
@@ -474,6 +493,15 @@ function Toolbar({
       className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-md border border-dashed border-border bg-muted/20 px-3 py-2 text-sm"
       data-testid="project-workbench-toolbar"
     >
+      <HelpHint
+        title="Workbench toolbar"
+        body={[
+          "Group by: bucket the issue list by status, milestone, or any tag-key your repos use. Pick None to flatten back to a single list.",
+          "Filter: + Add chips like status:open, tag:gate:g3, milestone:<…>. Chips are AND-combined; multiple values on the same dim are OR'd within (Linear semantics).",
+          "Sort: choose between most-recently updated, oldest first, or alphabetical title.",
+          "Save the current Group / Filter / Sort as a tab via the Views strip above — tabs become containers, not just saved searches.",
+        ]}
+      />
       <label className="flex items-center gap-2">
         <span className="text-muted-foreground">Group by:</span>
         <Select

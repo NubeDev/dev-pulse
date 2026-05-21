@@ -64,7 +64,9 @@ use chrono::{DateTime, Duration, TimeZone, Utc};
 use dp_domain::event::{ActivityEvent, ActorRole, EventActor, EventKind};
 use dp_domain::issue::{IssueState, IssueUpsert};
 use dp_domain::board_link::{BoardItemMirrorOutcome, BoardLinkUpsert};
-use dp_domain::project::{ProjectListFilter, ProjectStatus, ProjectUpsert};
+use dp_domain::project::{
+    PortfolioQueryFilter, PortfolioSort, ProjectListFilter, ProjectStatus, ProjectUpsert,
+};
 use dp_domain::fetch::{FetchCursor, FetchRunKind, ResourceKind};
 use dp_domain::membership::{Membership, MembershipRole};
 use dp_domain::org::Org;
@@ -2346,4 +2348,141 @@ async fn milestone_upsert_and_list() {
     assert_eq!(all.len(), 2);
     assert_eq!(all[0].state, MilestoneState::Open);
     assert_eq!(all[1].state, MilestoneState::Closed);
+}
+
+/// `list_project_portfolio` round-trips the §10 single-query path:
+/// filter by org + status, compute `progress_pct` / `slip_days` in
+/// SQL, and project the `(lead, mirrored_to_github, total)` columns.
+/// Covers the §9 fall-through path for `issue_overdue_count` only
+/// implicitly (no issues attached here); the dp-reports SQL-builder
+/// tests already lock the predicate text, so this test focuses on
+/// the binding + decoding contract the unit tests can't reach.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Docker or DP_TEST_DATABASE_URL"]
+async fn portfolio_query_round_trips_projects_with_kpis() {
+    let f = fixture().await;
+    let s = f.store();
+
+    let org = seed_org(s, 9100, "portfolio-org").await;
+    let lead = seed_user(s, 9101, "lead-pf").await;
+    let now = Utc.with_ymd_and_hms(2026, 5, 21, 0, 0, 0).unwrap();
+
+    // Three projects: one due in the future, one overdue, one done.
+    let p_future = s
+        .create_project(&ProjectUpsert {
+            org_id: org.id,
+            name: "ship-next".into(),
+            description: None,
+            lead_user_id: Some(lead.id),
+            status: ProjectStatus::Active,
+            start_at: None,
+            due_at: Some(now + Duration::days(30)),
+            created_by: Some(lead.id),
+        })
+        .await
+        .unwrap();
+    let p_overdue = s
+        .create_project(&ProjectUpsert {
+            org_id: org.id,
+            name: "ship-late".into(),
+            description: None,
+            lead_user_id: None,
+            status: ProjectStatus::Active,
+            start_at: None,
+            due_at: Some(now - Duration::days(5)),
+            created_by: Some(lead.id),
+        })
+        .await
+        .unwrap();
+    let _p_done = s
+        .create_project(&ProjectUpsert {
+            org_id: org.id,
+            name: "shipped".into(),
+            description: None,
+            lead_user_id: None,
+            status: ProjectStatus::Done,
+            start_at: None,
+            due_at: Some(now - Duration::days(60)),
+            created_by: Some(lead.id),
+        })
+        .await
+        .unwrap();
+
+    // Status filter = [Active, Backlog] (the REST handler's default).
+    let rows = s
+        .list_project_portfolio(&PortfolioQueryFilter {
+            orgs: vec![org.id],
+            statuses: vec![ProjectStatus::Active, ProjectStatus::Backlog],
+            window: None,
+            hide_overdue: false,
+            sort: PortfolioSort::DueAscNullsLast,
+            now,
+            limit: 50,
+            offset: 0,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(rows.len(), 2, "active+backlog filter must exclude the Done row");
+    // DueAscNullsLast → overdue (-5d) sorts before future (+30d).
+    assert_eq!(rows[0].id, p_overdue.id);
+    assert_eq!(rows[1].id, p_future.id);
+
+    // Shape: total is COUNT(*) OVER () — same on every row.
+    assert_eq!(rows[0].total, 2);
+    assert_eq!(rows[1].total, 2);
+
+    // slip_days: overdue ≈ -5, future ≈ 30.
+    assert_eq!(rows[0].slip_days, Some(-5));
+    assert_eq!(rows[1].slip_days, Some(30));
+
+    // progress_pct: no issues → 0.
+    assert_eq!(rows[0].progress_pct, 0);
+    assert_eq!(rows[1].progress_pct, 0);
+
+    // org_login projected from the join.
+    assert_eq!(rows[0].org_login, "portfolio-org");
+
+    // Lead projected only on the project that has one.
+    assert!(rows[0].lead.is_none());
+    assert!(rows[1].lead.is_some());
+    assert_eq!(rows[1].lead.as_ref().unwrap().1, "lead-pf");
+
+    // No board links seeded → mirrored_to_github is false.
+    assert!(!rows[0].mirrored_to_github);
+    assert!(!rows[1].mirrored_to_github);
+
+    // hide_overdue drops the overdue row.
+    let hidden = s
+        .list_project_portfolio(&PortfolioQueryFilter {
+            orgs: vec![org.id],
+            statuses: vec![ProjectStatus::Active, ProjectStatus::Backlog],
+            window: None,
+            hide_overdue: true,
+            sort: PortfolioSort::DueAscNullsLast,
+            now,
+            limit: 50,
+            offset: 0,
+        })
+        .await
+        .unwrap();
+    assert_eq!(hidden.len(), 1);
+    assert_eq!(hidden[0].id, p_future.id);
+
+    // Status filter = [Done] surfaces the third project on its own.
+    let done = s
+        .list_project_portfolio(&PortfolioQueryFilter {
+            orgs: vec![org.id],
+            statuses: vec![ProjectStatus::Done],
+            window: None,
+            hide_overdue: false,
+            sort: PortfolioSort::DueAscNullsLast,
+            now,
+            limit: 50,
+            offset: 0,
+        })
+        .await
+        .unwrap();
+    assert_eq!(done.len(), 1);
+    assert_eq!(done[0].status, ProjectStatus::Done);
 }

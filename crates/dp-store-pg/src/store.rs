@@ -47,8 +47,8 @@ use dp_domain::board_link::{
 };
 use dp_domain::issue_dates::{IssueDates, ProjectV2MirrorTask, ProjectV2MirrorTaskKind};
 use dp_domain::project::{
-    Project, ProjectIssueAddOutcome, ProjectIssueAddSkip, ProjectListFilter, ProjectRepo,
-    ProjectStatus, ProjectUpsert,
+    PortfolioQueryFilter, PortfolioRawRow, Project, ProjectIssueAddOutcome, ProjectIssueAddSkip,
+    ProjectListFilter, ProjectRepo, ProjectStatus, ProjectUpsert,
 };
 use dp_domain::project_view::{
     ProjectView, ProjectViewFilterClause, ProjectViewUpsert, ProjectViewVisibility,
@@ -3619,6 +3619,35 @@ impl Store for PgStore {
         Ok(count)
     }
 
+    async fn list_project_portfolio(
+        &self,
+        filter: &PortfolioQueryFilter,
+    ) -> Result<Vec<PortfolioRawRow>, StoreError> {
+        let sql = dp_reports::build_project_portfolio_sql(filter.sort);
+        let statuses: Vec<String> = filter
+            .statuses
+            .iter()
+            .map(|s| s.as_str().to_string())
+            .collect();
+        let (window_start, window_end) = match filter.window {
+            Some((s, e)) => (Some(s), Some(e)),
+            None => (None, None),
+        };
+        let rows = sqlx::query(&sql)
+            .bind(&filter.orgs)
+            .bind(&statuses)
+            .bind(window_start)
+            .bind(window_end)
+            .bind(filter.hide_overdue)
+            .bind(filter.now)
+            .bind(filter.limit)
+            .bind(filter.offset)
+            .fetch_all(self.pool.sqlx())
+            .await
+            .map_err(map_sqlx)?;
+        rows.iter().map(row_to_portfolio_raw).collect()
+    }
+
     async fn get_project(&self, id: Uuid) -> Result<Option<Project>, StoreError> {
         let row = sqlx::query(
             r#"SELECT id, org_id, name, description, lead_user_id, status,
@@ -5131,6 +5160,24 @@ impl Store for PgStore {
             None => Err(not_found("project", project_id)),
         }
     }
+
+    async fn delete_milestone(
+        &self,
+        milestone_id: Uuid,
+    ) -> Result<(), StoreError> {
+        // FK `dp_projects.primary_milestone_id` is `ON DELETE SET
+        // NULL` (migration 0035), so adopters of this milestone
+        // automatically clear without a follow-up UPDATE.
+        let result = sqlx::query("DELETE FROM dp_milestones WHERE id = $1")
+            .bind(milestone_id)
+            .execute(self.pool.sqlx())
+            .await
+            .map_err(map_sqlx)?;
+        if result.rows_affected() == 0 {
+            return Err(not_found("milestone", milestone_id));
+        }
+        Ok(())
+    }
 }
 
 /// Resolve whether an `UPDATE dp_projects ... WHERE id = ? AND
@@ -5176,6 +5223,36 @@ fn row_to_project(r: &sqlx::postgres::PgRow) -> Result<Project, StoreError> {
         updated_at: r.try_get("updated_at").map_err(map_sqlx)?,
         version: r.try_get("version").map_err(map_sqlx)?,
         primary_milestone_id: r.try_get("primary_milestone_id").map_err(map_sqlx)?,
+    })
+}
+
+fn row_to_portfolio_raw(r: &sqlx::postgres::PgRow) -> Result<PortfolioRawRow, StoreError> {
+    let status_text: String = r.try_get("status").map_err(map_sqlx)?;
+    let status = ProjectStatus::from_str(&status_text)
+        .ok_or_else(|| invalid(format!("unknown project status: {status_text}")))?;
+    let lead_id: Option<Uuid> = r.try_get("lead_user_id").map_err(map_sqlx)?;
+    let lead_login: Option<String> = r.try_get("lead_login").map_err(map_sqlx)?;
+    let lead = match (lead_id, lead_login) {
+        (Some(id), Some(login)) => Some((id, login)),
+        _ => None,
+    };
+    Ok(PortfolioRawRow {
+        id: r.try_get("id").map_err(map_sqlx)?,
+        org_id: r.try_get("org_id").map_err(map_sqlx)?,
+        org_login: r.try_get("org_login").map_err(map_sqlx)?,
+        name: r.try_get("name").map_err(map_sqlx)?,
+        status,
+        start_at: r.try_get("start_at").map_err(map_sqlx)?,
+        due_at: r.try_get("due_at").map_err(map_sqlx)?,
+        issue_count: r.try_get("issue_count").map_err(map_sqlx)?,
+        closed_issue_count: r.try_get("closed_issue_count").map_err(map_sqlx)?,
+        progress_pct: r.try_get("progress_pct").map_err(map_sqlx)?,
+        slip_days: r.try_get("slip_days").map_err(map_sqlx)?,
+        issue_overdue_count: r.try_get("issue_overdue_count").map_err(map_sqlx)?,
+        lead,
+        mirrored_to_github: r.try_get("mirrored_to_github").map_err(map_sqlx)?,
+        version: r.try_get("version").map_err(map_sqlx)?,
+        total: r.try_get("total").map_err(map_sqlx)?,
     })
 }
 

@@ -81,6 +81,7 @@ async fn webhook_github_stub() {}
         crate::reports::org_report,
         crate::reports::home_org_split_report,
         crate::reports::freshness_report,
+        crate::reports::project_portfolio_report,
         // Directory (stage 4).
         crate::directory::list_users,
         crate::directory::list_orgs,
@@ -129,6 +130,12 @@ async fn webhook_github_stub() {}
         crate::project_milestones::list_project_milestones,
         // Adopt milestone as project primary (Slice 5).
         crate::project_milestones::adopt_milestone,
+        // Create a milestone on a linked repo (two-way sync).
+        crate::project_milestones::create_project_milestone,
+        // Edit / close / reopen a mirrored milestone.
+        crate::project_milestones::patch_project_milestone,
+        // Delete a mirrored milestone from GitHub + locally.
+        crate::project_milestones::delete_project_milestone,
         // Tags (SCOPE-PROJECTS §7).
         crate::tags::list_tags,
         crate::tags::list_my_tags,
@@ -235,6 +242,8 @@ async fn webhook_github_stub() {}
         // Project milestones (PROJECT-VIEW.md §5.5).
         crate::project_milestones::MilestoneDto,
         crate::project_milestones::AdoptMilestoneBody,
+        crate::project_milestones::CreateMilestoneRequest,
+        crate::project_milestones::PatchMilestoneRequest,
         // Tags.
         crate::tags::TagDto,
         crate::tags::TagScopeKindDto,

@@ -205,6 +205,103 @@ pub struct ProjectListFilter {
     pub offset: i64,
 }
 
+// ---------------------------------------------------------------------------
+// Portfolio query (SCOPE-PROJECT-REPORTS.md §6 + §10)
+// ---------------------------------------------------------------------------
+
+/// Sort key for the portfolio query. Whitelisted enum so the
+/// `ORDER BY` clause is fixed at the SQL boundary — no user-controlled
+/// column names ever reach the query string. Owned by dp-domain so
+/// the `Store` trait can take it without depending on dp-reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PortfolioSort {
+    /// `due_at ASC NULLS LAST`. Default.
+    #[default]
+    DueAscNullsLast,
+    /// `due_at DESC NULLS LAST`.
+    DueDescNullsLast,
+    /// Largest negative slip first (most overdue at the top).
+    SlipDaysDesc,
+    /// Lowest `progress_pct` first.
+    ProgressAsc,
+    /// `name ASC` — alphabetical.
+    NameAsc,
+    /// `updated_at DESC` — most recently touched first.
+    UpdatedDesc,
+}
+
+/// Inputs to the `Store::list_project_portfolio` query. Mirrors the
+/// `ProjectListFilter` shape — caller-resolved orgs / statuses /
+/// window, plus the whitelisted sort key.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PortfolioQueryFilter {
+    /// Org filter. Empty ⇒ no org filter (caller is responsible for
+    /// passing only the orgs the principal can see).
+    pub orgs: Vec<Uuid>,
+    /// Status filter. Empty ⇒ no status filter; the caller is
+    /// responsible for substituting the spec default (`[Active, Backlog]`)
+    /// before calling.
+    pub statuses: Vec<ProjectStatus>,
+    /// Optional planned-window filter. `(start, end)` exclusive at
+    /// `end`. `None` ⇒ no window filter.
+    pub window: Option<(DateTime<Utc>, DateTime<Utc>)>,
+    /// `true` ⇒ drop `status IN (active,backlog) AND due_at < now`.
+    pub hide_overdue: bool,
+    /// Sort key (whitelisted).
+    pub sort: PortfolioSort,
+    /// Server-resolved `now`, used by `slip_days` and
+    /// `issue_overdue_count`. Locked at the request boundary so two
+    /// pages of the same report agree.
+    pub now: DateTime<Utc>,
+    /// Page size.
+    pub limit: i64,
+    /// Page offset.
+    pub offset: i64,
+}
+
+/// Raw projection from `Store::list_project_portfolio`. The
+/// `dp-reports` / REST layer maps this onto the wire-form
+/// `ProjectPortfolioRow`. Kept separate from the wire form so the
+/// `Store` trait does not transitively depend on `serde`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PortfolioRawRow {
+    /// `dp_projects.id`.
+    pub id: Uuid,
+    /// Owning org.
+    pub org_id: Uuid,
+    /// Owning org's GitHub login slug.
+    pub org_login: String,
+    /// Project name.
+    pub name: String,
+    /// Lifecycle status.
+    pub status: ProjectStatus,
+    /// Planned start (UTC, nullable).
+    pub start_at: Option<DateTime<Utc>>,
+    /// Planned due (UTC, nullable).
+    pub due_at: Option<DateTime<Utc>>,
+    /// Total attached issues.
+    pub issue_count: i32,
+    /// Closed attached issues.
+    pub closed_issue_count: i32,
+    /// `round(closed * 100 / total)` (0 when total = 0).
+    pub progress_pct: i32,
+    /// `floor((due_at - now) / 1 day)` in UTC; `None` when no `due_at`.
+    pub slip_days: Option<i32>,
+    /// Spec §9 — open issues whose own `due_at < now`, or no own
+    /// `due_at` and the project's `due_at < now`.
+    pub issue_overdue_count: i32,
+    /// Lead `(id, login)` — `None` when unassigned.
+    pub lead: Option<(Uuid, String)>,
+    /// `true` iff at least one `dp_project_board_links` row exists.
+    pub mirrored_to_github: bool,
+    /// CAS token.
+    pub version: i64,
+    /// Total rows across pages (echoed via `COUNT(*) OVER ()` in the
+    /// CTE — same value on every row of a given response).
+    pub total: i64,
+}
+
 /// One row from `dp_project_repos` — a soft association between a
 /// project and a repo. Used by the §6.3 "Add issues" dialog to
 /// narrow the issue picker to repos the operator has explicitly

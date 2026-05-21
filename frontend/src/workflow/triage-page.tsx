@@ -1082,9 +1082,16 @@ export function TriagePage(): JSX.Element {
                   />
                 )}
                 {row.repo_slug && (
-                  <span className="ml-auto shrink-0 text-xs text-muted-foreground">
+                  <a
+                    href={`https://github.com/${row.repo_slug}/issues/${row.number}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="ml-auto shrink-0 text-xs text-muted-foreground hover:text-foreground hover:underline"
+                    onClick={(e) => e.stopPropagation()}
+                    title={`Open ${row.repo_slug}#${row.number} on GitHub`}
+                  >
                     {row.repo_slug}
-                  </span>
+                  </a>
                 )}
                 {row.assignees.length > 0 && (
                   <span className="shrink-0 text-xs text-muted-foreground">
@@ -1223,24 +1230,28 @@ export function TriagePage(): JSX.Element {
             <header className="sticky top-0 z-10 flex items-center justify-between gap-2 border-b border-border bg-background/95 px-4 py-2.5 backdrop-blur">
               <h2 className="text-sm font-semibold">Issue detail</h2>
               <div className="flex items-center gap-1">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  title="Open in new tab"
-                  asChild
-                >
-                  <a
-                    href={workflowTriageRoute({
-                      view,
-                      repoId,
-                      issueId: selectedIssueId,
-                    })}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    <IconExternalLink className="size-4" />
-                  </a>
-                </Button>
+                {(() => {
+                  const sel = allRows.find((r) => r.id === selectedIssueId);
+                  if (sel?.repo_slug) {
+                    return (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        title={`Open ${sel.repo_slug}#${sel.number} on GitHub`}
+                        asChild
+                      >
+                        <a
+                          href={`https://github.com/${sel.repo_slug}/issues/${sel.number}`}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          <IconExternalLink className="size-4" />
+                        </a>
+                      </Button>
+                    );
+                  }
+                  return null;
+                })()}
                 <Button
                   variant="ghost"
                   size="icon"

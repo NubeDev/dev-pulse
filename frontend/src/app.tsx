@@ -27,6 +27,7 @@ import { OrgsPage } from "./directory/orgs-page.jsx";
 import { TeamsPage } from "./directory/teams-page.jsx";
 import { UsersPage } from "./directory/users-page.jsx";
 import { FreshnessPage } from "./reports/freshness-page.jsx";
+import { ProjectPortfolioPage } from "./reports/project-portfolio-page.jsx";
 import { HomeOrgSplitReportPage } from "./reports/home-org-split-report-page.jsx";
 import { LeaderboardPage } from "./reports/leaderboard-page.jsx";
 import { OrgReportPage } from "./reports/org-report-page.jsx";
@@ -171,6 +172,8 @@ function ReportsPane({ tab }: { tab: ReportTab }): JSX.Element {
       return <RepoActivityPage />;
     case "freshness":
       return <FreshnessPage />;
+    case "projects":
+      return <ProjectPortfolioPage />;
   }
 }
 

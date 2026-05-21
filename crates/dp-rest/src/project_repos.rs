@@ -48,6 +48,9 @@ pub struct ProjectRepoDto {
     pub repo_id: Uuid,
     /// Enriched repo org id (matches `dp_repos.org_id`).
     pub repo_org_id: Uuid,
+    /// Enriched repo org login — used by the frontend to build
+    /// `https://github.com/{org_login}/{repo_name}` links.
+    pub repo_org_login: String,
     /// Enriched repo name (matches `dp_repos.name`).
     pub repo_name: String,
     /// User who created the association, if known.
@@ -64,16 +67,21 @@ async fn enrich(
     let mut out = Vec::with_capacity(rows.len());
     for r in rows {
         let repo = state.store.get_repo(r.repo_id).await?;
-        let (repo_org_id, repo_name) = match repo {
-            Some(r2) => (r2.org_id, r2.name),
+        let (repo_org_id, repo_name) = match &repo {
+            Some(r2) => (r2.org_id, r2.name.clone()),
             // Should be impossible thanks to FK ON DELETE CASCADE,
             // but degrade gracefully if it ever happens.
             None => (Uuid::nil(), String::new()),
+        };
+        let repo_org_login = match state.store.get_org(repo_org_id).await? {
+            Some(org) => org.login,
+            None => String::new(),
         };
         out.push(ProjectRepoDto {
             project_id: r.project_id,
             repo_id: r.repo_id,
             repo_org_id,
+            repo_org_login,
             repo_name,
             added_by: r.added_by,
             added_at: r.added_at,

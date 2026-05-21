@@ -113,16 +113,27 @@ export function projectGroupBy(route: string): string | null {
   return null;
 }
 
+/** Sentinel value for an *explicit empty* filter override while a
+ *  saved view is active. `URLSearchParams` collapses empty strings,
+ *  so `?filter=` would round-trip to "no override" and let the
+ *  view's stored filter resurface — which is exactly the bug that
+ *  used to make removing the last chip on a view tab undo-able.
+ *  `__none__` is reserved here because it can't collide with any
+ *  legal chip string (which always contains a `:`). */
+export const FILTER_EMPTY_OVERRIDE = "__none__";
+
 /** Parse `?filter=<chips>` from a project detail route
  *  (PROJECT-VIEW.md §5.4). Returns the raw wire string verbatim —
  *  the workbench is responsible for splitting on `;` and rendering
- *  chips. `null` when absent or empty. */
+ *  chips. `null` when absent; **empty string** when the URL carries
+ *  the explicit-empty sentinel (see [`FILTER_EMPTY_OVERRIDE`]). */
 export function projectFilter(route: string): string | null {
   const q = route.indexOf("?");
   if (q < 0) return null;
   const params = new URLSearchParams(route.slice(q + 1));
   const raw = params.get("filter");
-  if (!raw) return null;
+  if (raw === null) return null;
+  if (raw === "" || raw === FILTER_EMPTY_OVERRIDE) return "";
   return raw;
 }
 
@@ -179,7 +190,8 @@ export function projectDetailRouteWithParams(
   if (patch.issueId) params.set("issue", patch.issueId);
   if (patch.view) params.set("view", patch.view);
   if (patch.group) params.set("group", patch.group);
-  if (patch.filter) params.set("filter", patch.filter);
+  if (patch.filter === "") params.set("filter", FILTER_EMPTY_OVERRIDE);
+  else if (patch.filter) params.set("filter", patch.filter);
   if (patch.sort) params.set("sort", patch.sort);
   const qs = params.toString();
   return `#/projects/${id}${qs ? `?${qs}` : ""}`;
@@ -338,7 +350,7 @@ export function workflowTriageRoute(opts: {
 }
 
 /** Sub-route under the reports section — drives the reports sub-nav. */
-export type ReportTab = "user" | "team" | "org" | "home-org-split" | "leaderboard" | "repo-activity" | "freshness";
+export type ReportTab = "user" | "team" | "org" | "home-org-split" | "leaderboard" | "repo-activity" | "freshness" | "projects";
 
 /** Sub-route under the admin section — drives the admin sub-nav.
  *  - `runs` (default): paginated fetch_runs log.
@@ -412,6 +424,8 @@ export function reportTabOf(route: string): ReportTab {
       return "repo-activity";
     case "freshness":
       return "freshness";
+    case "projects":
+      return "projects";
     case "user":
     case undefined:
     case "":

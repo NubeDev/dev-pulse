@@ -618,6 +618,91 @@ export interface ListProjectsQuery {
   count_only?: boolean;
 }
 
+// --- Project portfolio report (SCOPE-PROJECT-REPORTS.md) ------------------
+//
+// `POST /reports/project-portfolio` — one row per visible project +
+// portfolio-level KPIs. Mirrors the dp-reports envelope; see the
+// Rust types in `crates/dp-reports/src/project_portfolio.rs`.
+
+export const PortfolioSortSchema = z.enum([
+  "due_asc_nulls_last",
+  "due_desc_nulls_last",
+  "slip_days_desc",
+  "progress_asc",
+  "name_asc",
+  "updated_desc",
+]);
+export type PortfolioSort = z.infer<typeof PortfolioSortSchema>;
+
+export const WindowSpecSchema = z
+  .object({
+    label: z.string(),
+    tz: z.string(),
+    anchor: z.enum(["viewer", "org", "utc"]),
+    custom_start: isoDateTime.nullable().optional(),
+    custom_end: isoDateTime.nullable().optional(),
+  })
+  .partial({ custom_start: true, custom_end: true });
+export type WindowSpec = z.infer<typeof WindowSpecSchema>;
+
+export const ProjectPortfolioRequestSchema = z.object({
+  orgs: z.array(uuid).default([]),
+  statuses: z.array(ProjectStatusDtoSchema).default([]),
+  window: WindowSpecSchema.nullable().optional(),
+  hide_overdue: z.boolean().default(false),
+  sort: PortfolioSortSchema.default("due_asc_nulls_last"),
+  limit: z.number().int().min(1).max(200).default(50),
+  offset: z.number().int().min(0).default(0),
+});
+export type ProjectPortfolioRequest = z.input<typeof ProjectPortfolioRequestSchema>;
+
+export const UserChipSchema = z.object({
+  id: uuid,
+  login: z.string(),
+});
+export type UserChip = z.infer<typeof UserChipSchema>;
+
+export const ProjectPortfolioRowSchema = z.object({
+  id: uuid,
+  org_id: uuid,
+  org_login: z.string(),
+  name: z.string(),
+  status: ProjectStatusDtoSchema,
+  start_at: isoDateTime.nullable().optional(),
+  due_at: isoDateTime.nullable().optional(),
+  issue_count: z.number().int(),
+  closed_issue_count: z.number().int(),
+  progress_pct: z.number().int(),
+  slip_days: z.number().int().nullable().optional(),
+  issue_overdue_count: z.number().int(),
+  lead: UserChipSchema.nullable().optional(),
+  mirrored_to_github: z.boolean(),
+  version: z.number().int(),
+});
+export type ProjectPortfolioRow = z.infer<typeof ProjectPortfolioRowSchema>;
+
+export const PortfolioKpisSchema = z.object({
+  total_projects: z.number().int(),
+  on_track: z.number().int(),
+  overdue: z.number().int(),
+  completed: z.number().int(),
+  avg_progress_pct: z.number().int(),
+  total_issues_open: z.number().int(),
+  total_issues_overdue: z.number().int(),
+});
+export type PortfolioKpis = z.infer<typeof PortfolioKpisSchema>;
+
+export const ProjectPortfolioResponseSchema = z.object({
+  rows: z.array(ProjectPortfolioRowSchema),
+  resolved_window: ResolvedWindowSchema.nullable().optional(),
+  now: isoDateTime,
+  total: z.number().int(),
+  limit: z.number().int(),
+  offset: z.number().int(),
+  kpis: PortfolioKpisSchema,
+});
+export type ProjectPortfolioResponse = z.infer<typeof ProjectPortfolioResponseSchema>;
+
 // --- Board links (linear-projects-v2.md §7.3, slice B) --------------------
 //
 // Org-scoped GitHub Projects v2 board picker + per-project link
@@ -745,6 +830,7 @@ export const ProjectRepoDtoSchema = z.object({
   project_id: uuid,
   repo_id: uuid,
   repo_org_id: uuid,
+  repo_org_login: z.string(),
   repo_name: z.string(),
   added_by: uuid.nullable().optional(),
   added_at: isoDateTime,
@@ -866,6 +952,10 @@ export const ProjectViewDtoSchema = z.object({
   visibility: z.string(),
   created_at: isoDateTime,
   updated_at: isoDateTime,
+  // Populated only by `GET /projects/{id}/views` (tab counts).
+  // Write responses omit these fields.
+  open_issue_count: z.number().int().optional(),
+  total_issue_count: z.number().int().optional(),
 });
 export type ProjectViewDto = z.infer<typeof ProjectViewDtoSchema>;
 
@@ -904,6 +994,37 @@ export const MilestoneDtoSchema = z.object({
   closed_at: isoDateTime.nullable(),
 });
 export type MilestoneDto = z.infer<typeof MilestoneDtoSchema>;
+
+/** Body for `POST /projects/{id}/milestones`. Mirrors
+ *  `dp_rest::project_milestones::CreateMilestoneRequest`. */
+export interface CreateMilestoneRequest {
+  /** Repo to create the milestone in. Must be linked to the
+   *  project (else the server returns `400 repo_not_linked`). */
+  repo_id: string;
+  /** Title — GitHub validates non-empty / uniqueness. */
+  title: string;
+  /** Optional long-form description (markdown). */
+  description?: string | null;
+  /** Optional due date (`YYYY-MM-DD`). */
+  due_on?: string | null;
+}
+
+/** Body for `PATCH /projects/{id}/milestones/{milestone_id}`.
+ *  Every field is tri-state on the wire:
+ *  - omitted ⇒ leave as-is
+ *  - `null` ⇒ clear (only meaningful for `description` / `due_on`)
+ *  - value ⇒ replace
+ *
+ *  `state` accepts `"open"` / `"closed"` — the server picks the
+ *  right audit verb (`project.milestone.close` /
+ *  `project.milestone.reopen`) so callers don't need a separate
+ *  endpoint. */
+export interface PatchMilestoneRequest {
+  title?: string;
+  state?: "open" | "closed";
+  description?: string | null;
+  due_on?: string | null;
+}
 
 /** Repo summary row returned by `GET /repos`. */
 export const RepoSummaryDtoSchema = z.object({
@@ -1374,6 +1495,20 @@ export class DevPulseApi {
     return this.getJson(
       `/reports/home-org-split${reportParamsToQuery(params)}`,
       reportResponseOf(z.array(HomeOrgSplitRowSchema)),
+    );
+  }
+
+  /**
+   * `POST /reports/project-portfolio` — SCOPE-PROJECT-REPORTS.md.
+   * Returns one row per visible project + portfolio KPIs.
+   */
+  async getReportProjectPortfolio(
+    req: ProjectPortfolioRequest,
+  ): Promise<ProjectPortfolioResponse> {
+    return this.postJson(
+      "/reports/project-portfolio",
+      req,
+      ProjectPortfolioResponseSchema,
     );
   }
 
@@ -1861,6 +1996,60 @@ export class DevPulseApi {
       { milestone_id: milestoneId },
       ProjectDtoSchema,
     );
+  }
+
+  /** `POST /projects/{id}/milestones` — create a milestone on a
+   *  linked repo and mirror it into `dp_milestones`. The repo
+   *  must already be linked to the project; otherwise the server
+   *  returns `400 repo_not_linked`. Returns the freshly upserted
+   *  row so the caller can prepend it to the strip immediately. */
+  async createProjectMilestone(
+    projectId: string,
+    body: CreateMilestoneRequest,
+  ): Promise<MilestoneDto> {
+    return this.sendJson(
+      "POST",
+      `/projects/${encodeURIComponent(projectId)}/milestones`,
+      body,
+      MilestoneDtoSchema,
+    );
+  }
+
+  /** `PATCH /projects/{id}/milestones/{milestone_id}` — edit /
+   *  close / reopen a mirrored milestone. Tri-state field
+   *  semantics: see [`PatchMilestoneRequest`]. Returns the
+   *  refreshed milestone so the caller can swap it into the
+   *  cache without a follow-up GET. */
+  async patchProjectMilestone(
+    projectId: string,
+    milestoneId: string,
+    body: PatchMilestoneRequest,
+  ): Promise<MilestoneDto> {
+    return this.sendJson(
+      "PATCH",
+      `/projects/${encodeURIComponent(projectId)}/milestones/${encodeURIComponent(milestoneId)}`,
+      body,
+      MilestoneDtoSchema,
+    );
+  }
+
+  /** `DELETE /projects/{id}/milestones/{milestone_id}` — delete
+   *  on GitHub + locally. 404 squashed so deletes are
+   *  idempotent. */
+  async deleteProjectMilestone(
+    projectId: string,
+    milestoneId: string,
+  ): Promise<void> {
+    try {
+      await this.sendNoContent(
+        "DELETE",
+        `/projects/${encodeURIComponent(projectId)}/milestones/${encodeURIComponent(milestoneId)}`,
+        undefined,
+      );
+    } catch (e) {
+      if (e instanceof DpRestError && e.status === 404) return;
+      throw e;
+    }
   }
 
   /** `POST /projects/{id}/issues` — bulk add (capped at

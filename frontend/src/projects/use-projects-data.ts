@@ -40,6 +40,8 @@ import {
   type ProjectStatusDto,
   type ProjectViewDto,
   type ProjectViewWriteBody,
+  type CreateMilestoneRequest,
+  type PatchMilestoneRequest,
   type MilestoneDto,
 } from "../api/client.js";
 
@@ -403,6 +405,62 @@ export function useAdoptProjectMilestone(projectId: string) {
       qc.invalidateQueries({
         queryKey: ["projects", "milestones", projectId],
       });
+    },
+  });
+}
+
+/** `POST /projects/{id}/milestones` — create a milestone on a
+ *  linked repo and mirror it into `dp_milestones` in the same
+ *  request. Invalidates the project's milestones list so the
+ *  strip re-renders with the new card. */
+export function useCreateProjectMilestone(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation<MilestoneDto, Error, CreateMilestoneRequest>({
+    mutationFn: (body) => api.createProjectMilestone(projectId, body),
+    onSuccess: () => {
+      qc.invalidateQueries({
+        queryKey: ["projects", "milestones", projectId],
+      });
+    },
+  });
+}
+
+/** `PATCH /projects/{id}/milestones/{milestone_id}` — edit /
+ *  close / reopen a mirrored milestone. Invalidates the
+ *  project's milestones list and the project detail (in case
+ *  the strip pivots a chip's state class). */
+export function useUpdateProjectMilestone(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation<
+    MilestoneDto,
+    Error,
+    { milestoneId: string; body: PatchMilestoneRequest }
+  >({
+    mutationFn: ({ milestoneId, body }) =>
+      api.patchProjectMilestone(projectId, milestoneId, body),
+    onSuccess: () => {
+      qc.invalidateQueries({
+        queryKey: ["projects", "milestones", projectId],
+      });
+      qc.invalidateQueries({ queryKey: projectsKeys.detail(projectId) });
+    },
+  });
+}
+
+/** `DELETE /projects/{id}/milestones/{milestone_id}` — delete a
+ *  milestone on GitHub and locally. Invalidates the milestone
+ *  list and the project detail (the `primary_milestone_id` may
+ *  cascade-clear). */
+export function useDeleteProjectMilestone(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation<void, Error, string>({
+    mutationFn: (milestoneId) =>
+      api.deleteProjectMilestone(projectId, milestoneId),
+    onSuccess: () => {
+      qc.invalidateQueries({
+        queryKey: ["projects", "milestones", projectId],
+      });
+      qc.invalidateQueries({ queryKey: projectsKeys.detail(projectId) });
     },
   });
 }

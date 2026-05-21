@@ -29,6 +29,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { DateInput } from "@/components/ui/date-input";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -199,20 +200,18 @@ export function NewProjectDialog({
           <div className="grid grid-cols-2 gap-3">
             <div className="flex flex-col gap-2">
               <Label htmlFor="new-project-start">Start</Label>
-              <Input
+              <DateInput
                 id="new-project-start"
                 data-testid="new-project-start"
-                type="date"
                 value={startAt}
                 onChange={(e) => setStartAt(e.target.value)}
               />
             </div>
             <div className="flex flex-col gap-2">
               <Label htmlFor="new-project-due">Due</Label>
-              <Input
+              <DateInput
                 id="new-project-due"
                 data-testid="new-project-due"
-                type="date"
                 value={dueAt}
                 onChange={(e) => setDueAt(e.target.value)}
               />

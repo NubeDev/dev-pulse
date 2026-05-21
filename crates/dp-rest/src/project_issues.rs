@@ -465,7 +465,7 @@ fn is_valid_tag_key(s: &str) -> bool {
 /// One parsed filter clause (PROJECT-VIEW.md §5.2). AND-combined
 /// across the wire `filter=` param.
 #[derive(Debug, Clone)]
-enum FilterClause {
+pub(crate) enum FilterClause {
     Status(dp_domain::issue::IssueState),
     Assignee(String),
     Label(String),
@@ -477,6 +477,32 @@ enum FilterClause {
     /// filter survives milestone renames and disambiguates
     /// same-title milestones in different repos.
     Milestone(Uuid),
+}
+
+/// Lower a stored [`dp_domain::project_view::ProjectViewFilterClause`]
+/// into the in-memory [`FilterClause`] the issue handler already
+/// knows how to apply. The stored clauses were validated at write
+/// time so any unknown / malformed entry here is a corruption-class
+/// bug, not user input — we silently drop it (returning `None`) so
+/// the rest of the count still reflects the well-formed clauses.
+pub(crate) fn view_clause_to_filter(
+    c: &dp_domain::project_view::ProjectViewFilterClause,
+) -> Option<FilterClause> {
+    use dp_domain::project_view::ProjectViewFilterClause as V;
+    match c {
+        V::Status { value } => match value.as_str() {
+            "open" => Some(FilterClause::Status(dp_domain::issue::IssueState::Open)),
+            "closed" => Some(FilterClause::Status(dp_domain::issue::IssueState::Closed)),
+            _ => None,
+        },
+        V::Assignee { value } => Some(FilterClause::Assignee(value.clone())),
+        V::Label { value } => Some(FilterClause::Label(value.clone())),
+        V::Tag { key, value } => Some(FilterClause::Tag {
+            key: key.clone(),
+            value: value.clone(),
+        }),
+        V::Milestone { value } => Uuid::parse_str(value).ok().map(FilterClause::Milestone),
+    }
 }
 
 /// Parse the wire `filter=` param (PROJECT-VIEW.md §5.4). `;`
@@ -568,7 +594,7 @@ fn parse_filter(raw: Option<&str>) -> Result<Vec<FilterClause>, ApiError> {
 /// `list_project_issue_tag_values` so the SQL is the same one the
 /// group-by path uses — keeps "filter by category:firmware ⇒ group
 /// by gate" totals aligned with the bucket counts (§5.2).
-async fn apply_filter_clauses(
+pub(crate) async fn apply_filter_clauses(
     store: &dyn dp_domain::store::Store,
     project_id: Uuid,
     clauses: &[FilterClause],

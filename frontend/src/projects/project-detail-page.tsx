@@ -42,6 +42,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { DateInput } from "@/components/ui/date-input";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
@@ -55,13 +56,19 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Spinner } from "@/components/ui/spinner";
 
-import type { IssueListItem, ProjectDto } from "../api/client.js";
+import { useQuery } from "@tanstack/react-query";
+
+import { api } from "../api/client.js";
+import type { IssueListItem, MilestoneDto, OrgDto, ProjectDto } from "../api/client.js";
 import { PageHeading } from "../components/page-heading.jsx";
+import { HelpHint } from "@/components/help-hint";
 import { navigate, projectDetailRoute, projectDetailRouteWithParams, projectFilter, projectGroupBy, projectSelectedIssue, projectSort, projectViewId, useRoute } from "../routes.js";
 import { IssueEditCard } from "../workflow/issues-page.js";
 
 import { LinkBoardDialog } from "./link-board-dialog.js";
 import { MilestonesStrip } from "./milestones-strip.js";
+import { NewMilestoneDialog } from "./new-milestone-dialog.js";
+import { EditMilestoneDialog } from "./edit-milestone-dialog.js";
 import { ManageReposDialog } from "./project-repos-card.js";
 import { parseFilterString, serializeFilterChips } from "./project-filter-chips.js";
 import { ProjectWorkbench } from "./project-workbench.js";
@@ -70,11 +77,13 @@ import {
   useAdoptProjectMilestone,
   useBoardLinks,
   useDeleteBoardLink,
+  useDeleteProjectMilestone,
   usePatchProject,
   useProject,
   useProjectMilestones,
   useProjectRepos,
   useRemoveIssueFromProject,
+  useUpdateProjectMilestone,
 } from "./use-projects-data.js";
 import {
   AlertDialog,
@@ -167,11 +176,17 @@ function ProjectDetailBody({ project }: { project: ProjectDto }): JSX.Element {
   const [manageReposOpen, setManageReposOpen] = useState(false);
   const [archiveConfirmOpen, setArchiveConfirmOpen] = useState(false);
   const [editDatesOpen, setEditDatesOpen] = useState(false);
+  const [newMilestoneOpen, setNewMilestoneOpen] = useState(false);
+  const [editMilestone, setEditMilestone] = useState<MilestoneDto | null>(null);
+  const [deleteMilestoneTarget, setDeleteMilestoneTarget] =
+    useState<MilestoneDto | null>(null);
   const links = useBoardLinks(project.id);
   const deleteLink = useDeleteBoardLink(project.id);
   const repoLinks = useProjectRepos(project.id);
   const milestones = useProjectMilestones(project.id);
   const adoptMilestone = useAdoptProjectMilestone(project.id);
+  const updateMilestone = useUpdateProjectMilestone(project.id);
+  const deleteMilestone = useDeleteProjectMilestone(project.id);
   const archive = useArchiveProject(project.id);
   const patch = usePatchProject(project.id);
   const isArchived = project.status === "archived";
@@ -195,44 +210,86 @@ function ProjectDetailBody({ project }: { project: ProjectDto }): JSX.Element {
     navigate(projectDetailRoute(project.id, id));
   };
 
+  const orgsQ = useQuery<OrgDto[]>({
+    queryKey: ["orgs"],
+    queryFn: () => api.listOrgs(),
+    staleTime: 60_000,
+  });
+  const orgLogin = (orgsQ.data ?? []).find((o) => o.id === project.org_id)?.login;
+
   return (
     <div className="flex gap-4 px-4 lg:px-6" data-testid="project-detail">
     <div className="flex min-w-0 flex-1 flex-col gap-4">
       <PageHeading
         title={
-          <span className="flex flex-wrap items-center gap-2">
+          <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            {orgLogin ? (
+              <a
+                href={`https://github.com/${orgLogin}`}
+                target="_blank"
+                rel="noreferrer"
+                className="text-muted-foreground text-base font-normal hover:text-foreground hover:underline"
+                title={`Open @${orgLogin} on GitHub`}
+              >
+                @{orgLogin}
+              </a>
+            ) : null}
             <span data-testid="project-detail-name">{project.name}</span>
+            <HelpHint
+              title="Project page"
+              body={[
+                "Top tiles: Progress (closed / total), Timeline (start + due, click ✎ to edit), Issues (open / closed), and Linked Surfaces (GitHub boards + repos linked to this project).",
+                "Milestones strip: GitHub milestones on the linked repos. Create / Edit / Close / Delete write through to GitHub via the dev-pulse App or a personal access token.",
+                "Workbench: tabs are Saved Views (per-user). Toolbar groups, filters and sorts the issue list; use + Add issue to attach work from the Triage queue.",
+                "Settings ▾: link / unlink GitHub boards, manage which repos this project draws from, and archive or restore the project.",
+              ]}
+            />
             <Badge
               variant={STATUS_VARIANT[project.status]}
               data-testid="project-detail-status"
             >
               {STATUS_LABEL[project.status]}
             </Badge>
-            {(repoLinks.data ?? []).map((r) => (
-              <Badge
-                key={r.repo_id}
-                variant="outline"
-                className="border-emerald-300 bg-emerald-50 font-mono text-xs font-normal text-emerald-800 dark:border-emerald-800/60 dark:bg-emerald-950/40 dark:text-emerald-200"
-                data-testid="project-detail-repo-tag"
-                title={`Repo · linked ${new Date(r.added_at).toLocaleString("en-AU")}`}
-              >
-                {r.repo_name}
-              </Badge>
-            ))}
-            {(links.data ?? []).map((b) => (
-              <Badge
-                key={b.id}
-                variant="outline"
-                className="border-sky-300 bg-sky-50 text-xs font-normal text-sky-800 dark:border-sky-800/60 dark:bg-sky-950/40 dark:text-sky-200"
-                data-testid="project-detail-board-tag"
-                title="GitHub Project board"
-              >
-                {b.github_board_title ?? "Untitled board"}
-              </Badge>
-            ))}
           </span>
         }
-        description={project.description ?? undefined}
+        description={
+          <span className="flex flex-col gap-1.5">
+            {(repoLinks.data ?? []).length > 0 || (links.data ?? []).length > 0 ? (
+              <span className="flex flex-wrap items-center gap-2">
+                {(repoLinks.data ?? []).map((r) => (
+                  <a
+                    key={r.repo_id}
+                    href={`https://github.com/${r.repo_org_login}/${r.repo_name}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center"
+                  >
+                    <Badge
+                      variant="outline"
+                      className="border-emerald-300 bg-emerald-50 font-mono text-xs font-normal text-emerald-800 hover:bg-emerald-100 dark:border-emerald-800/60 dark:bg-emerald-950/40 dark:text-emerald-200 dark:hover:bg-emerald-950/60"
+                      data-testid="project-detail-repo-tag"
+                      title={`Open ${r.repo_org_login}/${r.repo_name} on GitHub`}
+                    >
+                      {r.repo_name}
+                    </Badge>
+                  </a>
+                ))}
+                {(links.data ?? []).map((b) => (
+                  <Badge
+                    key={b.id}
+                    variant="outline"
+                    className="border-sky-300 bg-sky-50 text-xs font-normal text-sky-800 dark:border-sky-800/60 dark:bg-sky-950/40 dark:text-sky-200"
+                    data-testid="project-detail-board-tag"
+                    title="GitHub Project board"
+                  >
+                    {b.github_board_title ?? "Untitled board"}
+                  </Badge>
+                ))}
+              </span>
+            ) : null}
+            {project.description ? <span>{project.description}</span> : null}
+          </span>
+        }
         trailing={
           <div className="flex items-center gap-2">
             <DropdownMenu>
@@ -328,6 +385,16 @@ function ProjectDetailBody({ project }: { project: ProjectDto }): JSX.Element {
         }}
         adoptBusy={adoptMilestone.isPending}
         isPending={milestones.isPending}
+        onCreateMilestone={() => setNewMilestoneOpen(true)}
+        onEditMilestone={(m) => setEditMilestone(m)}
+        onToggleMilestoneState={(m) =>
+          updateMilestone.mutate({
+            milestoneId: m.id,
+            body: { state: m.state === "closed" ? "open" : "closed" },
+          })
+        }
+        onDeleteMilestone={(m) => setDeleteMilestoneTarget(m)}
+        writeBusy={updateMilestone.isPending || deleteMilestone.isPending}
       />
 
       <ProjectWorkbench
@@ -352,6 +419,58 @@ function ProjectDetailBody({ project }: { project: ProjectDto }): JSX.Element {
         projectId={project.id}
         projectOrgId={project.org_id}
       />
+
+      <NewMilestoneDialog
+        open={newMilestoneOpen}
+        onOpenChange={setNewMilestoneOpen}
+        projectId={project.id}
+      />
+
+      <EditMilestoneDialog
+        open={editMilestone !== null}
+        onOpenChange={(open) => {
+          if (!open) setEditMilestone(null);
+        }}
+        projectId={project.id}
+        milestone={editMilestone}
+      />
+
+      <AlertDialog
+        open={deleteMilestoneTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setDeleteMilestoneTarget(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete milestone?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This deletes <strong>{deleteMilestoneTarget?.title}</strong>{" "}
+              on GitHub and removes the local mirror. Issues currently
+              attached to the milestone remain — only the milestone
+              itself is removed. This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleteMilestone.isPending}>
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                const target = deleteMilestoneTarget;
+                if (!target) return;
+                deleteMilestone.mutate(target.id, {
+                  onSuccess: () => setDeleteMilestoneTarget(null),
+                });
+              }}
+              disabled={deleteMilestone.isPending}
+              data-testid="project-milestone-delete-confirm"
+            >
+              {deleteMilestone.isPending ? "Deleting…" : "Delete"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <ManageReposDialog
         open={manageReposOpen}
@@ -697,7 +816,20 @@ function ProjectIssueRow({
         {row.state}
       </Badge>
       <span className="shrink-0 font-mono text-xs text-muted-foreground tabular-nums">
-        {row.repo_slug ?? "—"}#{row.number}
+        {row.repo_slug ? (
+          <a
+            href={`https://github.com/${row.repo_slug}/issues/${row.number}`}
+            target="_blank"
+            rel="noreferrer"
+            className="hover:text-foreground hover:underline"
+            onClick={(e) => e.stopPropagation()}
+            title={`Open ${row.repo_slug}#${row.number} on GitHub`}
+          >
+            {row.repo_slug}#{row.number}
+          </a>
+        ) : (
+          <>—#{row.number}</>
+        )}
       </span>
       <span className="flex-1 truncate">
         {row.title}
@@ -786,20 +918,18 @@ function EditDatesDialog({
           <div className="grid grid-cols-2 gap-3">
             <div className="flex flex-col gap-2">
               <Label htmlFor="edit-dates-start">Start</Label>
-              <Input
+              <DateInput
                 id="edit-dates-start"
                 data-testid="edit-dates-start"
-                type="date"
                 value={startAt}
                 onChange={(e) => setStartAt(e.target.value)}
               />
             </div>
             <div className="flex flex-col gap-2">
               <Label htmlFor="edit-dates-due">Due</Label>
-              <Input
+              <DateInput
                 id="edit-dates-due"
                 data-testid="edit-dates-due"
-                type="date"
                 value={dueAt}
                 onChange={(e) => setDueAt(e.target.value)}
               />

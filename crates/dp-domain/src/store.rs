@@ -1435,6 +1435,27 @@ pub trait Store: Send + Sync {
         ))
     }
 
+    /// Hard-delete a milestone row by its surrogate id. Used by
+    /// the `DELETE /projects/{id}/milestones/{ms_id}` two-way-sync
+    /// path after the GitHub-side delete succeeds — without it
+    /// the local mirror would re-surface the row until the next
+    /// reconciler tick reconciled the `remote_missing_streak`
+    /// counter to 3.
+    ///
+    /// Implementations should clear any `dp_projects.primary_milestone_id`
+    /// pointer that referenced this row (the FK is `ON DELETE
+    /// SET NULL` so the database does it for us). Returns
+    /// [`StoreError::NotFound`] when no row matched, so callers
+    /// can distinguish "already gone" from "really deleted".
+    async fn delete_milestone(
+        &self,
+        _milestone_id: Uuid,
+    ) -> Result<(), StoreError> {
+        Err(StoreError::Invalid(
+            "milestone deletion not supported by this store".into(),
+        ))
+    }
+
     // ---- GitHub App installation permissions (SCOPE-PROJECTS §8.4, §13.6) ----
     //
     // The reconciler / install-callback writes one row per org
@@ -1784,6 +1805,18 @@ pub trait Store: Send + Sync {
         &self,
         _filter: &crate::project::ProjectListFilter,
     ) -> Result<Vec<crate::project::Project>, StoreError> {
+        Ok(Vec::new())
+    }
+
+    /// Run the portfolio-report query — SCOPE-PROJECT-REPORTS.md §6+§10.
+    /// Returns one [`PortfolioRawRow`] per visible project, page-bounded
+    /// by `filter.limit` / `filter.offset`. The `total` column on each
+    /// row carries the pre-page count via `COUNT(*) OVER ()`. Default
+    /// impl returns the empty vec.
+    async fn list_project_portfolio(
+        &self,
+        _filter: &crate::project::PortfolioQueryFilter,
+    ) -> Result<Vec<crate::project::PortfolioRawRow>, StoreError> {
         Ok(Vec::new())
     }
 

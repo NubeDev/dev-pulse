@@ -26,9 +26,13 @@ allow_orgs        = ${DP_GITHUB_ALLOW_ORGS}
 org_refresh_interval_secs = 3600
 
 [scheduler]
-tick_interval_secs = 300
+tick_interval_secs = 600
 enable             = ${DP_SCHEDULER_ENABLE}
 
 [github]
 token_ref = "secret://github/pat"
-max_requests_per_run = 200
+max_requests_per_run = 800
+
+[github.app]
+request_issues_write = true
+pat_mode             = true

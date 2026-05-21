@@ -46,6 +46,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { DateInput } from "@/components/ui/date-input";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -1111,8 +1112,7 @@ function IssueDatesEditor({ issueId }: { issueId: string }): JSX.Element {
       <div className="flex flex-wrap items-end gap-3">
         <div className="flex flex-col gap-1">
           <span className="text-xs text-muted-foreground">Start</span>
-          <Input
-            type="date"
+          <DateInput
             value={start}
             onChange={(e) => setStart(e.target.value)}
             data-testid="issue-dates-start"
@@ -1121,8 +1121,7 @@ function IssueDatesEditor({ issueId }: { issueId: string }): JSX.Element {
         </div>
         <div className="flex flex-col gap-1">
           <span className="text-xs text-muted-foreground">Due</span>
-          <Input
-            type="date"
+          <DateInput
             value={due}
             onChange={(e) => setDue(e.target.value)}
             data-testid="issue-dates-due"

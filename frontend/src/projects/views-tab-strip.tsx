@@ -231,6 +231,14 @@ export function ViewsTabStrip({
                   active={active}
                   onClick={() => onSelectView(v.id)}
                   testid={`project-view-tab-${v.id}`}
+                  count={
+                    v.open_issue_count != null && v.total_issue_count != null
+                      ? {
+                          open: v.open_issue_count,
+                          total: v.total_issue_count,
+                        }
+                      : undefined
+                  }
                 />
                 {active && (
                   <DropdownMenu>
@@ -366,6 +374,11 @@ interface ViewTabButtonProps {
   active: boolean;
   onClick: () => void;
   testid: string;
+  /** Optional `open / total` count rendered as a subdued suffix.
+   *  Populated for saved-view tabs from
+   *  `ProjectViewDto.{open,total}_issue_count`; omitted on the
+   *  pinned All tab (no count is computed server-side for it). */
+  count?: { open: number; total: number };
 }
 
 function ViewTabButton({
@@ -373,6 +386,7 @@ function ViewTabButton({
   active,
   onClick,
   testid,
+  count,
 }: ViewTabButtonProps): JSX.Element {
   return (
     <button
@@ -382,11 +396,19 @@ function ViewTabButton({
       data-active={active ? "true" : "false"}
       className={
         active
-          ? "h-7 rounded-md border border-border bg-background px-3 text-sm font-medium shadow-sm"
-          : "h-7 rounded-md border border-transparent px-3 text-sm text-muted-foreground hover:bg-muted/40"
+          ? "inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-background px-3 text-sm font-medium shadow-sm"
+          : "inline-flex h-7 items-center gap-1.5 rounded-md border border-transparent px-3 text-sm text-muted-foreground hover:bg-muted/40"
       }
     >
-      {label}
+      <span>{label}</span>
+      {count ? (
+        <span
+          className="rounded bg-muted px-1.5 text-[11px] tabular-nums text-muted-foreground"
+          data-testid={`${testid}-count`}
+        >
+          {count.open}/{count.total}
+        </span>
+      ) : null}
     </button>
   );
 }

@@ -104,6 +104,7 @@ const NAV_MAIN: NavMainItem[] = [
     accent: "var(--accent-reports)",
     subTestId: "projects-subnav",
     items: [
+      { title: "Portfolio", url: "#/reports/projects", icon: IconChartBar },
       { title: "Active", url: "#/projects?status=active", icon: IconCircleDashed },
       { title: "Backlog", url: "#/projects?status=backlog", icon: IconClipboardList },
       { title: "Done", url: "#/projects?status=done", icon: IconCircleCheck },

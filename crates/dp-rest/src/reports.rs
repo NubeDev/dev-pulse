@@ -40,7 +40,7 @@ use std::sync::Arc;
 use axum::{
     extract::{Extension, Path, Query, State},
     response::Json,
-    routing::get,
+    routing::{get, post},
     Router,
 };
 use chrono::{DateTime, Utc};
@@ -51,14 +51,16 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 use dp_domain::event::{ActorRole, EventKind};
+use dp_domain::project::{PortfolioQueryFilter, ProjectStatus};
 use dp_domain::store::EventActorRow;
 use dp_domain::window::WindowAnchor;
 use dp_reports::lenses::{all_orgs_combined, per_org_split, single_org};
 use dp_reports::{
     count_by_bucket, count_by_org, count_by_repo, count_by_user, empty_reason_for_tag_filter,
-    pick_freshness_headline, resolve_window, DataAsOf, GroupBy, ReportRequest, ScopeMode,
-    TrendBucket, Window, WindowLabel, WindowSpec, EMPTY_REASON_TAG_KIND_MISMATCH,
-    MAX_TAGS_FOR_GROUP_BY_TAG,
+    pick_freshness_headline, resolve_window, rollup_kpis, DataAsOf, GroupBy, PortfolioKpis,
+    ProjectPortfolioRequest, ProjectPortfolioResponse, ProjectPortfolioRow, ReportRequest,
+    ScopeMode, TrendBucket, Window, WindowLabel, WindowSpec, EMPTY_REASON_TAG_KIND_MISMATCH,
+    MAX_TAGS_FOR_GROUP_BY_TAG, PORTFOLIO_LIMIT_MAX,
 };
 
 use crate::error::ApiError;
@@ -764,6 +766,107 @@ pub async fn freshness_report(
 }
 
 // ---------------------------------------------------------------------------
+// /reports/project-portfolio — SCOPE-PROJECT-REPORTS.md
+// ---------------------------------------------------------------------------
+
+/// `POST /reports/project-portfolio`.
+///
+/// Returns one row per visible project plus portfolio-level KPIs. The
+/// envelope is a structured JSON body (not query string) because the
+/// request carries an optional `window` object — same reason
+/// SCOPE.md §15.6 chose POST for the activity-report envelope.
+///
+/// Visibility: trusts the caller-supplied `orgs` list, gated by the
+/// outer `with_permission("reports", "read")` layer. A stricter
+/// "orgs the caller can see" filter is an authz follow-up tracked
+/// in PORTFOLIO-REPORT-PROGRESS.md.
+#[utoipa::path(
+    post,
+    path = "/reports/project-portfolio",
+    request_body(
+        content_type = "application/json",
+        description = "ProjectPortfolioRequest — see dp-reports::project_portfolio.",
+    ),
+    responses(
+        (status = 200, description = "One row per visible project + portfolio KPIs (ProjectPortfolioResponse)"),
+        (status = 400, description = "Validation failed"),
+    ),
+    tag = "reports",
+)]
+pub async fn project_portfolio_report(
+    State(state): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let req: ProjectPortfolioRequest = serde_json::from_value(req).map_err(|e| {
+        ApiError::BadRequest {
+            code: "invalid_body",
+            message: format!("invalid request body: {e}"),
+        }
+    })?;
+    if req.limit == 0 {
+        return Err(ApiError::BadRequest {
+            code: "invalid_limit",
+            message: "limit must be >= 1".into(),
+        });
+    }
+    if req.limit > PORTFOLIO_LIMIT_MAX {
+        return Err(ApiError::BadRequest {
+            code: "invalid_limit",
+            message: format!("limit {} exceeds maximum {PORTFOLIO_LIMIT_MAX}", req.limit),
+        });
+    }
+
+    let resolved_window = req
+        .window
+        .as_ref()
+        .map(resolve_window)
+        .transpose()?;
+    let window_pair = resolved_window
+        .as_ref()
+        .map(|w| (w.start, w.end));
+
+    // Spec §6: empty `statuses` ⇒ default to `[Active, Backlog]`.
+    // The SQL builder treats `cardinality(statuses) = 0` as
+    // "no filter", so the default must be applied here.
+    let statuses: Vec<ProjectStatus> = if req.statuses.is_empty() {
+        vec![ProjectStatus::Active, ProjectStatus::Backlog]
+    } else {
+        req.statuses.clone()
+    };
+
+    let now = Utc::now();
+    let filter = PortfolioQueryFilter {
+        orgs: req.orgs.clone(),
+        statuses,
+        window: window_pair,
+        hide_overdue: req.hide_overdue,
+        sort: req.sort,
+        now,
+        limit: i64::from(req.limit),
+        offset: i64::from(req.offset),
+    };
+
+    let raw_rows = state.store.list_project_portfolio(&filter).await?;
+    let total: u32 = raw_rows
+        .first()
+        .map(|r| u32::try_from(r.total).unwrap_or(u32::MAX))
+        .unwrap_or(0);
+    let rows: Vec<ProjectPortfolioRow> = raw_rows.into_iter().map(Into::into).collect();
+    let kpis: PortfolioKpis = rollup_kpis(&rows, now);
+
+    let resp = ProjectPortfolioResponse {
+        rows,
+        resolved_window,
+        now,
+        total,
+        limit: req.limit,
+        offset: req.offset,
+        kpis,
+    };
+    Ok(Json(serde_json::to_value(resp).expect("serialise response")))
+}
+
+// ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
 
@@ -949,6 +1052,14 @@ pub fn reports_router(state: Arc<AppState>) -> Router {
         ))
         .merge(with_permission(
             Router::new().route("/reports/freshness", get(freshness_report)),
+            "reports",
+            "read",
+        ))
+        .merge(with_permission(
+            Router::new().route(
+                "/reports/project-portfolio",
+                post(project_portfolio_report),
+            ),
             "reports",
             "read",
         ))
@@ -1538,6 +1649,76 @@ mod tests {
         let body = to_bytes(resp.into_body(), 4096).await.unwrap();
         let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(v["code"], "group_by_tag_unsupported");
+    }
+
+    async fn post_json(app: Router, uri: &str, body: serde_json::Value) -> (u16, serde_json::Value) {
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = resp.status().as_u16();
+        let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        let v: serde_json::Value = if bytes.is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
+        };
+        (status, v)
+    }
+
+    #[tokio::test]
+    async fn project_portfolio_empty_store_returns_zeroed_envelope() {
+        let store: Arc<dyn Store> = Arc::new(FakeStore::default());
+        let app = build_router(store);
+        let (status, v) = post_json(
+            app,
+            "/reports/project-portfolio",
+            serde_json::json!({ "limit": 50 }),
+        )
+        .await;
+        assert_eq!(status, 200, "got {status}: {v}");
+        assert!(v["rows"].is_array() && v["rows"].as_array().unwrap().is_empty());
+        assert_eq!(v["total"], 0);
+        assert_eq!(v["limit"], 50);
+        assert_eq!(v["offset"], 0);
+        assert_eq!(v["kpis"]["total_projects"], 0);
+        assert_eq!(v["kpis"]["on_track"], 0);
+        assert_eq!(v["kpis"]["overdue"], 0);
+        assert!(v["now"].is_string(), "now must be an RFC3339 string");
+    }
+
+    #[tokio::test]
+    async fn project_portfolio_rejects_limit_over_max() {
+        let store: Arc<dyn Store> = Arc::new(FakeStore::default());
+        let app = build_router(store);
+        let (status, v) = post_json(
+            app,
+            "/reports/project-portfolio",
+            serde_json::json!({ "limit": 10_000 }),
+        )
+        .await;
+        assert_eq!(status, 400, "expected 400, got {status}: {v}");
+        assert_eq!(v["code"], "invalid_limit");
+    }
+
+    #[tokio::test]
+    async fn project_portfolio_rejects_zero_limit() {
+        let store: Arc<dyn Store> = Arc::new(FakeStore::default());
+        let app = build_router(store);
+        let (status, _v) = post_json(
+            app,
+            "/reports/project-portfolio",
+            serde_json::json!({ "limit": 0 }),
+        )
+        .await;
+        assert_eq!(status, 400);
     }
 
     #[tokio::test]

@@ -33,6 +33,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Progress } from "@/components/ui/progress";
+import { HelpHint } from "@/components/help-hint";
 
 import type { MilestoneDto } from "../api/client.js";
 
@@ -57,6 +58,25 @@ export interface MilestonesStripProps {
   /** Show a single-line skeleton while the first fetch is in
    *  flight so the strip's vertical real estate doesn't pop in. */
   isPending?: boolean;
+  /** Optional "+ New milestone" affordance. When provided, a
+   *  ghost card renders at the end of the strip (and the strip
+   *  itself stays visible even when `milestones` is empty so
+   *  there's always somewhere to click). Caller owns the dialog
+   *  / mutation. */
+  onCreateMilestone?: () => void;
+  /** Optional edit handler. When provided, the overflow menu
+   *  surfaces an "Edit" entry that hands the milestone back to
+   *  the caller (which typically opens an edit dialog). */
+  onEditMilestone?: (milestone: MilestoneDto) => void;
+  /** Optional close/reopen toggle. Verb is picked by the caller
+   *  from `milestone.state`. */
+  onToggleMilestoneState?: (milestone: MilestoneDto) => void;
+  /** Optional delete handler. The caller is expected to confirm
+   *  via `AlertDialog` (the strip itself stays free of
+   *  destructive prompts). */
+  onDeleteMilestone?: (milestone: MilestoneDto) => void;
+  /** Mirrors `adoptBusy` for the edit/close/delete flow. */
+  writeBusy?: boolean;
 }
 
 export function MilestonesStrip({
@@ -66,6 +86,11 @@ export function MilestonesStrip({
   onFilterToMilestone,
   adoptBusy,
   isPending,
+  onCreateMilestone,
+  onEditMilestone,
+  onToggleMilestoneState,
+  onDeleteMilestone,
+  writeBusy,
 }: MilestonesStripProps): JSX.Element | null {
   if (isPending) {
     return (
@@ -77,22 +102,53 @@ export function MilestonesStrip({
       </div>
     );
   }
-  if (milestones.length === 0) return null;
+  // Hide entirely only when there are no milestones AND no way
+  // to create one — otherwise we'd strand the user without an
+  // entry point on a fresh project.
+  if (milestones.length === 0 && !onCreateMilestone) return null;
   return (
     <div
-      className="flex flex-wrap gap-2"
+      className="flex flex-col gap-2"
       data-testid="project-milestones-strip"
     >
-      {milestones.map((m) => (
-        <MilestoneCard
-          key={m.id}
-          milestone={m}
-          isPrimary={primaryMilestoneId === m.id}
-          onAdoptPrimary={onAdoptPrimary}
-          onFilterToMilestone={onFilterToMilestone}
-          adoptBusy={adoptBusy}
+      <div className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        <span>Milestones</span>
+        <HelpHint
+          title="Milestones"
+          body={[
+            "Each card is a GitHub milestone on one of this project's linked repos. Cards are sorted by due-date, soonest first.",
+            "+ New milestone creates one on GitHub and mirrors it back to dev-pulse instantly. Pick the repo (auto-selected when only one is linked), set a title, and optionally a description and due date.",
+            "Use the ⋯ menu on any card to Adopt as primary (★ chip + headline KPI), Filter to milestone (scopes the issue list), Edit, Close / Reopen, or Delete. Edit and Delete write through to GitHub.",
+            "Closed milestones are hidden by default — they're still available behind GitHub's milestones tab.",
+          ]}
         />
-      ))}
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {milestones.map((m) => (
+          <MilestoneCard
+            key={m.id}
+            milestone={m}
+            isPrimary={primaryMilestoneId === m.id}
+            onAdoptPrimary={onAdoptPrimary}
+            onFilterToMilestone={onFilterToMilestone}
+            onEditMilestone={onEditMilestone}
+            onToggleMilestoneState={onToggleMilestoneState}
+            onDeleteMilestone={onDeleteMilestone}
+            adoptBusy={adoptBusy}
+            writeBusy={writeBusy}
+          />
+        ))}
+        {onCreateMilestone && (
+          <button
+            type="button"
+            onClick={onCreateMilestone}
+            className="flex min-w-40 items-center justify-center rounded-md border border-dashed border-muted-foreground/40 px-3 py-3 text-sm text-muted-foreground transition-colors hover:border-foreground hover:text-foreground"
+            data-testid="project-milestone-create"
+          >
+            + New milestone
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -102,7 +158,11 @@ interface MilestoneCardProps {
   isPrimary: boolean;
   onAdoptPrimary?: (milestoneId: string | null) => void;
   onFilterToMilestone?: (milestoneId: string) => void;
+  onEditMilestone?: (milestone: MilestoneDto) => void;
+  onToggleMilestoneState?: (milestone: MilestoneDto) => void;
+  onDeleteMilestone?: (milestone: MilestoneDto) => void;
   adoptBusy?: boolean;
+  writeBusy?: boolean;
 }
 
 function MilestoneCard({
@@ -110,7 +170,11 @@ function MilestoneCard({
   isPrimary,
   onAdoptPrimary,
   onFilterToMilestone,
+  onEditMilestone,
+  onToggleMilestoneState,
+  onDeleteMilestone,
   adoptBusy,
+  writeBusy,
 }: MilestoneCardProps): JSX.Element {
   const total = milestone.open_issues + milestone.closed_issues;
   const pct = total === 0 ? 0 : (milestone.closed_issues / total) * 100;
@@ -137,7 +201,11 @@ function MilestoneCard({
               ★ primary
             </span>
           )}
-          {onAdoptPrimary && (
+          {(onAdoptPrimary ||
+            onFilterToMilestone ||
+            onEditMilestone ||
+            onToggleMilestoneState ||
+            onDeleteMilestone) && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <button
@@ -150,29 +218,58 @@ function MilestoneCard({
                 </button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                {isPrimary ? (
-                  <DropdownMenuItem
-                    disabled={adoptBusy}
-                    onSelect={() => onAdoptPrimary(null)}
-                    data-testid={`project-milestone-unadopt-${milestone.id}`}
-                  >
-                    Clear primary
-                  </DropdownMenuItem>
-                ) : (
-                  <DropdownMenuItem
-                    disabled={adoptBusy}
-                    onSelect={() => onAdoptPrimary(milestone.id)}
-                    data-testid={`project-milestone-adopt-${milestone.id}`}
-                  >
-                    Adopt as primary
-                  </DropdownMenuItem>
-                )}
+                {onAdoptPrimary &&
+                  (isPrimary ? (
+                    <DropdownMenuItem
+                      disabled={adoptBusy}
+                      onSelect={() => onAdoptPrimary(null)}
+                      data-testid={`project-milestone-unadopt-${milestone.id}`}
+                    >
+                      Clear primary
+                    </DropdownMenuItem>
+                  ) : (
+                    <DropdownMenuItem
+                      disabled={adoptBusy}
+                      onSelect={() => onAdoptPrimary(milestone.id)}
+                      data-testid={`project-milestone-adopt-${milestone.id}`}
+                    >
+                      Adopt as primary
+                    </DropdownMenuItem>
+                  ))}
                 {onFilterToMilestone && (
                   <DropdownMenuItem
                     onSelect={() => onFilterToMilestone(milestone.id)}
                     data-testid={`project-milestone-filter-${milestone.id}`}
                   >
                     Filter to milestone
+                  </DropdownMenuItem>
+                )}
+                {onEditMilestone && (
+                  <DropdownMenuItem
+                    disabled={writeBusy}
+                    onSelect={() => onEditMilestone(milestone)}
+                    data-testid={`project-milestone-edit-${milestone.id}`}
+                  >
+                    Edit
+                  </DropdownMenuItem>
+                )}
+                {onToggleMilestoneState && (
+                  <DropdownMenuItem
+                    disabled={writeBusy}
+                    onSelect={() => onToggleMilestoneState(milestone)}
+                    data-testid={`project-milestone-toggle-${milestone.id}`}
+                  >
+                    {milestone.state === "closed" ? "Reopen" : "Close"}
+                  </DropdownMenuItem>
+                )}
+                {onDeleteMilestone && (
+                  <DropdownMenuItem
+                    disabled={writeBusy}
+                    onSelect={() => onDeleteMilestone(milestone)}
+                    className="text-destructive focus:text-destructive"
+                    data-testid={`project-milestone-delete-${milestone.id}`}
+                  >
+                    Delete…
                   </DropdownMenuItem>
                 )}
               </DropdownMenuContent>

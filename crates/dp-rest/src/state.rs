@@ -23,6 +23,7 @@ use crate::board_links::{
 };
 use crate::issue_dates::{ProjectV2MirrorBackend, UnconfiguredProjectV2Mirror};
 use crate::issues_write::{IssueWriteBackend, UnconfiguredIssueWriter};
+use crate::project_milestones::{MilestoneWriteBackend, UnconfiguredMilestoneWriter};
 
 /// Application state shared across every dp-rest handler.
 #[derive(Clone)]
@@ -48,6 +49,20 @@ pub struct AppState {
     /// silently bypassing GitHub. Wire a production backend via
     /// [`AppState::with_issue_writer`] from the bin layer.
     pub issue_writer: Arc<dyn IssueWriteBackend>,
+    /// GitHub I/O backend for the milestone write surface
+    /// (`POST /projects/{id}/milestones`). Mirrors the
+    /// [`issue_writer`][AppState::issue_writer] pattern: the
+    /// handler calls into this trait after the
+    /// [`crate::app_permissions::require_issues_write`] gate; on
+    /// success the returned GitHub payload is parsed and upserted
+    /// into `dp_milestones` so the local row reflects the write
+    /// before the next reconciler tick.
+    ///
+    /// The default — [`UnconfiguredMilestoneWriter`] — refuses
+    /// every call (`upstream_unavailable`) so deployments that
+    /// haven't wired a real backend fail loudly. Wire one via
+    /// [`AppState::with_milestone_writer`] from the bin layer.
+    pub milestone_writer: Arc<dyn MilestoneWriteBackend>,
     /// Reconciler scheduler — used by `POST /repos/{id}/sync` to
     /// hand-trigger a per-repo reconciler tick. `None` in test
     /// builds and the §5.9 handler degrades to "queued: false" /
@@ -90,6 +105,7 @@ impl AppState {
             store,
             github_app: Arc::new(GitHubAppConfig::default()),
             issue_writer: Arc::new(UnconfiguredIssueWriter),
+            milestone_writer: Arc::new(UnconfiguredMilestoneWriter),
             scheduler: None,
             projectv2_mirror: Arc::new(UnconfiguredProjectV2Mirror),
             org_projects_picker: Arc::new(UnconfiguredOrgProjectsPicker),
@@ -131,6 +147,16 @@ impl AppState {
     /// the octocrab-backed implementation; tests pass a fake.
     pub fn with_issue_writer(mut self, writer: Arc<dyn IssueWriteBackend>) -> Self {
         self.issue_writer = writer;
+        self
+    }
+
+    /// Override the milestone-write backend. Bin layer wires this
+    /// with the octocrab-backed implementation; tests pass a fake.
+    pub fn with_milestone_writer(
+        mut self,
+        writer: Arc<dyn MilestoneWriteBackend>,
+    ) -> Self {
+        self.milestone_writer = writer;
         self
     }
 

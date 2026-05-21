@@ -95,6 +95,7 @@ use dp_rest::{
 // directly) can name the GitHub App config type for
 // SCOPE-PROJECTS §13.6 `[github.app]`.
 pub use dp_rest::{FetcherIssueWriter, GitHubAppConfig, IssueWriteBackend};
+pub use dp_rest::{FetcherMilestoneWriter, MilestoneWriteBackend};
 pub use dp_rest::{
     OctocrabOrgProjectsPicker, OctocrabProjectV2Mirror, OrgProjectsPickerBackend,
     ProjectV2MirrorBackend,
@@ -177,6 +178,13 @@ pub struct AppState {
     /// armed. The bin layer hands a
     /// [`dp_rest::FetcherIssueWriter`] in PAT mode.
     pub issue_writer: Option<Arc<dyn IssueWriteBackend>>,
+    /// Optional milestone-write backend. `None` keeps the dp-rest
+    /// default ([`dp_rest::UnconfiguredMilestoneWriter`]) which
+    /// refuses every call. The bin layer hands a
+    /// [`dp_rest::FetcherMilestoneWriter`] in PAT mode so the
+    /// `POST /projects/{id}/milestones` two-way-sync handler can
+    /// reach GitHub.
+    pub milestone_writer: Option<Arc<dyn MilestoneWriteBackend>>,
     /// Optional Projects v2 mirror backend. `None` leaves the
     /// dp-rest default ([`dp_rest::UnconfiguredProjectV2Mirror`])
     /// in place — mirroring is skipped entirely and only the
@@ -253,6 +261,7 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
         metrics,
         github_app,
         issue_writer,
+        milestone_writer,
         projectv2_mirror,
         org_projects_picker,
     } = state;
@@ -278,6 +287,9 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
             .with_identity_store(identity_store);
         if let Some(w) = issue_writer {
             s = s.with_issue_writer(w);
+        }
+        if let Some(w) = milestone_writer {
+            s = s.with_milestone_writer(w);
         }
         if let Some(m) = projectv2_mirror {
             s = s.with_projectv2_mirror(m);

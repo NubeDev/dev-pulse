@@ -369,6 +369,7 @@ impl TestApp {
             // (request_issues_write = true, no slug) is fine.
             github_app: std::sync::Arc::new(dp_rest::GitHubAppConfig::default()),
             issue_writer: None,
+            milestone_writer: None,
             projectv2_mirror: None,
             org_projects_picker: None,
         };

@@ -772,6 +772,23 @@ async fn run_serve(matches: &ArgMatches) -> Result<()> {
         } else {
             None
         };
+    // Milestone writer — same PAT-mode gate as the issue writer
+    // above. Shares the same budget so a runaway milestone-create
+    // loop trips the local fuse alongside issue mutations.
+    let milestone_writer: Option<Arc<dyn dp_server::MilestoneWriteBackend>> =
+        if let Some(tok) = github_token.as_ref().filter(|t| !t.is_empty()) {
+            let writer_client = dp_fetcher::client::Client::with_personal_token(
+                SecretString::from(tok.clone()),
+                &cfg.github.base_url,
+            )
+            .map_err(|e| anyhow!("build github milestone writer client: {e}"))?
+            .with_budget(budget);
+            Some(Arc::new(dp_server::FetcherMilestoneWriter::new(
+                Arc::new(writer_client),
+            )))
+        } else {
+            None
+        };
     // -- Projects v2 mirror + org picker (§3.10 / linear-projects-v2 §7.3)
     //
     // Same PAT-mode gate as the issue writer above: a configured
@@ -833,6 +850,7 @@ async fn run_serve(matches: &ArgMatches) -> Result<()> {
             // ("default `true` in new deployments").
             github_app: Arc::new(cfg.github.app.clone()),
             issue_writer: issue_writer.clone(),
+            milestone_writer: milestone_writer.clone(),
             projectv2_mirror: projectv2_mirror.clone(),
             org_projects_picker: org_projects_picker.clone(),
         },

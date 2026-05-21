@@ -874,6 +874,150 @@ impl Client {
         })
     }
 
+    // ---- milestone write surface (PROJECT-VIEW.md follow-up) --------
+    //
+    // GitHub's milestones REST surface is not exposed by octocrab's
+    // typed builders, so we go through the generic `_post` escape
+    // hatch. The auth + transport plumbing (App-installation
+    // token, retries, tracing) is still handled by octocrab — we
+    // only choose the path and body shape.
+
+    /// `POST /repos/{owner}/{repo}/milestones`. Returns the full
+    /// GitHub-side milestone payload so the caller can hand it to
+    /// [`crate::client::parse_milestone_upsert`]-style code and
+    /// upsert the local `dp_milestones` row in the same request,
+    /// without waiting for the next reconciler tick.
+    pub async fn gh_create_milestone(
+        &self,
+        owner: &str,
+        repo: &str,
+        title: &str,
+        description: Option<&str>,
+        due_on: Option<chrono::NaiveDate>,
+    ) -> Result<serde_json::Value, GhWriteError> {
+        self.check_and_count_budget()?;
+        // GitHub accepts `due_on` as an ISO-8601 timestamp; we
+        // anchor to UTC midnight of the calendar date so the
+        // returned `due_on` round-trips back to the same DATE
+        // when we re-fetch.
+        let due_on_str =
+            due_on.map(|d| format!("{}T00:00:00Z", d.format("%Y-%m-%d")));
+        let body = serde_json::json!({
+            "title": title,
+            "description": description,
+            "due_on": due_on_str,
+            "state": "open",
+        });
+        let path = format!("/repos/{owner}/{repo}/milestones");
+        let payload: serde_json::Value = self
+            .inner
+            .post(path, Some(&body))
+            .await
+            .map_err(map_octocrab_write_err)?;
+        Ok(payload)
+    }
+
+    /// `PATCH /repos/{owner}/{repo}/milestones/{number}`. Forwards
+    /// every `Some(_)` field — `None` means "leave as-is on
+    /// GitHub". Returns the GitHub-side milestone payload so the
+    /// caller can mirror the update locally without waiting for
+    /// the next reconciler tick.
+    pub async fn gh_update_milestone(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: i64,
+        patch: &MilestoneRemotePatch<'_>,
+    ) -> Result<serde_json::Value, GhWriteError> {
+        self.check_and_count_budget()?;
+        // Build the body sparsely so unset fields don't overwrite
+        // with `null` — GitHub treats an explicit null differently
+        // from an omitted key (null clears `due_on`, omission
+        // leaves it). The handler decides which one it wants.
+        let mut body = serde_json::Map::new();
+        if let Some(t) = patch.title {
+            body.insert("title".into(), serde_json::Value::String(t.into()));
+        }
+        if let Some(state) = patch.state {
+            match state {
+                "open" | "closed" => {
+                    body.insert(
+                        "state".into(),
+                        serde_json::Value::String(state.into()),
+                    );
+                }
+                other => {
+                    return Err(GhWriteError::Validation(format!(
+                        "invalid milestone state {other:?}; expected \"open\" or \"closed\""
+                    )));
+                }
+            }
+        }
+        if let Some(desc) = patch.description {
+            body.insert(
+                "description".into(),
+                desc.map_or(serde_json::Value::Null, |s| {
+                    serde_json::Value::String(s.into())
+                }),
+            );
+        }
+        if let Some(due) = patch.due_on {
+            body.insert(
+                "due_on".into(),
+                due.map_or(serde_json::Value::Null, |d| {
+                    serde_json::Value::String(format!(
+                        "{}T00:00:00Z",
+                        d.format("%Y-%m-%d")
+                    ))
+                }),
+            );
+        }
+        let path = format!("/repos/{owner}/{repo}/milestones/{number}");
+        let payload: serde_json::Value = self
+            .inner
+            .patch(path, Some(&serde_json::Value::Object(body)))
+            .await
+            .map_err(map_octocrab_write_err)?;
+        Ok(payload)
+    }
+
+    /// `DELETE /repos/{owner}/{repo}/milestones/{number}`. Hard
+    /// delete — GitHub keeps the milestone number reserved so a
+    /// future create with the same title gets a fresh number.
+    pub async fn gh_delete_milestone(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: i64,
+    ) -> Result<(), GhWriteError> {
+        self.check_and_count_budget()?;
+        let path = format!("/repos/{owner}/{repo}/milestones/{number}");
+        // `_delete` returns the raw response; GitHub answers 204
+        // No Content on success which `delete::<Value, _, _>`
+        // can't deserialise into a body. We check status directly
+        // and map non-2xx into `GhWriteError`.
+        let uri: http::Uri = path
+            .parse()
+            .map_err(|e| GhWriteError::Upstream(format!("bad path: {e}")))?;
+        let resp = self
+            .inner
+            ._delete(uri, None::<&()>)
+            .await
+            .map_err(map_octocrab_write_err)?;
+        let status = resp.status();
+        if status.is_success() {
+            Ok(())
+        } else if status.is_client_error() {
+            Err(GhWriteError::Validation(format!(
+                "github delete milestone returned {status}",
+            )))
+        } else {
+            Err(GhWriteError::Upstream(format!(
+                "github delete milestone returned {status}",
+            )))
+        }
+    }
+
     // ---- Projects v2 GraphQL mirror (§3.10) --------------------------
     //
     // The §3.10 `PATCH /issues/{id}/dates` handler enqueues a
@@ -1181,6 +1325,26 @@ pub struct IssueRemotePatch {
     pub labels: Option<Vec<String>>,
     /// Replacement assignee logins.
     pub assignees: Option<Vec<String>>,
+}
+
+/// Field set [`Client::gh_update_milestone`] forwards to GitHub.
+/// Three lanes use the `Option<Option<…>>` shape so the handler
+/// can distinguish "leave as-is" (`None`) from "explicitly clear"
+/// (`Some(None)`); GitHub treats omitted vs. null differently for
+/// `description` and `due_on`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MilestoneRemotePatch<'a> {
+    /// New title.
+    pub title: Option<&'a str>,
+    /// `"open"` / `"closed"`. Any other value surfaces as
+    /// [`GhWriteError::Validation`].
+    pub state: Option<&'a str>,
+    /// `None` = leave as-is; `Some(None)` = clear; `Some(Some(_))`
+    /// = replace.
+    pub description: Option<Option<&'a str>>,
+    /// `None` = leave as-is; `Some(None)` = clear; `Some(Some(_))`
+    /// = replace.
+    pub due_on: Option<Option<chrono::NaiveDate>>,
 }
 
 /// Error split surfaced by the §8 write methods. Mirrors
