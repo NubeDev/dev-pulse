@@ -85,7 +85,7 @@ use dp_rest::{
     admin_router, app_permissions_router, board_links_router, directory_router, inbox_router,
     issue_dates_router, issues_read_router, issues_write_router, me_identities_router,
     pins_router, project_issues_router, project_repos_router, projects_router, repos_router,
-    reports_router,
+    reports_router, settings_router,
     tags_router, AdminState, AppState as RestAppState, DevPulseApi,
 };
 
@@ -328,6 +328,11 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
     // surface is locked behind its own authz pair (narrower than
     // `users.read`).
     let me_identities = me_identities_router(rest_state.clone());
+    // Per-user K/V settings (Account → Settings page). Gated on
+    // `(settings, read|write)`. Pinned key catalogue lives in
+    // `dp_rest::settings::KEYS` so new settings ship without a
+    // migration.
+    let settings = settings_router(rest_state.clone());
     // SCOPE-PROJECTS §13.6 — banner + write-gate live in the same
     // dp-rest module; the router fragment registers
     // `(github_app, read)` so the §15.11 access gate is the only
@@ -351,6 +356,7 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
         .merge(issue_dates)
         .merge(inbox)
         .merge(me_identities)
+        .merge(settings)
         .merge(github_app_routes)
         .merge(admin);
 

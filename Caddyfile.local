@@ -1,0 +1,43 @@
+# Caddyfile.local — outer TLS terminator for the local HTTPS pre-flight
+# harness (docker-compose.fly-local.yml). Terminates TLS on
+# https://localhost using an mkcert-issued cert and forwards to the
+# canonical Fly image's inner Caddy on app:8080.
+#
+# DO NOT confuse this with `Caddyfile` (the one shipped INSIDE the Fly
+# image, which serves SPA + reverse-proxies the backend on :8080).
+# The two work together: this one provides the TLS edge that Fly's
+# fly-proxy provides in production.
+
+{
+	# Don't try to provision a public cert for "localhost" — we hand
+	# Caddy a mkcert-issued one explicitly below. Also disable the
+	# admin API on the published listener.
+	auto_https off
+	admin off
+}
+
+localhost, 127.0.0.1 {
+	tls /certs/localhost.pem /certs/localhost-key.pem
+
+	# Forward EVERYTHING — the inner Caddy already knows what to
+	# proxy to the backend vs. serve as static SPA.
+	reverse_proxy app:8080 {
+		# Make the inner stack see the real public scheme so any
+		# downstream that honours X-Forwarded-Proto (Secure cookies,
+		# Location: rewrites, etc.) behaves like production.
+		header_up X-Forwarded-Proto https
+		header_up X-Forwarded-Host  {http.request.host}
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}
+
+# Plain-HTTP listener — only here to redirect anyone who lands on
+# http://localhost to the https:// scheme. Mirrors what fly-proxy
+# does with `force_https = true` in fly.toml.
+:80 {
+	redir https://{host}{uri} permanent
+}

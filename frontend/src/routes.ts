@@ -98,15 +98,19 @@ export function projectSelectedIssue(route: string): string | null {
   return id && id.length > 0 ? id : null;
 }
 
-/** Sub-route under the account section
- *  (`linear-projects-idea.md` §10 multi-identity). Defaults to
+/** Sub-route under the account section. Defaults to
  *  `identities` — the link / unlink / transfer / set-primary
- *  surface. */
-export type AccountTab = "identities";
+ *  surface (`linear-projects-idea.md` §10 multi-identity).
+ *  `settings` is the per-user K/V settings page (GitHub PAT,
+ *  future preferences). */
+export type AccountTab = "identities" | "settings";
 
 /** Parse `#/account/...` → the active sub-tab. */
-export function accountTabOf(_route: string): AccountTab {
-  return "identities";
+export function accountTabOf(route: string): AccountTab {
+  const pathPart = route.split("?")[0] ?? route;
+  const parts = pathPart.replace(/^#/, "").replace(/^\/+/, "").split("/");
+  if (parts[0] !== "account") return "identities";
+  return parts[1] === "settings" ? "settings" : "identities";
 }
 
 /** §14.1 deep-link selection — `#/workflow?issue=<uuid>` carries the

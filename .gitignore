@@ -30,3 +30,6 @@ auth.db-shm
 auth.db-wal
 tty sane
 .env 
+
+# Local HTTPS pre-flight (docker-compose.fly-local.yml)
+.env.fly-local

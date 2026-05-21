@@ -17,6 +17,7 @@ import { ErrorBoundary } from "./components/error-boundary.jsx";
 import { NotFoundPage } from "./components/not-found.jsx";
 import { AppShell } from "./layout/app-shell.jsx";
 import { IdentitiesPage } from "./account/identities-page.jsx";
+import { SettingsPage } from "./account/settings-page.jsx";
 import { AdminUsersPage } from "./admin/users-page.jsx";
 import { RefreshPage } from "./admin/refresh-page.jsx";
 import { RunsPage } from "./admin/runs-page.jsx";
@@ -135,6 +136,8 @@ function AccountPane({ tab }: { tab: AccountTab }): JSX.Element {
   switch (tab) {
     case "identities":
       return <IdentitiesPage />;
+    case "settings":
+      return <SettingsPage />;
   }
 }
 

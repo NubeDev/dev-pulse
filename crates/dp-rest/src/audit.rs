@@ -78,6 +78,12 @@ pub const TAG_LINK: &str = "tag.link";
 /// `tag.unlink` — one row per detached link in
 /// `DELETE /tags/{id}/links`. Same tuple format as [`TAG_LINK`].
 pub const TAG_UNLINK: &str = "tag.unlink";
+/// `setting.set` — `PUT /me/settings/{key}`. Target is the key
+/// name; the value is intentionally never recorded.
+pub const SETTING_SET: &str = "setting.set";
+/// `setting.delete` — `DELETE /me/settings/{key}`. Target is
+/// the key name.
+pub const SETTING_DELETE: &str = "setting.delete";
 /// `issue.create` — `POST /repos/{owner}/{repo}/issues` mirrored
 /// to GitHub via the §8.2 write path (SCOPE-PROJECTS §8.5).
 pub const ISSUE_CREATE: &str = "issue.create";

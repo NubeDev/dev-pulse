@@ -32,7 +32,9 @@ BACK_PORT  := 8731
 FRONT_PORT := 8732
 COMPOSE    := $(ROOT)/crates/dp-store-pg/docker-compose.yml
 
-.PHONY: build start kill stop restart status logs config seed-admin db migrate help
+.PHONY: build start kill stop restart status logs config seed-admin db migrate help \
+        fly-deploy fly-logs fly-ssh fly-status fly-secrets-print \
+        fly-local fly-local-down fly-local-reset fly-local-logs fly-local-build
 
 help:
 	@echo "Targets: build | start | kill | restart | status | logs | config"
@@ -157,3 +159,78 @@ $(RUN_DIR):
 
 $(LOG_DIR):
 	@mkdir -p $(LOG_DIR)
+
+# ---------------------------------------------------------------- fly.io
+#
+# The Cargo + pnpm workspaces reference the sibling `../starter`
+# checkout, so the Docker build context must be the PARENT of this
+# repo. All fly-* targets cd up one level and pass --config /
+# --dockerfile with paths back into this repo. See FLY.md for the
+# one-time bootstrap.
+
+FLY_APP := dev-pulse
+
+fly-deploy:
+	@command -v fly >/dev/null || { echo "flyctl not installed: https://fly.io/docs/flyctl/install/"; exit 1; }
+	cd $(ROOT)/.. && fly deploy \
+	  --app $(FLY_APP) \
+	  --config $(ROOT)/fly.toml \
+	  --dockerfile $(ROOT)/Dockerfile.fly \
+	  --remote-only \
+	  .
+
+fly-logs:
+	fly logs --app $(FLY_APP)
+
+fly-ssh:
+	fly ssh console --app $(FLY_APP)
+
+fly-status:
+	fly status --app $(FLY_APP)
+
+fly-secrets-print:
+	fly secrets list --app $(FLY_APP)
+
+# ---------------------------------------------------------------- fly local (HTTPS pre-flight)
+#
+# Runs the SAME image we deploy to Fly, behind Caddy+mkcert TLS on
+# https://localhost. See HTTPS-LOCAL-TEST.md.
+#
+# Build context must be the parent dir so the workspace path-deps
+# resolve; we pass `--project-directory $(ROOT)` so relative paths in
+# the compose file (./Caddyfile.local, ./certs) still resolve there.
+
+FLY_LOCAL_COMPOSE := docker compose \
+  -f $(ROOT)/docker-compose.fly-local.yml \
+  --project-directory $(ROOT) \
+  --env-file $(ROOT)/.env.fly-local
+
+fly-local: $(ROOT)/certs/localhost.pem
+	@test -f $(ROOT)/.env.fly-local || { \
+	  echo "missing $(ROOT)/.env.fly-local — see HTTPS-LOCAL-TEST.md § One-time setup"; \
+	  exit 1; \
+	}
+	cd $(ROOT)/.. && $(FLY_LOCAL_COMPOSE) up -d --build
+	@echo
+	@echo "dev-pulse up at https://localhost"
+	@echo "  logs:    make fly-local-logs"
+	@echo "  reset:   make fly-local-reset"
+
+fly-local-build:
+	cd $(ROOT)/.. && $(FLY_LOCAL_COMPOSE) build
+
+fly-local-down:
+	$(FLY_LOCAL_COMPOSE) down
+
+fly-local-reset:
+	$(FLY_LOCAL_COMPOSE) down -v
+
+fly-local-logs:
+	$(FLY_LOCAL_COMPOSE) logs -f
+
+$(ROOT)/certs/localhost.pem:
+	@echo "missing $@ — generate with:"; \
+	 echo "  cd $(ROOT)/certs && mkcert localhost 127.0.0.1 ::1 \\"; \
+	 echo "    && mv localhost+2.pem localhost.pem \\"; \
+	 echo "    && mv localhost+2-key.pem localhost-key.pem"; \
+	 exit 1

@@ -1145,6 +1145,148 @@
         }
       }
     },
+    "/me/settings": {
+      "get": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "`GET /me/settings` — list every catalogue entry, joined with\nthe caller's row when one exists.",
+        "description": "Returns one [`SettingDto`] per entry in [`KEYS`] (not per\nrow) so the frontend can render the full settings form even\nfor a brand-new user with zero saved settings. Secret values\nare always redacted (see [`SettingDto::value`]).",
+        "operationId": "list_settings",
+        "responses": {
+          "200": {
+            "description": "All settings (secrets redacted)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SettingDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/me/settings/{key}": {
+      "get": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "`GET /me/settings/{key}` — fetch a single setting.",
+        "description": "Returns `400 unknown_setting` for keys not in [`KEYS`] and\na [`SettingDto`] with `has_value: false` for known-but-unset\nkeys (i.e. *not* a 404 — the catalogue entry always exists).",
+        "operationId": "get_setting",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "description": "Pinned key from the catalogue",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Setting (secret redacted)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SettingDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Key not in the pinned catalogue"
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "`PUT /me/settings/{key}` — upsert one setting.",
+        "description": "Returns `400 unknown_setting` for keys not in [`KEYS`]. The\nresponse is the post-write [`SettingDto`] (with redaction\napplied for secret keys, so the UI can confirm \"set\" without\never receiving the value back).\n\nAudit: writes [`audit::SETTING_SET`] with target = the key\n(never the value).",
+        "operationId": "put_setting",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "description": "Pinned key from the catalogue",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PutSettingRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Setting upserted (secret redacted in response)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SettingDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Key not in the pinned catalogue"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "`DELETE /me/settings/{key}` — remove one setting.",
+        "description": "Returns `400 unknown_setting` for keys not in [`KEYS`] and\n`404 setting_unset` when the key is known but no row exists.\n\nAudit: writes [`audit::SETTING_DELETE`] with target = the key.",
+        "operationId": "delete_setting",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "description": "Pinned key from the catalogue",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Setting removed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ack"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Key not in the pinned catalogue"
+          },
+          "404": {
+            "description": "Key is known but no row exists for the caller"
+          }
+        }
+      }
+    },
     "/me/tags": {
       "get": {
         "tags": [
@@ -1806,6 +1948,128 @@
           },
           "409": {
             "description": "Stale `expected_version`"
+          }
+        }
+      }
+    },
+    "/projects/{id}/repos": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "`GET /projects/{id}/repos` — list repos associated with the\nproject, in `added_at ASC` order.",
+        "operationId": "list_project_repos",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Repos associated with the project",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ProjectRepoDto"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such project"
+          }
+        }
+      }
+    },
+    "/projects/{id}/repos/{repo_id}": {
+      "put": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "`PUT /projects/{id}/repos/{repo_id}` — idempotently associate a\nrepo with the project. Enforces that the repo's `org_id` matches\nthe project's `org_id` (v1: one org per project, §4).",
+        "operationId": "add_project_repo",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "repo_id",
+            "in": "path",
+            "description": "Repo id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Association exists (newly created or pre-existing)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectRepoDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Cross-org repo or invalid id"
+          },
+          "404": {
+            "description": "No such project or repo"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "`DELETE /projects/{id}/repos/{repo_id}` — remove the\nassociation. Idempotent (a no-op delete returns 204).",
+        "operationId": "remove_project_repo",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "repo_id",
+            "in": "path",
+            "description": "Repo id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Association removed (or already absent)"
           }
         }
       }
@@ -4677,6 +4941,51 @@
           }
         }
       },
+      "ProjectRepoDto": {
+        "type": "object",
+        "description": "One row in [`list_project_repos`]'s response. Enriched with the\nrepo's `org_id` and `name` so the §6.3 UI does not have to fan\nout a `GET /repos/{id}` per row.",
+        "required": [
+          "project_id",
+          "repo_id",
+          "repo_org_id",
+          "repo_name",
+          "added_at"
+        ],
+        "properties": {
+          "added_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the association was created."
+          },
+          "added_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "User who created the association, if known."
+          },
+          "project_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The project this row associates the repo with."
+          },
+          "repo_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The repo id."
+          },
+          "repo_name": {
+            "type": "string",
+            "description": "Enriched repo name (matches `dp_repos.name`)."
+          },
+          "repo_org_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Enriched repo org id (matches `dp_repos.org_id`)."
+          }
+        }
+      },
       "ProjectStatusDto": {
         "type": "string",
         "description": "Wire form of [`ProjectStatus`]. Lowercase to mirror the SQL\nCHECK vocabulary and the §6.1 sidebar labels.",
@@ -4686,6 +4995,19 @@
           "done",
           "archived"
         ]
+      },
+      "PutSettingRequest": {
+        "type": "object",
+        "description": "Body for `PUT /me/settings/{key}`. `value` is the plaintext\nthe user typed (for secret keys, this is the only ingress\npath — the GET handlers never echo it back).",
+        "required": [
+          "value"
+        ],
+        "properties": {
+          "value": {
+            "type": "string",
+            "description": "New value for the setting. Empty string is accepted and\ndistinguishable from \"no row\" — pass `DELETE` to remove\nthe row entirely."
+          }
+        }
       },
       "RefreshResponse": {
         "oneOf": [
@@ -5284,6 +5606,54 @@
           }
         }
       },
+      "SettingDto": {
+        "type": "object",
+        "description": "One setting on the wire. `value` is `null` for unset keys\nand for `is_secret` keys that have been set — the UI reads\n`has_value` to render the \"set\" affordance.",
+        "required": [
+          "key",
+          "label",
+          "help",
+          "is_secret",
+          "has_value"
+        ],
+        "properties": {
+          "has_value": {
+            "type": "boolean",
+            "description": "Whether a row exists for `(user, key)`. `true` for both\nsecret and non-secret keys when the user has set a value."
+          },
+          "help": {
+            "type": "string",
+            "description": "One-line help text from [`SettingSpec::help`]."
+          },
+          "is_secret": {
+            "type": "boolean",
+            "description": "Whether the catalogue marks this key as a secret. The UI\nuses this to pick `<input type=\"password\">` vs plain text\nand to render the redaction affordance."
+          },
+          "key": {
+            "type": "string",
+            "description": "Dotted-namespace key."
+          },
+          "label": {
+            "type": "string",
+            "description": "Human-friendly label from [`SettingSpec::label`]."
+          },
+          "updated_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the row was last written. `None` for unset keys."
+          },
+          "value": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The actual value. `null` when the key is `is_secret` or\nwhen no row exists. Non-secret keys with a row return the\nplaintext here."
+          }
+        }
+      },
       "TagDetailResponse": {
         "type": "object",
         "description": "`GET /tags/{id}` response: the tag plus a *page* of its links\n(§7.5: \"links are paginated separately (`?links_page=…`) to\nkeep a single response bounded even for tags near the §13.5\n500-link soft warning\").",
@@ -5741,6 +6111,10 @@
     {
       "name": "identities",
       "description": "Linked OAuth identities for the caller (linear-projects-idea.md §3.0 / §10)."
+    },
+    {
+      "name": "settings",
+      "description": "Per-user K/V settings (Account → Settings page). Pinned key catalogue in `dp_rest::settings::KEYS`."
     },
     {
       "name": "webhooks",

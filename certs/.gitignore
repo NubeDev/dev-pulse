@@ -1,0 +1,6 @@
+# Local-only mkcert-issued certificates. Generated via:
+#   cd certs && mkcert localhost 127.0.0.1 ::1
+# See HTTPS-LOCAL-TEST.md for the full recipe.
+*.pem
+*.key
+!.gitignore

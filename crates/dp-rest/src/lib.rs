@@ -51,6 +51,7 @@ pub mod project_repos;
 pub mod projects;
 pub mod reports;
 pub mod repos;
+pub mod settings;
 pub mod state;
 pub mod tags;
 
@@ -115,6 +116,10 @@ pub use openapi::DevPulseApi;
 pub use pins::{
     add_pin, list_pins, pins_router, remove_pin, reorder_pins, AddPinRequest, PinDto, PinKeyDto,
     PinKindDto, ReorderRequest, PIN_CAP,
+};
+pub use settings::{
+    delete_setting, get_setting, list_settings, put_setting, settings_router, spec_for,
+    PutSettingRequest, SettingDto, SettingSpec, KEYS as SETTING_KEYS,
 };
 pub use projects::{
     archive_project, create_project, get_project, list_projects, patch_project, projects_router,

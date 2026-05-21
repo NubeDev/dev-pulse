@@ -161,6 +161,16 @@ pub fn register_dev_pulse_resources(registry: &StaticRegistry) {
          once the `is_primary` column + `dp_membership_identities` provenance \
          table ship.",
     ));
+    registry.register_spec(ResourceSpec::from_static(
+        "settings",
+        &["read", "write"],
+        Ownership::None,
+        "Settings",
+        "Per-user K/V settings (Account → Settings page). `read` powers \
+         `GET /me/settings` and `GET /me/settings/{key}`; `write` covers \
+         `PUT` and `DELETE`. Pinned key catalogue lives in \
+         `dp_rest::settings::KEYS`.",
+    ));
 }
 
 /// Load + compile the policy file, wrap it in

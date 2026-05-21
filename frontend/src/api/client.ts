@@ -313,6 +313,36 @@ export const ReorderRequestSchema = z.object({
 });
 export type ReorderRequest = z.infer<typeof ReorderRequestSchema>;
 
+// ---------------------------------------------------------------------------
+// Per-user settings (Account → Settings page).
+//
+// Mirrors `dp_rest::settings::SettingDto` + `PutSettingRequest`. The
+// server enforces a pinned key catalogue (`dp_rest::settings::KEYS`)
+// — the wire shape carries `label` / `help` / `is_secret` per row so
+// the UI can render the form without a parallel client-side catalogue.
+// ---------------------------------------------------------------------------
+
+export const SettingDtoSchema = z.object({
+  key: z.string(),
+  label: z.string(),
+  help: z.string(),
+  is_secret: z.boolean(),
+  /** `true` when a row exists for `(caller, key)`. For secret keys
+   *  this is the only way to know "value is set" — `value` is
+   *  always `null` for secret rows. */
+  has_value: z.boolean(),
+  /** Plaintext value for non-secret keys. Always `null` for
+   *  secret keys and for unset keys. */
+  value: z.string().nullable(),
+  updated_at: isoDateTime.nullable().optional(),
+});
+export type SettingDto = z.infer<typeof SettingDtoSchema>;
+
+export const PutSettingRequestSchema = z.object({
+  value: z.string(),
+});
+export type PutSettingRequest = z.infer<typeof PutSettingRequestSchema>;
+
 export const TagScopeKindSchema = z.enum(["user", "team", "org"]);
 export type TagScopeKind = z.infer<typeof TagScopeKindSchema>;
 
@@ -1881,6 +1911,47 @@ export class DevPulseApi {
       `/issues/${encodeURIComponent(id)}/refresh`,
       undefined,
       IssueDtoSchema,
+    );
+  }
+
+  // -- per-user settings (Account → Settings) --------------------------------
+
+  /** `GET /me/settings` — every catalogue entry, joined with the
+   *  caller's row when one exists. Secret values are always
+   *  redacted; use `has_value` to render the "set" affordance. */
+  async listSettings(): Promise<SettingDto[]> {
+    return this.getJson("/me/settings", z.array(SettingDtoSchema));
+  }
+
+  /** `GET /me/settings/{key}` — fetch a single setting. Throws
+   *  `DpRestError` with `code === "unknown_setting"` for keys
+   *  not in the server's catalogue. */
+  async getSetting(key: string): Promise<SettingDto> {
+    return this.getJson(
+      `/me/settings/${encodeURIComponent(key)}`,
+      SettingDtoSchema,
+    );
+  }
+
+  /** `PUT /me/settings/{key}` — upsert. The response is the
+   *  post-write DTO (secret redacted). */
+  async putSetting(key: string, value: string): Promise<SettingDto> {
+    return this.sendJson(
+      "PUT",
+      `/me/settings/${encodeURIComponent(key)}`,
+      { value } satisfies PutSettingRequest,
+      SettingDtoSchema,
+    );
+  }
+
+  /** `DELETE /me/settings/{key}`. Throws `DpRestError` with
+   *  `code === "setting_unset"` when no row exists. */
+  async deleteSetting(key: string): Promise<Ack> {
+    return this.sendJson(
+      "DELETE",
+      `/me/settings/${encodeURIComponent(key)}`,
+      undefined,
+      AckSchema,
     );
   }
 

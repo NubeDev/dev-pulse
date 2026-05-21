@@ -16,6 +16,7 @@
  */
 
 import { useState } from "react";
+import { SettingsIcon } from "lucide-react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -26,24 +27,44 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Spinner } from "@/components/ui/spinner";
 
-import type { BoardLinkDto, IssueListItem, ProjectDto } from "../api/client.js";
+import type { IssueListItem, ProjectDto } from "../api/client.js";
 import { PageHeading } from "../components/page-heading.jsx";
 import { navigate, projectDetailRoute, projectSelectedIssue, useRoute } from "../routes.js";
 import { IssueEditCard } from "../workflow/issues-page.js";
 
 import { LinkBoardDialog } from "./link-board-dialog.js";
 import { AddIssuesDialog } from "./add-issues-dialog.js";
-import { ProjectRowActions } from "./project-row-actions.js";
-import { ProjectReposCard } from "./project-repos-card.js";
+import { ManageReposDialog } from "./project-repos-card.js";
 import {
+  useArchiveProject,
   useBoardLinks,
   useDeleteBoardLink,
+  usePatchProject,
   useProject,
   useProjectIssues,
+  useProjectRepos,
   useRemoveIssueFromProject,
 } from "./use-projects-data.js";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 export interface ProjectDetailPageProps {
   projectId: string;
@@ -121,8 +142,30 @@ export function ProjectDetailPage({
 function ProjectDetailBody({ project }: { project: ProjectDto }): JSX.Element {
   const route = useRoute();
   const selectedIssueId = projectSelectedIssue(route);
+  const [linkBoardOpen, setLinkBoardOpen] = useState(false);
+  const [manageReposOpen, setManageReposOpen] = useState(false);
+  const [archiveConfirmOpen, setArchiveConfirmOpen] = useState(false);
   const links = useBoardLinks(project.id);
   const deleteLink = useDeleteBoardLink(project.id);
+  const repoLinks = useProjectRepos(project.id);
+  const archive = useArchiveProject(project.id);
+  const patch = usePatchProject(project.id);
+  const isArchived = project.status === "archived";
+  const archivePending = archive.isPending || patch.isPending;
+
+  const onArchiveConfirm = (): void => {
+    if (isArchived) {
+      patch.mutate(
+        { expected_version: project.version, status: "active" },
+        { onSuccess: () => setArchiveConfirmOpen(false) },
+      );
+    } else {
+      archive.mutate(
+        { expected_version: project.version },
+        { onSuccess: () => setArchiveConfirmOpen(false) },
+      );
+    }
+  };
 
   const pctClosed =
     project.issue_count > 0
@@ -138,7 +181,7 @@ function ProjectDetailBody({ project }: { project: ProjectDto }): JSX.Element {
     <div className="flex min-w-0 flex-1 flex-col gap-4">
       <PageHeading
         title={
-          <span className="flex items-center gap-3">
+          <span className="flex flex-wrap items-center gap-2">
             <span data-testid="project-detail-name">{project.name}</span>
             <Badge
               variant={STATUS_VARIANT[project.status]}
@@ -146,10 +189,91 @@ function ProjectDetailBody({ project }: { project: ProjectDto }): JSX.Element {
             >
               {STATUS_LABEL[project.status]}
             </Badge>
+            {(repoLinks.data ?? []).map((r) => (
+              <Badge
+                key={r.repo_id}
+                variant="outline"
+                className="border-emerald-300 bg-emerald-50 font-mono text-xs font-normal text-emerald-800 dark:border-emerald-800/60 dark:bg-emerald-950/40 dark:text-emerald-200"
+                data-testid="project-detail-repo-tag"
+                title={`Repo · linked ${new Date(r.added_at).toLocaleString()}`}
+              >
+                {r.repo_name}
+              </Badge>
+            ))}
+            {(links.data ?? []).map((b) => (
+              <Badge
+                key={b.id}
+                variant="outline"
+                className="border-sky-300 bg-sky-50 text-xs font-normal text-sky-800 dark:border-sky-800/60 dark:bg-sky-950/40 dark:text-sky-200"
+                data-testid="project-detail-board-tag"
+                title="GitHub Project board"
+              >
+                {b.github_board_title ?? "Untitled board"}
+              </Badge>
+            ))}
           </span>
         }
         description={project.description ?? undefined}
-        trailing={<ProjectRowActions project={project} />}
+        trailing={
+          <div className="flex items-center gap-2">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm">
+                  <SettingsIcon className="mr-1.5 h-4 w-4" /> Settings
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-56">
+                <DropdownMenuLabel>Boards</DropdownMenuLabel>
+                {(links.data ?? []).map((link) => (
+                  <DropdownMenuItem
+                    key={link.id}
+                    className="flex items-center justify-between"
+                    onSelect={(e) => { e.preventDefault(); deleteLink.mutate(link.id); }}
+                  >
+                    <span className="truncate text-xs">{link.github_board_title ?? "Untitled"}</span>
+                    <span className="ml-2 shrink-0 text-[10px] text-muted-foreground">Unlink</span>
+                  </DropdownMenuItem>
+                ))}
+                <DropdownMenuItem
+                  onSelect={(e) => {
+                    // Radix: preventDefault keeps the menu from auto-closing
+                    // in the same tick the Dialog mounts, otherwise the
+                    // menu's DismissableLayer fires on the trailing mouseup
+                    // and immediately closes the freshly-opened Dialog.
+                    e.preventDefault();
+                    setLinkBoardOpen(true);
+                  }}
+                >
+                  + Link a board…
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuLabel>Repos</DropdownMenuLabel>
+                <DropdownMenuItem
+                  onSelect={(e) => {
+                    e.preventDefault();
+                    setManageReposOpen(true);
+                  }}
+                  data-testid="project-settings-manage-repos"
+                >
+                  Manage repos…
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuLabel>Actions</DropdownMenuLabel>
+                <DropdownMenuItem
+                  disabled={archivePending}
+                  onSelect={(e) => {
+                    e.preventDefault();
+                    setArchiveConfirmOpen(true);
+                  }}
+                  data-testid={isArchived ? "project-restore-button" : "project-archive-button"}
+                  className={isArchived ? "" : "text-destructive focus:text-destructive"}
+                >
+                  {isArchived ? "Restore" : "Archive project"}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        }
       />
 
       <Card>
@@ -174,22 +298,47 @@ function ProjectDetailBody({ project }: { project: ProjectDto }): JSX.Element {
         </CardContent>
       </Card>
 
-      <BoardLinksCard
-        projectId={project.id}
-        projectOrgId={project.org_id}
-        links={links.data ?? []}
-        isLoading={links.isPending}
-        onUnlink={(linkId) => deleteLink.mutate(linkId)}
-        unlinkPending={deleteLink.isPending}
-        unlinkError={deleteLink.error?.message ?? null}
-      />
-
-      <ProjectReposCard
-        projectId={project.id}
-        projectOrgId={project.org_id}
-      />
-
       <ProjectIssuesCard project={project} onSelectIssue={openIssue} selectedIssueId={selectedIssueId} />
+
+      <LinkBoardDialog
+        open={linkBoardOpen}
+        onOpenChange={setLinkBoardOpen}
+        projectId={project.id}
+        projectOrgId={project.org_id}
+      />
+
+      <ManageReposDialog
+        open={manageReposOpen}
+        onOpenChange={setManageReposOpen}
+        projectId={project.id}
+        projectOrgId={project.org_id}
+      />
+
+      <AlertDialog open={archiveConfirmOpen} onOpenChange={setArchiveConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {isArchived ? `Restore "${project.name}"?` : `Archive "${project.name}"?`}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {isArchived
+                ? "Move this project back to Active. Linked boards and issues are preserved."
+                : "Archived projects are hidden from the default views but keep their issue links and board mirrors. You can restore later."}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={archivePending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={onArchiveConfirm} disabled={archivePending}>
+              {isArchived ? "Restore" : "Archive"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+          {(archive.error || patch.error) && (
+            <p className="text-sm text-destructive" data-testid="project-action-error">
+              {(archive.error ?? patch.error)?.message}
+            </p>
+          )}
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
 
     {selectedIssueId && (
@@ -231,194 +380,6 @@ function MetaCell({
 function fmtDate(s: string | null | undefined): string {
   if (!s) return "—";
   return new Date(s).toLocaleDateString("en-AU");
-}
-
-/** §6.3 `Linked GitHub boards` section. Each row carries the
- *  cached board title + the `last_mirror_at` / `last_mirror_error`
- *  aggregate the §7.3 GET surfaces, so the row reads as either:
- *
- *    NubeIO / Rubix Roadmap   ✓ Last sync 14:23:07
- *
- *  or, on a failed mirror:
- *
- *    NubeIO / Rubix Roadmap   ✕ Last sync failed — <message>   [Re-link]
- */
-function BoardLinksCard({
-  projectId,
-  projectOrgId,
-  links,
-  isLoading,
-  onUnlink,
-  unlinkPending,
-  unlinkError,
-}: {
-  projectId: string;
-  projectOrgId: string;
-  links: BoardLinkDto[];
-  isLoading: boolean;
-  onUnlink: (linkId: string) => void;
-  unlinkPending: boolean;
-  unlinkError: string | null;
-}): JSX.Element {
-  const [dialogOpen, setDialogOpen] = useState(false);
-
-  return (
-    <Card data-testid="project-board-links">
-      <CardHeader className="flex flex-row items-center justify-between">
-        <CardTitle className="text-base">Linked GitHub boards</CardTitle>
-        <Button
-          size="sm"
-          onClick={() => setDialogOpen(true)}
-          data-testid="project-link-board-button"
-        >
-          + Link a GitHub board…
-        </Button>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-2">
-        {isLoading && (
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Spinner /> Loading links…
-          </div>
-        )}
-
-        {!isLoading && links.length === 0 && (
-          <p
-            className="text-sm text-muted-foreground"
-            data-testid="project-board-links-empty"
-          >
-            No GitHub boards linked yet. Linking a board mirrors
-            issue Start / Due dates to its date fields whenever a
-            project member edits them in dev-pulse.
-          </p>
-        )}
-
-        {!isLoading &&
-          links.map((link) => (
-            <BoardLinkRow
-              key={link.id}
-              link={link}
-              onUnlink={() => onUnlink(link.id)}
-              unlinkPending={unlinkPending}
-            />
-          ))}
-
-        {unlinkError && (
-          <Alert
-            variant="destructive"
-            data-testid="project-board-link-error"
-          >
-            <AlertTitle>Unlink failed</AlertTitle>
-            <AlertDescription>{unlinkError}</AlertDescription>
-          </Alert>
-        )}
-      </CardContent>
-
-      <LinkBoardDialog
-        open={dialogOpen}
-        onOpenChange={setDialogOpen}
-        projectId={projectId}
-        projectOrgId={projectOrgId}
-      />
-    </Card>
-  );
-}
-
-function BoardLinkRow({
-  link,
-  onUnlink,
-  unlinkPending,
-}: {
-  link: BoardLinkDto;
-  onUnlink: () => void;
-  unlinkPending: boolean;
-}): JSX.Element {
-  const title = link.github_board_title ?? "Untitled board";
-  const sync = renderMirrorStatus(link);
-  return (
-    <div
-      className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border bg-muted/20 p-3"
-      data-testid="project-board-link-row"
-    >
-      <div className="flex flex-col gap-0.5">
-        <div className="flex items-center gap-2">
-          {link.github_board_url ? (
-            <a
-              href={link.github_board_url}
-              target="_blank"
-              rel="noreferrer"
-              className="text-sm font-medium underline-offset-4 hover:underline"
-              data-testid="project-board-link-title"
-            >
-              {title}
-            </a>
-          ) : (
-            <span className="text-sm font-medium" data-testid="project-board-link-title">
-              {title}
-            </span>
-          )}
-          {sync.badge}
-        </div>
-        <span
-          className={`text-xs ${sync.ok ? "text-muted-foreground" : "text-destructive"}`}
-          data-testid="project-board-link-sync"
-        >
-          {sync.line}
-        </span>
-      </div>
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={onUnlink}
-        disabled={unlinkPending}
-        data-testid="project-board-link-unlink"
-      >
-        {unlinkPending ? "Unlinking…" : "Unlink"}
-      </Button>
-    </div>
-  );
-}
-
-/** §6.4 mirror-status mock: `✓ Last sync 14:23:07` on the latest
- *  success, `✕ Last sync failed — <message>` on the latest
- *  failure, `· Not yet synced` when neither timestamp is set
- *  (e.g. just-linked board with no edits yet). */
-function renderMirrorStatus(link: BoardLinkDto): {
-  ok: boolean;
-  badge: JSX.Element;
-  line: string;
-} {
-  if (link.last_mirror_error) {
-    return {
-      ok: false,
-      badge: (
-        <Badge variant="destructive" className="text-[10px]">
-          ✕ failed
-        </Badge>
-      ),
-      line: `Last sync failed — ${link.last_mirror_error}`,
-    };
-  }
-  if (link.last_mirror_at) {
-    const t = new Date(link.last_mirror_at);
-    return {
-      ok: true,
-      badge: (
-        <Badge variant="secondary" className="text-[10px]">
-          ✓ synced
-        </Badge>
-      ),
-      line: `Last sync ${t.toLocaleTimeString()}`,
-    };
-  }
-  return {
-    ok: true,
-    badge: (
-      <Badge variant="outline" className="text-[10px]">
-        · pending
-      </Badge>
-    ),
-    line: "Not yet synced — edit a date in dev-pulse to fire the first mirror.",
-  };
 }
 
 // ---------------------------------------------------------------------------

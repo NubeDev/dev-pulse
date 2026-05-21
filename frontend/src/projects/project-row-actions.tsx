@@ -20,6 +20,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { Spinner } from "@/components/ui/spinner";
 
 import type { ProjectDto } from "../api/client.js";
@@ -28,8 +29,10 @@ import { useArchiveProject, usePatchProject } from "./use-projects-data.js";
 
 export function ProjectRowActions({
   project,
+  asMenuItems,
 }: {
   project: ProjectDto;
+  asMenuItems?: boolean;
 }): JSX.Element {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const archive = useArchiveProject(project.id);
@@ -54,20 +57,37 @@ export function ProjectRowActions({
 
   return (
     <>
-      <Button
-        variant="ghost"
-        size="sm"
-        disabled={pending}
-        onClick={(e) => {
-          e.stopPropagation();
-          setConfirmOpen(true);
-        }}
-        data-testid={
-          isArchived ? "project-restore-button" : "project-archive-button"
-        }
-      >
-        {pending ? <Spinner /> : isArchived ? "Restore" : "Archive"}
-      </Button>
+      {asMenuItems ? (
+        <DropdownMenuItem
+          disabled={pending}
+          onSelect={(e) => {
+            // See note in project-detail-page.tsx: preventDefault avoids the
+            // Radix race where the menu's dismiss layer closes the AlertDialog
+            // in the same tick it mounts.
+            e.preventDefault();
+            setConfirmOpen(true);
+          }}
+          data-testid={isArchived ? "project-restore-button" : "project-archive-button"}
+          className={isArchived ? "" : "text-destructive focus:text-destructive"}
+        >
+          {pending ? <Spinner /> : isArchived ? "Restore" : "Archive project"}
+        </DropdownMenuItem>
+      ) : (
+        <Button
+          variant="ghost"
+          size="sm"
+          disabled={pending}
+          onClick={(e) => {
+            e.stopPropagation();
+            setConfirmOpen(true);
+          }}
+          data-testid={
+            isArchived ? "project-restore-button" : "project-archive-button"
+          }
+        >
+          {pending ? <Spinner /> : isArchived ? "Restore" : "Archive"}
+        </Button>
+      )}
 
       <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <AlertDialogContent onClick={(e) => e.stopPropagation()}>

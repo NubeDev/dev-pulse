@@ -35,6 +35,7 @@ use dp_domain::membership::Membership;
 use dp_domain::org::Org;
 use dp_domain::pin::{Pin, PinKind};
 use dp_domain::repo::Repo;
+use dp_domain::setting::UserSetting;
 use dp_domain::issue::{Issue, IssueState, IssueUpsert, IssueUpsertOutcome, RepoSummary};
 use dp_domain::issue_mutation::{IssueMutation, IssueMutationOp, IssueMutationResult};
 use dp_domain::event::EventKind;
@@ -416,6 +417,16 @@ fn row_to_pin(r: &sqlx::postgres::PgRow) -> Result<Pin, StoreError> {
         target_id: r.try_get("target_id").map_err(map_sqlx)?,
         position: r.try_get("position").map_err(map_sqlx)?,
         pinned_at: r.try_get("pinned_at").map_err(map_sqlx)?,
+    })
+}
+
+fn row_to_user_setting(r: &sqlx::postgres::PgRow) -> Result<UserSetting, StoreError> {
+    Ok(UserSetting {
+        user_id: r.try_get("user_id").map_err(map_sqlx)?,
+        key: r.try_get("key").map_err(map_sqlx)?,
+        value: r.try_get("value").map_err(map_sqlx)?,
+        is_secret: r.try_get("is_secret").map_err(map_sqlx)?,
+        updated_at: r.try_get("updated_at").map_err(map_sqlx)?,
     })
 }
 
@@ -2837,6 +2848,87 @@ impl Store for PgStore {
             .map_err(map_sqlx)?;
         }
         tx.commit().await.map_err(map_sqlx)?;
+        Ok(())
+    }
+
+    // ---- per-user settings (migration 0029) ---------------------
+
+    async fn list_user_settings(
+        &self,
+        user_id: Uuid,
+    ) -> Result<Vec<UserSetting>, StoreError> {
+        let rows = sqlx::query(
+            "SELECT user_id, key, value, is_secret, updated_at \
+             FROM dp_user_settings WHERE user_id = $1 ORDER BY key ASC",
+        )
+        .bind(user_id)
+        .fetch_all(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        rows.iter().map(row_to_user_setting).collect()
+    }
+
+    async fn get_user_setting(
+        &self,
+        user_id: Uuid,
+        key: &str,
+    ) -> Result<Option<UserSetting>, StoreError> {
+        let row = sqlx::query(
+            "SELECT user_id, key, value, is_secret, updated_at \
+             FROM dp_user_settings WHERE user_id = $1 AND key = $2",
+        )
+        .bind(user_id)
+        .bind(key)
+        .fetch_optional(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        row.as_ref().map(row_to_user_setting).transpose()
+    }
+
+    async fn upsert_user_setting(
+        &self,
+        setting: &UserSetting,
+    ) -> Result<UserSetting, StoreError> {
+        // Upsert: same (user_id, key) replaces value + flips
+        // is_secret + stamps updated_at. updated_at is bumped
+        // server-side so the caller can't backdate writes.
+        let row = sqlx::query(
+            "INSERT INTO dp_user_settings \
+                 (user_id, key, value, is_secret, updated_at) \
+             VALUES ($1, $2, $3, $4, now()) \
+             ON CONFLICT (user_id, key) DO UPDATE \
+             SET value = EXCLUDED.value, \
+                 is_secret = EXCLUDED.is_secret, \
+                 updated_at = now() \
+             RETURNING user_id, key, value, is_secret, updated_at",
+        )
+        .bind(setting.user_id)
+        .bind(&setting.key)
+        .bind(&setting.value)
+        .bind(setting.is_secret)
+        .fetch_one(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        row_to_user_setting(&row)
+    }
+
+    async fn delete_user_setting(
+        &self,
+        user_id: Uuid,
+        key: &str,
+    ) -> Result<(), StoreError> {
+        let result = sqlx::query(
+            "DELETE FROM dp_user_settings \
+             WHERE user_id = $1 AND key = $2",
+        )
+        .bind(user_id)
+        .bind(key)
+        .execute(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        if result.rows_affected() == 0 {
+            return Err(not_found("user_setting", key));
+        }
         Ok(())
     }
 

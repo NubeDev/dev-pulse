@@ -1,0 +1,78 @@
+# fly.toml — single-app deployment for dev-pulse.
+#
+# One Machine runs:
+#   • Caddy on :8080   — serves /usr/share/dev-pulse/web/* (the built SPA)
+#                        and reverse-proxies API routes to 127.0.0.1:8731.
+#   • dev-pulse on :8731 — the Rust backend (axum + dp-server).
+#
+# Fly's edge terminates TLS for both the *.fly.dev hostname and any
+# custom domain attached via `fly certs add`. The internal port we
+# expose to the edge is 8080 (plain HTTP); the edge does the HTTPS.
+#
+# Deploy:
+#   make fly-deploy            # wraps `fly deploy` with the right context
+#
+# First-time bootstrap is documented in FLY.md.
+
+app             = "dev-pulse"
+primary_region  = "cdg"
+kill_signal     = "SIGINT"
+kill_timeout    = "30s"
+
+[build]
+  # NOTE: the build context must be the PARENT directory so the
+  # Cargo path-deps in `../starter` and the pnpm workspace ref in
+  # `../starter/packages/*` resolve. `make fly-deploy` handles this.
+  dockerfile = "Dockerfile.fly"
+
+[deploy]
+  # Run pending dp-store-pg sqlx migrations before promoting the new
+  # release. The binary's own `migrate` subcommand is the source of truth.
+  release_command = "/usr/local/bin/dev-pulse migrate --config /etc/dev-pulse/config.toml"
+  strategy        = "rolling"
+
+[env]
+  # Non-secret runtime knobs. Secrets (PATs, OAuth secrets, webhook
+  # secrets, DATABASE_URL) are injected via `fly secrets set`.
+  DP_BIND_ADDR        = "127.0.0.1:8731"
+  DP_PUBLIC_BASE_URL  = "https://dev-pulse.fly.dev"
+  DP_DEFAULT_RETURN   = "/"
+  DP_SCHEDULER_ENABLE = "false"
+  RUST_LOG            = "info,dev_pulse=info,dp_server=info,sqlx=warn"
+
+[http_service]
+  internal_port       = 8080
+  force_https         = true
+  auto_stop_machines  = "stop"
+  auto_start_machines = true
+  min_machines_running = 1
+  processes           = ["app"]
+
+  [http_service.concurrency]
+    type       = "requests"
+    soft_limit = 200
+    hard_limit = 250
+
+  [[http_service.checks]]
+    interval     = "30s"
+    timeout      = "5s"
+    grace_period = "20s"
+    method       = "GET"
+    path         = "/health"
+
+[[vm]]
+  size    = "shared-cpu-1x"
+  memory  = "1gb"
+  cpu_kind = "shared"
+  cpus    = 1
+
+# Persistent volume for the SQLite auth sidecar (sessions, tokens,
+# oauth identities). Lives at /data inside the container; the runtime
+# config sets `[auth_sqlite].url = "sqlite:/data/auth.db?mode=rwc"`.
+[mounts]
+  source                = "dev_pulse_data"
+  destination           = "/data"
+  initial_size          = "1gb"
+  auto_extend_size_threshold = 80
+  auto_extend_size_increment = "1gb"
+  auto_extend_size_limit     = "10gb"

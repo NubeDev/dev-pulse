@@ -36,6 +36,8 @@ import {
   IconCircleDashed,
   IconCircleCheck,
   IconClipboardList,
+  IconSettings,
+  IconUserCircle,
 } from "@tabler/icons-react"
 import { useAuth } from "@nube/starter-ui-core/auth"
 
@@ -47,6 +49,7 @@ import { ThemeToggle } from "../components/theme-toggle.jsx"
 import { PinSidebar } from "../workflow/pin-sidebar.jsx"
 import { WritesBanner } from "../workflow/writes-banner.jsx"
 import {
+  accountTabOf,
   adminTabOf,
   directoryTabOf,
   projectsStatusOf,
@@ -130,6 +133,21 @@ const NAV_MAIN: NavMainItem[] = [
       { title: "Runs", url: "#/admin/runs", icon: IconHistory },
       { title: "Refresh", url: "#/admin/refresh", icon: IconRefresh },
       { title: "Users", url: "#/admin/users", icon: IconUserCog },
+    ],
+  },
+  {
+    // Account section — per-user identity + settings surface.
+    // Distinct from `Admin` (operator-only) and `Directory`
+    // (operator-facing user listings); this is the "my account"
+    // self-service area.
+    title: "Account",
+    url: "#/account",
+    icon: IconUserCircle,
+    accent: "var(--accent-admin)",
+    subTestId: "account-subnav",
+    items: [
+      { title: "Identities", url: "#/account/identities", icon: IconUser },
+      { title: "Settings", url: "#/account/settings", icon: IconSettings },
     ],
   },
 ]
@@ -229,7 +247,9 @@ function titleFor(route: string): string {
       return `Projects · ${PROJECT_STATUS_TITLE[status] ?? status}`
     }
     case "account":
-      return "Account · Identities"
+      return accountTabOf(route) === "settings"
+        ? "Account · Settings"
+        : "Account · Identities"
     case "login":
     default:
       return SECTION_TITLE[section]

@@ -8,6 +8,8 @@ frontend/.playwright
 .run
 .env
 .env.local
+.env.fly-local
+certs
 config.local.toml
 .git
 runs

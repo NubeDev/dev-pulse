@@ -38,6 +38,7 @@ pub mod org;
 pub mod pin;
 pub mod project;
 pub mod repo;
+pub mod setting;
 pub mod store;
 pub mod tag;
 pub mod tag_link;
@@ -69,6 +70,7 @@ pub use project::{
     ProjectStatus, ProjectUpsert,
 };
 pub use repo::{Repo, RepoMetadata};
+pub use setting::UserSetting;
 pub use store::{PendingRemoteIssue, Store, StoreError};
 pub use store::{IssueListFilter, RepoListFilter, DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT};
 pub use store::{

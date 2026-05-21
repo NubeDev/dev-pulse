@@ -1188,6 +1188,59 @@ pub trait Store: Send + Sync {
         Err(StoreError::Invalid("pins not supported by this store".into()))
     }
 
+    // ---- per-user settings (migration 0029) ---------------------
+
+    /// List every setting for a user, ordered by `key` ascending.
+    /// Returns an empty vec when the user has no settings (a
+    /// brand-new account hits this path on first render). The
+    /// REST layer is responsible for redacting `value` on
+    /// [`UserSetting::is_secret`] rows before returning to the
+    /// client.
+    async fn list_user_settings(
+        &self,
+        _user_id: Uuid,
+    ) -> Result<Vec<crate::setting::UserSetting>, StoreError> {
+        Ok(Vec::new())
+    }
+
+    /// Fetch a single setting by `(user_id, key)`. Returns
+    /// `Ok(None)` when the row does not exist — this is *not* an
+    /// error condition; `GET /me/settings/{key}` on an unset key
+    /// returns a `404 setting_unset` shaped from this.
+    async fn get_user_setting(
+        &self,
+        _user_id: Uuid,
+        _key: &str,
+    ) -> Result<Option<crate::setting::UserSetting>, StoreError> {
+        Ok(None)
+    }
+
+    /// Upsert one `(user_id, key)` row. The store sets
+    /// `updated_at = now()` on every write. Returns the row
+    /// after the upsert lands.
+    async fn upsert_user_setting(
+        &self,
+        _setting: &crate::setting::UserSetting,
+    ) -> Result<crate::setting::UserSetting, StoreError> {
+        Err(StoreError::Invalid(
+            "user settings not supported by this store".into(),
+        ))
+    }
+
+    /// Delete one `(user_id, key)` row. Returns
+    /// [`StoreError::NotFound`] when the row does not exist so
+    /// the REST layer can return a structured `404 setting_unset`.
+    async fn delete_user_setting(
+        &self,
+        _user_id: Uuid,
+        _key: &str,
+    ) -> Result<(), StoreError> {
+        Err(StoreError::NotFound {
+            entity: "user_setting",
+            id: _key.to_string(),
+        })
+    }
+
     // ---- tags + tag links (SCOPE-PROJECTS §7) -------------------
 
     /// Fetch a tag by primary key. Returns [`StoreError::NotFound`]
