@@ -144,6 +144,14 @@ export const MembershipDtoSchema = z.object({
 });
 export type MembershipDto = z.infer<typeof MembershipDtoSchema>;
 
+export const FetchRunErrorSampleDtoSchema = z.object({
+  org: z.string().nullable().optional(),
+  repo: z.string().nullable().optional(),
+  kind: z.string().nullable().optional(),
+  error: z.string(),
+});
+export type FetchRunErrorSampleDto = z.infer<typeof FetchRunErrorSampleDtoSchema>;
+
 export const FetchRunDtoSchema = z.object({
   id: uuid,
   kind: z.string(),
@@ -152,6 +160,7 @@ export const FetchRunDtoSchema = z.object({
   items: z.number().int(),
   errors: z.number().int(),
   partial: z.boolean(),
+  error_sample: z.array(FetchRunErrorSampleDtoSchema).nullable().optional(),
 });
 export type FetchRunDto = z.infer<typeof FetchRunDtoSchema>;
 
@@ -490,8 +499,30 @@ export const CreateIssueRequestSchema = z.object({
   labels: z.array(z.string()).optional(),
   assignees: z.array(z.string()).optional(),
   milestone: z.string().optional(),
+  /** Optional project to attach the new issue to in the same
+   *  request. Without `view_id` this is an "All" tab add and
+   *  requires `expected_version`; with `view_id` it scopes to the
+   *  named saved-view's membership table. */
+  project_id: uuid.optional(),
+  /** Optional saved-view id. Requires `project_id`. */
+  view_id: uuid.optional(),
+  /** CAS token — project's observed `version`. Required when
+   *  `project_id` is set and `view_id` is unset. */
+  expected_version: z.number().int().optional(),
 });
 export type CreateIssueRequest = z.infer<typeof CreateIssueRequestSchema>;
+
+/** Acknowledgement returned by `POST /issues`. `issue_id` is set
+ *  when the backend materialised the local `dp_issues` row in the
+ *  same request (the production path); when `null`, the issue was
+ *  created on GitHub but the local row will appear after the next
+ *  sync — the UI should treat this as "wait for refetch". */
+export const CreateIssueResponseSchema = z.object({
+  repo_id: uuid,
+  number: z.number().int(),
+  issue_id: uuid.nullable().optional(),
+});
+export type CreateIssueResponse = z.infer<typeof CreateIssueResponseSchema>;
 
 export const UpdateIssueRequestSchema = z.object({
   /** CAS token from form load (§8.2 step 1). */
@@ -684,6 +715,10 @@ export interface ArchiveProjectRequest {
 export interface BulkAddIssuesRequest {
   expected_version: number;
   issue_ids: string[];
+  /** PROJECT-VIEW.md §5.4 amendment — when set, accepted issues
+   *  are also attached to this saved view's membership so the tab
+   *  the user added them on retains them. */
+  view_id?: string | null;
 }
 
 export const BulkAddSkipDtoSchema = z.object({
@@ -812,6 +847,7 @@ export const ProjectViewFilterClauseSchema = z.discriminatedUnion("dim", [
   z.object({ dim: z.literal("assignee"), value: z.string() }),
   z.object({ dim: z.literal("label"), value: z.string() }),
   z.object({ dim: z.literal("tag"), key: z.string(), value: z.string() }),
+  z.object({ dim: z.literal("milestone"), value: z.string() }),
 ]);
 export type ProjectViewFilterClause = z.infer<
   typeof ProjectViewFilterClauseSchema
@@ -1696,6 +1732,9 @@ export class DevPulseApi {
       /** PROJECT-VIEW.md §5.3 — `updated_desc` (default) |
        *  `updated_asc` | `title_asc`. */
       sort?: string;
+      /** PROJECT-VIEW.md §5.4 amendment — scope to a saved view's
+       *  manual membership. Omitted = "All" tab. */
+      view?: string;
     } = {},
   ): Promise<IssueListResponse> {
     const params = new URLSearchParams();
@@ -1706,6 +1745,7 @@ export class DevPulseApi {
     if (q.group_by) params.set("group_by", q.group_by);
     if (q.filter) params.set("filter", q.filter);
     if (q.sort) params.set("sort", q.sort);
+    if (q.view) params.set("view", q.view);
     const qs = params.toString();
     return this.getJson(
       `/projects/${encodeURIComponent(projectId)}/issues${qs ? `?${qs}` : ""}`,
@@ -1838,18 +1878,30 @@ export class DevPulseApi {
     );
   }
 
-  /** `DELETE /projects/{id}/issues/{issue_id}?expected_version=` —
-   *  detach a single issue. 404 (already detached) is squashed to
-   *  a clean resolve so callers can treat it as idempotent. */
+  /** `DELETE /projects/{id}/issues/{issue_id}` — detach an issue.
+   *  When `viewId` is provided, the detach is scoped to that
+   *  saved view's membership and `expectedVersion` is ignored
+   *  (no CAS — the project row doesn't mutate). When omitted, the
+   *  detach is project-level and `expectedVersion` is required.
+   *  404 (already detached) is squashed to a clean resolve so
+   *  callers can treat it as idempotent. */
   async removeIssueFromProject(
     projectId: string,
     issueId: string,
-    expectedVersion: number,
+    expectedVersion: number | null,
+    viewId?: string | null,
   ): Promise<void> {
+    const params = new URLSearchParams();
+    if (viewId) {
+      params.set("view", viewId);
+    } else if (expectedVersion !== null) {
+      params.set("expected_version", String(expectedVersion));
+    }
+    const qs = params.toString();
     try {
       await this.sendNoContent(
         "DELETE",
-        `/projects/${encodeURIComponent(projectId)}/issues/${encodeURIComponent(issueId)}?expected_version=${expectedVersion}`,
+        `/projects/${encodeURIComponent(projectId)}/issues/${encodeURIComponent(issueId)}${qs ? `?${qs}` : ""}`,
         undefined,
       );
     } catch (e) {
@@ -2110,10 +2162,13 @@ export class DevPulseApi {
     );
   }
 
-  /** `POST /issues` — create. May throw `DpRestError` with
-   *  `code === "writes_not_available_for_org"` per §8.4. */
-  async createIssue(req: CreateIssueRequest): Promise<IssueDto> {
-    return this.sendJson("POST", "/issues", req, IssueDtoSchema);
+  /** `POST /issues` — create. Hands off to GitHub and returns the
+   *  GitHub-assigned `(repo_id, number)`; the local `dp_issues`
+   *  row materialises on the next fetcher / webhook pass. May throw
+   *  `DpRestError` with `code === "writes_not_available_for_org"`
+   *  per §8.4. */
+  async createIssue(req: CreateIssueRequest): Promise<CreateIssueResponse> {
+    return this.sendJson("POST", "/issues", req, CreateIssueResponseSchema);
   }
 
   /** `PATCH /issues/{id}` — partial update. CAS on `expected_version`.

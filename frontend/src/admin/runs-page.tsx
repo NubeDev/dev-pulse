@@ -24,8 +24,9 @@
  * partial, destructive for failed) instead of inline border colours.
  */
 
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -125,7 +126,20 @@ function formatTs(iso: string | null | undefined): string {
 
 export function RunsPage(): JSX.Element {
   const [page, setPage] = useState(0);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const offset = page * PAGE_SIZE;
+
+  function toggleExpanded(id: string): void {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  }
 
   const runsQuery = useQuery({
     queryKey: ["admin-runs", PAGE_SIZE, offset],
@@ -196,6 +210,7 @@ export function RunsPage(): JSX.Element {
               <Table data-testid="runs-table">
                 <TableHeader className="bg-muted/50">
                   <TableRow>
+                    <TableHead className="w-8" />
                     <TableHead>Kind</TableHead>
                     <TableHead>Started</TableHead>
                     <TableHead>Finished</TableHead>
@@ -209,45 +224,109 @@ export function RunsPage(): JSX.Element {
                   {runs.map((r) => {
                     const status = statusOf(r);
                     const meta = STATUS_META[status];
+                    const samples = r.error_sample ?? [];
+                    const canExpand = samples.length > 0;
+                    const isOpen = expanded.has(r.id);
                     return (
-                      <TableRow
-                        key={r.id}
-                        data-run-id={r.id}
-                        data-run-status={status}
-                      >
-                        <TableCell>
-                          <code className="font-mono text-xs">{r.kind}</code>
-                        </TableCell>
-                        <TableCell className="text-sm">
-                          {formatTs(r.started)}
-                        </TableCell>
-                        <TableCell className="text-sm">
-                          {formatTs(r.finished ?? null)}
-                        </TableCell>
-                        <TableCell className="text-right text-sm tabular-nums">
-                          {formatDuration(r.started, r.finished ?? null)}
-                        </TableCell>
-                        <TableCell className="text-right text-sm tabular-nums">
-                          {r.items.toLocaleString()}
-                        </TableCell>
-                        <TableCell
-                          className={cn(
-                            "text-right text-sm tabular-nums",
-                            r.errors > 0 && "text-destructive",
-                          )}
+                      <Fragment key={r.id}>
+                        <TableRow
+                          data-run-id={r.id}
+                          data-run-status={status}
+                          className={canExpand ? "cursor-pointer" : undefined}
+                          onClick={
+                            canExpand ? () => toggleExpanded(r.id) : undefined
+                          }
                         >
-                          {r.errors.toLocaleString()}
-                        </TableCell>
-                        <TableCell>
-                          <Badge
-                            variant={meta.variant}
-                            data-testid="run-status-badge"
-                            className={meta.className}
+                          <TableCell className="w-8 px-2 text-muted-foreground">
+                            {canExpand ? (
+                              isOpen ? (
+                                <ChevronDown
+                                  className="h-4 w-4"
+                                  data-testid="run-expand-open"
+                                />
+                              ) : (
+                                <ChevronRight
+                                  className="h-4 w-4"
+                                  data-testid="run-expand-closed"
+                                />
+                              )
+                            ) : null}
+                          </TableCell>
+                          <TableCell>
+                            <code className="font-mono text-xs">{r.kind}</code>
+                          </TableCell>
+                          <TableCell className="text-sm">
+                            {formatTs(r.started)}
+                          </TableCell>
+                          <TableCell className="text-sm">
+                            {formatTs(r.finished ?? null)}
+                          </TableCell>
+                          <TableCell className="text-right text-sm tabular-nums">
+                            {formatDuration(r.started, r.finished ?? null)}
+                          </TableCell>
+                          <TableCell className="text-right text-sm tabular-nums">
+                            {r.items.toLocaleString()}
+                          </TableCell>
+                          <TableCell
+                            className={cn(
+                              "text-right text-sm tabular-nums",
+                              r.errors > 0 && "text-destructive",
+                            )}
                           >
-                            {meta.label}
-                          </Badge>
-                        </TableCell>
-                      </TableRow>
+                            {r.errors.toLocaleString()}
+                          </TableCell>
+                          <TableCell>
+                            <Badge
+                              variant={meta.variant}
+                              data-testid="run-status-badge"
+                              className={meta.className}
+                            >
+                              {meta.label}
+                            </Badge>
+                          </TableCell>
+                        </TableRow>
+                        {canExpand && isOpen ? (
+                          <TableRow
+                            data-testid="run-error-detail"
+                            data-run-id={r.id}
+                            className="bg-muted/30"
+                          >
+                            <TableCell />
+                            <TableCell colSpan={7} className="py-3">
+                              <div className="text-xs text-muted-foreground mb-2">
+                                Showing {samples.length} of {r.errors.toLocaleString()}{" "}
+                                error{r.errors === 1 ? "" : "s"} captured during this run.
+                              </div>
+                              <div className="overflow-hidden rounded border border-border bg-background">
+                                <Table>
+                                  <TableHeader>
+                                    <TableRow>
+                                      <TableHead className="w-40">Scope</TableHead>
+                                      <TableHead className="w-32">Kind</TableHead>
+                                      <TableHead>Error</TableHead>
+                                    </TableRow>
+                                  </TableHeader>
+                                  <TableBody>
+                                    {samples.map((s, i) => (
+                                      <TableRow key={i}>
+                                        <TableCell className="text-xs font-mono align-top">
+                                          {s.repo ?? s.org ?? "—"}
+                                        </TableCell>
+                                        <TableCell className="text-xs font-mono align-top">
+                                          {s.kind ?? "—"}
+                                        </TableCell>
+                                        <TableCell className="text-xs font-mono whitespace-pre-wrap break-words align-top text-destructive">
+                                          {s.error}
+                                        </TableCell>
+                                      </TableRow>
+                                    ))}
+                                  </TableBody>
+                                </Table>
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        ) : null}
+                      </Fragment>
                     );
                   })}
                 </TableBody>

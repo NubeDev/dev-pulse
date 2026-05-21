@@ -71,14 +71,24 @@ use crate::state::AppState;
 #[async_trait]
 pub trait IssueWriteBackend: Send + Sync + 'static {
     /// `POST /repos/{owner}/{repo}/issues`. Returns the GitHub-side
-    /// issue number assigned to the new row.
+    /// issue number assigned to the new row, plus the full GitHub
+    /// payload (`Option<Value>`) so the handler can
+    /// [`parse_issue_upsert`][dp_fetcher::worker::handlers::parse_issue_upsert]
+    /// + upsert the local `dp_issues` row in the same request —
+    /// the same two-way-sync pattern `update_issue` follows. This
+    /// is what lets the REST `POST /issues` handler attach the
+    /// freshly-created issue to a project or saved view
+    /// synchronously. Backends that cannot surface a payload (the
+    /// unconfigured stub, test fakes) return `None` and the
+    /// handler falls back to "created on GitHub, will appear after
+    /// next sync".
     async fn create_issue(
         &self,
         owner_login: &str,
         repo_name: &str,
         title: &str,
         body: Option<&str>,
-    ) -> Result<i64, IssueWriteError>;
+    ) -> Result<(i64, Option<serde_json::Value>), IssueWriteError>;
 
     /// `PATCH /repos/{owner}/{repo}/issues/{number}`. Carries the
     /// merged field set the user requested. The trait does not
@@ -193,7 +203,7 @@ impl IssueWriteBackend for UnconfiguredIssueWriter {
         _: &str,
         _: &str,
         _: Option<&str>,
-    ) -> Result<i64, IssueWriteError> {
+    ) -> Result<(i64, Option<serde_json::Value>), IssueWriteError> {
         Err(IssueWriteError::Unconfigured)
     }
     async fn update_issue(
@@ -262,11 +272,13 @@ impl IssueWriteBackend for FetcherIssueWriter {
         repo_name: &str,
         title: &str,
         body: Option<&str>,
-    ) -> Result<i64, IssueWriteError> {
-        self.client
+    ) -> Result<(i64, Option<serde_json::Value>), IssueWriteError> {
+        let (number, payload) = self
+            .client
             .gh_create_issue(owner_login, repo_name, title, body)
             .await
-            .map_err(map_gh_write_err)
+            .map_err(map_gh_write_err)?;
+        Ok((number, Some(payload)))
     }
 
     async fn update_issue(
@@ -324,7 +336,11 @@ impl IssueWriteBackend for FetcherIssueWriter {
 // ---------------------------------------------------------------------------
 
 /// Body for `POST /issues`. The repo to mutate is named explicitly
-/// (there is no canonical row yet to derive it from).
+/// (there is no canonical row yet to derive it from). The optional
+/// `project_id` / `view_id` lanes let the handler attach the
+/// freshly-created issue to a project (and optionally a saved
+/// view tab) in the same request, mirroring the bulk-add
+/// semantics in [`crate::project_issues::BulkAddIssuesRequest`].
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct CreateIssueRequest {
     /// Internal repo id the new issue belongs to.
@@ -334,17 +350,44 @@ pub struct CreateIssueRequest {
     /// Optional body (Markdown).
     #[serde(default)]
     pub body: Option<String>,
+    /// Optional project id to attach the new issue to in the same
+    /// request. When set without `view_id`, the handler runs the
+    /// project-level add ("All" tab semantics) and requires
+    /// `expected_version`. When set together with `view_id`, the
+    /// handler attaches the issue only to the named view's
+    /// membership table and does not touch project membership.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<Uuid>,
+    /// Optional saved-view id (PROJECT-VIEW.md §5.4 amendment).
+    /// Requires `project_id`. Ignored when `project_id` is unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view_id: Option<Uuid>,
+    /// CAS token — the project's observed `version`. Required
+    /// when `project_id` is set and `view_id` is unset (project-
+    /// level attach mutates the project row); ignored otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_version: Option<i64>,
 }
 
 /// Acknowledgement body for `POST /issues`. Returns the GitHub-side
 /// number GitHub assigned (so the UI can deep-link immediately) and
 /// echoes the actor's `repo_id` for symmetry with PATCH responses.
+/// `issue_id` is populated when the local `dp_issues` row was
+/// materialised synchronously from the GitHub create payload — the
+/// UI can use it to render the new row in-list without waiting for
+/// the next sync. It is `None` when the backend could not surface a
+/// payload (the unconfigured stub, certain fakes), in which case
+/// the row appears once the fetcher / webhook brings it down.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CreateIssueResponse {
     /// Echoed parent repo id.
     pub repo_id: Uuid,
     /// Repo-relative issue number GitHub assigned.
     pub number: i64,
+    /// Local `dp_issues.id` when the row was materialised in this
+    /// request, otherwise `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue_id: Option<Uuid>,
 }
 
 /// Field-level patch the PATCH handler forwards to GitHub. Every
@@ -399,23 +442,38 @@ pub struct CreateCommentRequest {
 
 /// `POST /issues` — create a new GitHub issue.
 ///
-/// No CAS (there is no local row yet). Sequence:
+/// No CAS on the issue itself (there is no local row yet). Sequence:
 ///
 /// 1. Resolve `repo_id -> (Org, Repo)`.
 /// 2. §18.2 step 4 install-permission check.
-/// 3. Call the backend's `create_issue`.
-/// 4. Record the `issue.create` audit row (target = `repo_id#number`).
-///
-/// The fetcher / webhook receiver materialises the `dp_issues` row
-/// on the next pass.
+/// 3. Call the backend's `create_issue`. On success the backend
+///    returns the GitHub issue payload, which we hand to
+///    [`dp_fetcher::worker::handlers::parse_issue_upsert`] +
+///    [`Store::upsert_issue_from_github`] to materialise the local
+///    `dp_issues` row immediately — same two-way-sync trick the
+///    PATCH handler uses.
+/// 4. Optional attach: when `project_id` is set, attach the new
+///    issue to that project (and to `view_id`'s membership table
+///    when set), reusing the same semantics as
+///    [`crate::project_issues::bulk_add_issues`]:
+///    * `project_id` only → project-level add, requires
+///      `expected_version` (`400 missing_expected_version` if not
+///      supplied), bumps project version.
+///    * `project_id` + `view_id` → view-membership only; no CAS,
+///      no project version bump.
+/// 5. Record the `issue.create` audit row (target =
+///    `repo_id#number`, with `:project=…` / `:view=…` suffixes
+///    when the attach paths fired).
 #[utoipa::path(
     post,
     path = "/issues",
     request_body = CreateIssueRequest,
     responses(
         (status = 200, description = "Created GitHub-side; audit row written", body = CreateIssueResponse),
+        (status = 400, description = "Validation failed at GitHub, or missing expected_version"),
         (status = 403, description = "Writes not available for the target org"),
-        (status = 400, description = "Validation failed at GitHub"),
+        (status = 404, description = "Project id supplied but project does not exist"),
+        (status = 409, description = "Stale `expected_version` on project-level attach"),
     ),
     tag = "issues",
 )]
@@ -426,23 +484,128 @@ pub async fn create_issue(
 ) -> Result<Json<CreateIssueResponse>, ApiError> {
     let (org, repo) = resolve_repo(&*state.store, body.repo_id).await?;
     require_issues_write(&*state.store, &state.github_app, &org).await?;
-    let number = state
+
+    // Validate attach inputs up-front so we don't burn a GitHub
+    // POST on a request that can't honour its own attach contract.
+    if body.view_id.is_some() && body.project_id.is_none() {
+        return Err(ApiError::BadRequest {
+            code: "view_requires_project",
+            message: "view_id requires project_id to be set".into(),
+        });
+    }
+    if body.project_id.is_some()
+        && body.view_id.is_none()
+        && body.expected_version.is_none()
+    {
+        return Err(ApiError::BadRequest {
+            code: "missing_expected_version",
+            message:
+                "expected_version is required for project-level attach (omit project_id to skip attach)"
+                    .into(),
+        });
+    }
+
+    let (number, payload) = state
         .issue_writer
         .create_issue(&org.login, &repo.name, &body.title, body.body.as_deref())
         .await
         .map_err(IssueWriteError::into_api_error)?;
+
+    // Best-effort local upsert. If the backend didn't surface a
+    // payload (unconfigured stub, fake) or the parse / write
+    // tripped, the audit row + GitHub-side create still happened;
+    // the next sync reconciles. We just lose the in-request attach
+    // step in that case.
+    let local_issue_id: Option<Uuid> = if let Some(value) = payload {
+        match dp_fetcher::worker::handlers::parse_issue_upsert(
+            org.id,
+            repo.id,
+            &value,
+        ) {
+            Ok(upsert) => match state
+                .store
+                .upsert_issue_from_github(&upsert, chrono::Duration::zero())
+                .await
+            {
+                Ok((issue, _outcome)) => Some(issue.id),
+                Err(e) => {
+                    tracing::warn!(
+                        target: "dp_rest::issues_write",
+                        repo_id = %body.repo_id,
+                        number,
+                        error = %e,
+                        "post-create local upsert failed; row will reconcile on next webhook",
+                    );
+                    None
+                }
+            },
+            Err(e) => {
+                tracing::warn!(
+                    target: "dp_rest::issues_write",
+                    repo_id = %body.repo_id,
+                    number,
+                    error = %e,
+                    "post-create parse of github payload failed; row will reconcile on next webhook",
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    // Optional attach. Only runs when the local row materialised —
+    // otherwise we don't have an `issue_id` to insert into the
+    // join tables. The caller's UI surfaces this case as "created,
+    // will appear after sync" via the `issue_id: null` response.
+    let mut audit_suffix = String::new();
+    if let (Some(project_id), Some(issue_id)) = (body.project_id, local_issue_id) {
+        if let Some(view_id) = body.view_id {
+            // View-only attach: confirm project exists then write
+            // into the view membership table. No CAS, no project
+            // mutation.
+            if state.store.get_project(project_id).await?.is_none() {
+                return Err(ApiError::NotFound {
+                    code: "project_not_found",
+                    message: format!("no project with id {project_id}"),
+                });
+            }
+            state.store.add_issues_to_view(view_id, &[issue_id]).await?;
+            audit_suffix = format!(":project={project_id}:view={view_id}");
+        } else {
+            // Project-level attach. `expected_version` is
+            // guaranteed `Some` by the upfront validation.
+            let expected_version = body.expected_version.unwrap();
+            state
+                .store
+                .add_issues_to_project(
+                    project_id,
+                    expected_version,
+                    &[issue_id],
+                    Some(principal.actor_user_id),
+                )
+                .await
+                .map_err(|e| {
+                    crate::project_issues::map_cas_error(project_id, e)
+                })?;
+            audit_suffix = format!(":project={project_id}");
+        }
+    }
+
     // Target = "{repo_id}#{number}" so the §11 transparency query
     // can correlate the audit row with the eventual dp_issues row.
+    // `audit_suffix` carries the attach context when present.
     audit::record(
         &*state.store,
         principal.actor_user_id,
         audit::ISSUE_CREATE,
-        format!("{}#{number}", body.repo_id),
+        format!("{}#{number}{audit_suffix}", body.repo_id),
     )
     .await?;
     Ok(Json(CreateIssueResponse {
         repo_id: body.repo_id,
         number,
+        issue_id: local_issue_id,
     }))
 }
 
@@ -909,7 +1072,7 @@ mod tests {
             repo: &str,
             title: &str,
             _: Option<&str>,
-        ) -> Result<i64, IssueWriteError> {
+        ) -> Result<(i64, Option<serde_json::Value>), IssueWriteError> {
             self.calls
                 .lock()
                 .unwrap()
@@ -919,7 +1082,12 @@ mod tests {
             }
             let mut n = self.next_number.lock().unwrap();
             *n += 1;
-            Ok(*n)
+            // Return `None` as the payload — the existing happy-
+            // path test asserts the legacy "created on GitHub, no
+            // local row yet" shape (`issue_id: null`). The newer
+            // attach-on-create tests below seed a payload via a
+            // dedicated `PayloadBackend`.
+            Ok((*n, None))
         }
         async fn update_issue(
             &self,

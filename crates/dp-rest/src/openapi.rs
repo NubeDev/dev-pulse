@@ -197,6 +197,7 @@ async fn webhook_github_stub() {}
         // Admin.
         crate::admin::RefreshResponse,
         crate::admin::FetchRunDto,
+        crate::admin::FetchRunErrorSampleDto,
         crate::admin::UserExport,
         crate::admin::ExportEvent,
         crate::admin::MembershipDto,

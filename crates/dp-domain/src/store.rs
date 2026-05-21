@@ -21,7 +21,7 @@ use uuid::Uuid;
 use crate::app_install::OrgAppInstall;
 use crate::audit::AuditEntry;
 use crate::event::{ActivityEvent, ActorRole, EventActor, EventKind};
-use crate::fetch::{FetchCursor, FetchRun, FetchRunKind, ResourceKind};
+use crate::fetch::{FetchCursor, FetchRun, FetchRunErrorSample, FetchRunKind, ResourceKind};
 use crate::freshness::DataAsOf;
 use crate::inbox::{InboxIssueRow, InboxStatus, UserIssueState};
 use crate::issue::{Issue, IssueState, IssueUpsert, IssueUpsertOutcome, RepoSummary};
@@ -1048,6 +1048,24 @@ pub trait Store: Send + Sync {
         partial: bool,
     ) -> Result<(), StoreError>;
 
+    /// Attach a bounded sample of per-item failures to a run so
+    /// `/admin/runs` can explain *why* `errors > 0`. Called by the
+    /// reconciler / backfill / webhook worker just before
+    /// [`Self::finish_fetch_run`]; clean runs skip this call.
+    ///
+    /// Implementations should overwrite (not append) so a retry of
+    /// the close path doesn't double-write. The default impl is a
+    /// no-op — backends that don't track samples (in-memory test
+    /// fakes) silently drop them, which keeps existing fakes
+    /// compiling without forcing them to grow new storage.
+    async fn record_fetch_run_errors(
+        &self,
+        _id: Uuid,
+        _samples: &[FetchRunErrorSample],
+    ) -> Result<(), StoreError> {
+        Ok(())
+    }
+
     /// List the most recent `limit` runs of any kind, newest first.
     async fn list_recent_fetch_runs(&self, limit: i64) -> Result<Vec<FetchRun>, StoreError>;
 
@@ -2042,6 +2060,52 @@ pub trait Store: Send + Sync {
     ) -> Result<Vec<crate::project_view::ProjectView>, StoreError> {
         Err(StoreError::Invalid(
             "project views not supported by this store".into(),
+        ))
+    }
+
+    // ---- per-view (per-tab) issue membership ----------------------
+    //
+    // Parallel to the project-level membership pair above; a row in
+    // `dp_project_view_issues` marks an issue as manually placed on
+    // a saved view. The "All" tab (no view selected) keeps using
+    // [`Store::list_issue_ids_for_project`].
+
+    /// List the issue ids manually placed on `view_id`, in the
+    /// order they were added (oldest first). Caller is responsible
+    /// for ensuring the view exists and is owned by the requester
+    /// — this method does not gate on owner.
+    async fn list_issue_ids_for_view(
+        &self,
+        _view_id: Uuid,
+    ) -> Result<Vec<Uuid>, StoreError> {
+        Ok(Vec::new())
+    }
+
+    /// Idempotently attach issues to a saved view. The natural-key
+    /// PK `(view_id, issue_id)` makes a re-add a no-op. Caller
+    /// must have already attached the issues to the parent
+    /// project — this method does not validate cross-project
+    /// membership; the FK on `issue_id` is the only guardrail.
+    async fn add_issues_to_view(
+        &self,
+        _view_id: Uuid,
+        _issue_ids: &[Uuid],
+    ) -> Result<(), StoreError> {
+        Err(StoreError::Invalid(
+            "project view membership not supported by this store".into(),
+        ))
+    }
+
+    /// Idempotently detach an issue from a saved view. A no-op
+    /// detach (the issue wasn't on the view) returns `Ok(())` so
+    /// retries don't 404 the caller.
+    async fn remove_issue_from_view(
+        &self,
+        _view_id: Uuid,
+        _issue_id: Uuid,
+    ) -> Result<(), StoreError> {
+        Err(StoreError::Invalid(
+            "project view membership not supported by this store".into(),
         ))
     }
 

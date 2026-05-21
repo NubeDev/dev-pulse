@@ -33,7 +33,7 @@ use axum::{
 };
 use bytes::Bytes;
 use dp_domain::event::ActorRole;
-use dp_domain::fetch::{FetchRun, FetchRunKind};
+use dp_domain::fetch::{FetchRun, FetchRunErrorSample, FetchRunKind};
 use dp_domain::store::{EventActorRow, Store, StoreError};
 use dp_fetcher::reconciler::{Scheduler, Scope};
 use serde::{Deserialize, Serialize};
@@ -231,6 +231,42 @@ pub struct FetchRunDto {
     pub errors: i64,
     /// `true` if the run finished but some items failed.
     pub partial: bool,
+    /// Bounded sample of per-item failure context, captured by the
+    /// fetcher so the admin UI can explain *why* `errors > 0`
+    /// without leaving the page. `None` for clean runs and for
+    /// runs that pre-date the column.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_sample: Option<Vec<FetchRunErrorSampleDto>>,
+}
+
+/// One captured failure inside a [`FetchRunDto`]. Mirrors
+/// [`FetchRunErrorSample`] verbatim so the wire shape matches
+/// the domain shape — only added so `ToSchema` shows it in the
+/// openapi document.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct FetchRunErrorSampleDto {
+    /// Org login at the time of capture.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub org: Option<String>,
+    /// `owner/name` of the repo, when the failure was repo-scoped.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+    /// Resource kind / source (`"Issues"`, `"webhook:push"`, …).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// Rendered, truncated error message.
+    pub error: String,
+}
+
+impl From<FetchRunErrorSample> for FetchRunErrorSampleDto {
+    fn from(s: FetchRunErrorSample) -> Self {
+        Self {
+            org: s.org,
+            repo: s.repo,
+            kind: s.kind,
+            error: s.error,
+        }
+    }
 }
 
 impl From<FetchRun> for FetchRunDto {
@@ -243,6 +279,9 @@ impl From<FetchRun> for FetchRunDto {
             items: r.items,
             errors: r.errors,
             partial: r.partial,
+            error_sample: r
+                .error_sample
+                .map(|v| v.into_iter().map(FetchRunErrorSampleDto::from).collect()),
         }
     }
 }
@@ -715,6 +754,7 @@ mod tests {
                 items: 1,
                 errors: 0,
                 partial: false,
+                error_sample: None,
             });
             id
         }
@@ -856,6 +896,7 @@ mod tests {
                 items: 0,
                 errors: 0,
                 partial: false,
+                error_sample: None,
             });
             Ok(id)
         }

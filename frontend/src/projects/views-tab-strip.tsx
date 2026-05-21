@@ -92,6 +92,8 @@ export function ViewsTabStrip({
   const [savePromptOpen, setSavePromptOpen] = useState(false);
   const [draftName, setDraftName] = useState("");
   const [dragId, setDragId] = useState<string | null>(null);
+  const [renamingViewId, setRenamingViewId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
 
   const activeView = activeViewId
     ? views.find((v) => v.id === activeViewId) ?? null
@@ -118,6 +120,34 @@ export function ViewsTabStrip({
       filter_clauses: current.filterClauses,
       sort: current.sort,
     });
+  };
+
+  const submitRename = (): void => {
+    if (!renamingViewId) return;
+    const target = views.find((v) => v.id === renamingViewId);
+    if (!target) {
+      setRenamingViewId(null);
+      return;
+    }
+    const next = renameDraft.trim();
+    if (!next || next === target.name) {
+      setRenamingViewId(null);
+      setRenameDraft("");
+      return;
+    }
+    onUpdateView(target.id, {
+      name: next,
+      group_by: target.group_by,
+      filter_clauses: target.filter_clauses,
+      sort: target.sort,
+    });
+    setRenamingViewId(null);
+    setRenameDraft("");
+  };
+
+  const cancelRename = (): void => {
+    setRenamingViewId(null);
+    setRenameDraft("");
   };
 
   const handleDrop = (targetId: string): void => {
@@ -155,11 +185,12 @@ export function ViewsTabStrip({
       {views.map((v) => {
         const active = v.id === activeViewId;
         const dirty = active && isDirty;
+        const renaming = renamingViewId === v.id;
         return (
           <div
             key={v.id}
             className="flex items-center"
-            draggable
+            draggable={!renaming}
             onDragStart={() => setDragId(v.id)}
             onDragOver={(e) => {
               if (dragId) e.preventDefault();
@@ -167,44 +198,84 @@ export function ViewsTabStrip({
             onDrop={() => handleDrop(v.id)}
             onDragEnd={() => setDragId(null)}
           >
-            <ViewTabButton
-              label={dirty ? `● ${v.name} *` : v.name}
-              active={active}
-              onClick={() => onSelectView(v.id)}
-              testid={`project-view-tab-${v.id}`}
-            />
-            {active && (
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 px-1 text-muted-foreground"
-                    aria-label={`Actions for view ${v.name}`}
-                    data-testid={`project-view-tab-menu-${v.id}`}
-                  >
-                    ⋯
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  <DropdownMenuItem
-                    disabled={busy}
-                    onSelect={() => {
-                      if (
-                        // eslint-disable-next-line no-alert
-                        window.confirm(
-                          `Delete view "${v.name}"? This can't be undone.`,
-                        )
-                      ) {
-                        onDeleteView(v.id);
-                      }
-                    }}
-                    data-testid={`project-view-tab-delete-${v.id}`}
-                  >
-                    Delete view
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
+            {renaming ? (
+              <div className="flex items-center gap-1">
+                <Input
+                  autoFocus
+                  value={renameDraft}
+                  onChange={(e) => setRenameDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") submitRename();
+                    if (e.key === "Escape") cancelRename();
+                  }}
+                  maxLength={60}
+                  className="h-7 w-40 text-sm"
+                  data-testid={`project-view-rename-input-${v.id}`}
+                />
+                <Button
+                  size="sm"
+                  onClick={submitRename}
+                  disabled={busy || renameDraft.trim().length === 0}
+                  data-testid={`project-view-rename-confirm-${v.id}`}
+                >
+                  Save
+                </Button>
+                <Button size="sm" variant="ghost" onClick={cancelRename}>
+                  Cancel
+                </Button>
+              </div>
+            ) : (
+              <>
+                <ViewTabButton
+                  label={dirty ? `● ${v.name} *` : v.name}
+                  active={active}
+                  onClick={() => onSelectView(v.id)}
+                  testid={`project-view-tab-${v.id}`}
+                />
+                {active && (
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 px-1 text-muted-foreground"
+                        aria-label={`Actions for view ${v.name}`}
+                        data-testid={`project-view-tab-menu-${v.id}`}
+                      >
+                        ⋯
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem
+                        disabled={busy}
+                        onSelect={() => {
+                          setRenameDraft(v.name);
+                          setRenamingViewId(v.id);
+                        }}
+                        data-testid={`project-view-tab-rename-${v.id}`}
+                      >
+                        Rename view
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        disabled={busy}
+                        onSelect={() => {
+                          if (
+                            // eslint-disable-next-line no-alert
+                            window.confirm(
+                              `Delete view "${v.name}"? This can't be undone.`,
+                            )
+                          ) {
+                            onDeleteView(v.id);
+                          }
+                        }}
+                        data-testid={`project-view-tab-delete-${v.id}`}
+                      >
+                        Delete view
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                )}
+              </>
             )}
           </div>
         );

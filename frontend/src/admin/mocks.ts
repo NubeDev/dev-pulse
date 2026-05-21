@@ -41,12 +41,22 @@ export const MOCK_RUNS: ReadonlyArray<FetchRunDto> = [
   { id: "00000000-0000-0000-0000-0000000000r3", kind: "reconciler",
     started: new Date(MOCK_NOW - 70 * MIN).toISOString(),
     finished: new Date(MOCK_NOW - 69 * MIN).toISOString(),
-    items: 88, errors: 3, partial: true },
+    items: 88, errors: 3, partial: true,
+    error_sample: [
+      { org: "acme",   repo: "acme/api",        kind: "Issues",       error: "GitHub 502 Bad Gateway" },
+      { org: "globex", repo: "globex/web",      kind: "PullRequests", error: "rate limit: remaining=0, reset in 412s" },
+      { org: "acme",   repo: "acme/scheduler",  kind: "Commits",      error: "timeout reading branch list (deadline 10s)" },
+    ] },
   // failed (errors > 0, not partial — every item failed)
   { id: "00000000-0000-0000-0000-0000000000r4", kind: "backfill",
     started: new Date(MOCK_NOW - 4 * 60 * MIN).toISOString(),
     finished: new Date(MOCK_NOW - 3 * 60 * MIN).toISOString(),
-    items: 0, errors: 12, partial: false },
+    items: 0, errors: 12, partial: false,
+    error_sample: [
+      { org: "initech", repo: "initech/legacy", kind: "Issues",       error: "GitHub 401 Unauthorized — installation token expired" },
+      { org: "initech", repo: "initech/legacy", kind: "PullRequests", error: "GitHub 401 Unauthorized — installation token expired" },
+      { org: "initech", repo: "initech/legacy", kind: "Commits",      error: "GitHub 401 Unauthorized — installation token expired" },
+    ] },
   ...Array.from({ length: 28 }, (_, i): FetchRunDto => ({
     id: `00000000-0000-0000-0000-${(0xc0ffee + i).toString(16).padStart(12, "0")}`,
     kind: i % 4 === 0 ? "backfill" : "reconciler",

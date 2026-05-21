@@ -34,6 +34,7 @@ import {
   type BulkInboxResponse,
   type CreateCommentRequest,
   type CreateIssueRequest,
+  type CreateIssueResponse,
   type CreateTagRequest,
   type InboxStatus,
   type IssueDatesDto,
@@ -547,20 +548,12 @@ export function useToggleIssueState() {
 
 export function useCreateIssue() {
   const qc = useQueryClient();
-  return useMutation<IssueDto, Error, CreateIssueRequest>({
+  return useMutation<CreateIssueResponse, Error, CreateIssueRequest>({
     mutationFn: async (req) => {
       if (USE_MOCK) {
-        const id = crypto.randomUUID();
         return {
-          ...mockIssue,
-          id,
+          repo_id: req.repo_id,
           number: mockIssue.number + 1,
-          title: req.title,
-          body: req.body ?? null,
-          labels: req.labels ?? [],
-          assignees: req.assignees ?? [],
-          milestone: req.milestone ?? null,
-          version: 1,
         };
       }
       return api.createIssue(req);

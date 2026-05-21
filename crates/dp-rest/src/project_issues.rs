@@ -74,13 +74,27 @@ pub const BULK_ADD_ISSUE_CAP: usize = 100;
 pub struct BulkAddIssuesRequest {
     /// The `version` the caller observed on the project row. A
     /// mismatch returns `409 stale_project_version` just like the
-    /// §7.1 PATCH / archive routes.
-    pub expected_version: i64,
+    /// §7.1 PATCH / archive routes. Optional only when `view_id`
+    /// is set — view-scoped adds don't mutate the project row and
+    /// therefore don't need CAS. Required for project-level adds;
+    /// the handler returns `400 missing_expected_version` if it's
+    /// missing in that case.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_version: Option<i64>,
     /// Issue ids to attach. Capped at [`BULK_ADD_ISSUE_CAP`]; over
     /// the cap returns `400 bulk_add_too_large`. An empty array is
     /// accepted as a no-op (returns `BulkAddResult { added: [],
     /// skipped: [] }` and does not bump the project version).
     pub issue_ids: Vec<Uuid>,
+    /// Optional saved-view id (PROJECT-VIEW.md §5.4 amendment).
+    /// When set, the accepted issues are *also* attached to the
+    /// named view's membership table after the project add
+    /// succeeds, so the tab the user added them on retains them.
+    /// Skipped (already-in-project) ids are still added to the
+    /// view — the user expects the issues to appear on the tab
+    /// regardless of whether they were brand new to the project.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view_id: Option<Uuid>,
 }
 
 /// One row in [`BulkAddResult::skipped`]. Mirrors
@@ -144,7 +158,18 @@ impl From<ProjectIssueAddOutcome> for BulkAddResult {
 #[derive(Debug, Clone, Deserialize)]
 pub struct RemoveIssueQuery {
     /// The `version` the caller observed on the project row.
-    pub expected_version: i64,
+    /// Required when `view` is absent (project-level detach);
+    /// ignored when `view` is set (view-membership detach does not
+    /// mutate the project row).
+    #[serde(default)]
+    pub expected_version: Option<i64>,
+    /// Optional saved-view id (PROJECT-VIEW.md §5.4 amendment).
+    /// When set, the detach is scoped to the view's membership
+    /// table only — the issue stays on the project and on every
+    /// other view that includes it. When absent, the detach is
+    /// project-level (and cascades into every view via the FK).
+    #[serde(default)]
+    pub view: Option<Uuid>,
 }
 
 /// Query params for `GET /projects/{id}/issues`. Slice A keeps the
@@ -200,13 +225,21 @@ pub struct ListProjectIssuesQuery {
     /// Unknown values return `400 invalid_sort`.
     #[serde(default)]
     pub sort: Option<String>,
+    /// Optional saved-view id (PROJECT-VIEW.md §5.4 amendment).
+    /// When set, the response intersects project membership with
+    /// the view's `dp_project_view_issues` rows, then applies the
+    /// caller-supplied `filter` / `group_by` / `sort` on top. When
+    /// absent, the request behaves as the "All" tab and returns
+    /// every project-level issue (the historical default).
+    #[serde(default)]
+    pub view: Option<Uuid>,
 }
 
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
 
-fn map_cas_error(project_id: Uuid, err: StoreError) -> ApiError {
+pub(crate) fn map_cas_error(project_id: Uuid, err: StoreError) -> ApiError {
     match err {
         StoreError::NotFound { entity: "project", .. } => ApiError::NotFound {
             code: "project_not_found",
@@ -292,7 +325,16 @@ pub async fn list_project_issues(
     let filter_clauses = parse_filter(q.filter.as_deref())?;
     let sort_order = parse_sort(q.sort.as_deref())?;
 
-    let ids = state.store.list_issue_ids_for_project(project_id).await?;
+    // PROJECT-VIEW.md §5.4 amendment — saved-view tabs are
+    // independent containers. When `?view=` is set the membership
+    // list comes *only* from `dp_project_view_issues`; we do not
+    // intersect with project-level membership. This is what makes
+    // an issue added on a saved-view tab appear *only* on that tab
+    // and not bleed into the "All" tab.
+    let ids: Vec<Uuid> = match q.view {
+        Some(view_id) => state.store.list_issue_ids_for_view(view_id).await?,
+        None => state.store.list_issue_ids_for_project(project_id).await?,
+    };
     // Resolve each issue row. Missing rows (target FK was hard-deleted
     // out from under us — unlikely given `ON DELETE CASCADE` but
     // belt-and-braces) are silently dropped; the membership row
@@ -808,11 +850,65 @@ pub async fn bulk_add_issues(
             ),
         });
     }
+
+    // PROJECT-VIEW.md §5.4 amendment — saved-view tabs are
+    // independent containers. A POST with `view_id` attaches the
+    // issues *only* to the view membership and never touches
+    // `dp_project_issues`. No CAS, no version bump, no "All" tab
+    // side effect. We still validate cross-org + unknown-issue so
+    // the UI gets the same closed-vocabulary `skipped` surface.
+    if let Some(view_id) = body.view_id {
+        let project = state
+            .store
+            .get_project(project_id)
+            .await?
+            .ok_or_else(|| ApiError::NotFound {
+                code: "project_not_found",
+                message: format!("no project with id {project_id}"),
+            })?;
+        let mut added: Vec<Uuid> = Vec::new();
+        let mut skipped: Vec<BulkAddSkipDto> = Vec::new();
+        for &issue_id in &body.issue_ids {
+            match state.store.get_issue(issue_id).await? {
+                None => skipped.push(BulkAddSkipDto {
+                    issue_id,
+                    reason: "unknown_issue".into(),
+                    existing_project_id: None,
+                }),
+                Some(i) if i.org_id != project.org_id => skipped.push(BulkAddSkipDto {
+                    issue_id,
+                    reason: "cross_org".into(),
+                    existing_project_id: None,
+                }),
+                Some(_) => added.push(issue_id),
+            }
+        }
+        if !added.is_empty() {
+            state.store.add_issues_to_view(view_id, &added).await?;
+        }
+        for issue_id in &added {
+            audit::record(
+                state.store.as_ref(),
+                principal.actor_user_id,
+                audit::PROJECT_ISSUE_ADD,
+                format!("{project_id}:{issue_id}:view={view_id}"),
+            )
+            .await?;
+        }
+        return Ok(Json(BulkAddResult { added, skipped }));
+    }
+
+    // Project-level add (the "All" tab). CAS is mandatory here
+    // because the project row's `version`/`issue_count` mutates.
+    let expected_version = body.expected_version.ok_or(ApiError::BadRequest {
+        code: "missing_expected_version",
+        message: "expected_version is required for project-level bulk add".into(),
+    })?;
     let outcome = state
         .store
         .add_issues_to_project(
             project_id,
-            body.expected_version,
+            expected_version,
             &body.issue_ids,
             Some(principal.actor_user_id),
         )
@@ -856,9 +952,39 @@ pub async fn remove_project_issue(
     Path((project_id, issue_id)): Path<(Uuid, Uuid)>,
     Query(q): Query<RemoveIssueQuery>,
 ) -> Result<Response, ApiError> {
+    // PROJECT-VIEW.md §5.4 amendment — a `?view=` scopes the detach
+    // to the saved view's membership only; the issue stays on the
+    // project. No `expected_version` is required (the project row
+    // doesn't mutate). Audit verb stays `project_issue_remove`
+    // with the view id appended so an operator can still trace
+    // "why did this issue disappear from a tab".
+    if let Some(view_id) = q.view {
+        // Confirm the project exists so we 404 rather than silently
+        // succeed on a stale URL.
+        if state.store.get_project(project_id).await?.is_none() {
+            return Err(ApiError::NotFound {
+                code: "project_not_found",
+                message: format!("no project with id {project_id}"),
+            });
+        }
+        state.store.remove_issue_from_view(view_id, issue_id).await?;
+        audit::record(
+            state.store.as_ref(),
+            principal.actor_user_id,
+            audit::PROJECT_ISSUE_REMOVE,
+            format!("{project_id}:{issue_id}:view={view_id}"),
+        )
+        .await?;
+        return Ok(StatusCode::NO_CONTENT.into_response());
+    }
+    let expected_version = q.expected_version.ok_or(ApiError::BadRequest {
+        code: "missing_expected_version",
+        message: "expected_version query param is required for project-level detach"
+            .to_owned(),
+    })?;
     state
         .store
-        .remove_issue_from_project(project_id, issue_id, q.expected_version)
+        .remove_issue_from_project(project_id, issue_id, expected_version)
         .await
         .map_err(|e| map_cas_error(project_id, e))?;
     audit::record(
@@ -1048,6 +1174,7 @@ mod tests {
         projects: Mutex<Vec<Project>>,
         issues: Mutex<Vec<Issue>>,
         memberships: Mutex<Vec<(Uuid, Uuid)>>, // (project, issue)
+        view_memberships: Mutex<Vec<(Uuid, Uuid)>>, // (view, issue)
         audit: Mutex<Vec<AuditEntry>>,
     }
 
@@ -1212,7 +1339,54 @@ mod tests {
             project.version += 1;
             project.issue_count = links.iter().filter(|(p, _)| *p == project_id).count() as i32;
             project.updated_at = Utc::now();
+            // Cascade matches the PG `ON DELETE CASCADE` from the
+            // 0036 migration — a project-level detach must drop
+            // every view-membership row that references this issue.
+            self.view_memberships
+                .lock()
+                .unwrap()
+                .retain(|(_, i)| *i != issue_id);
             Ok(project.clone())
+        }
+
+        async fn list_issue_ids_for_view(
+            &self,
+            view_id: Uuid,
+        ) -> Result<Vec<Uuid>, StoreError> {
+            Ok(self
+                .view_memberships
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(v, _)| *v == view_id)
+                .map(|(_, i)| *i)
+                .collect())
+        }
+
+        async fn add_issues_to_view(
+            &self,
+            view_id: Uuid,
+            issue_ids: &[Uuid],
+        ) -> Result<(), StoreError> {
+            let mut rows = self.view_memberships.lock().unwrap();
+            for &iid in issue_ids {
+                if !rows.iter().any(|(v, i)| *v == view_id && *i == iid) {
+                    rows.push((view_id, iid));
+                }
+            }
+            Ok(())
+        }
+
+        async fn remove_issue_from_view(
+            &self,
+            view_id: Uuid,
+            issue_id: Uuid,
+        ) -> Result<(), StoreError> {
+            self.view_memberships
+                .lock()
+                .unwrap()
+                .retain(|(v, i)| !(*v == view_id && *i == issue_id));
+            Ok(())
         }
 
         async fn get_project_for_issue(
@@ -2237,5 +2411,211 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         let v = json_of(resp).await;
         assert_eq!(v["code"], "invalid_sort");
+    }
+
+    // -----------------------------------------------------------------
+    // View (tab) membership — PROJECT-VIEW.md §5.4 amendment.
+    // -----------------------------------------------------------------
+
+    #[tokio::test]
+    async fn list_with_view_uses_view_membership_only() {
+        // `?view=<id>` returns the view's manual membership
+        // independently of project-level membership. Project rows
+        // that aren't on the view must not appear; conversely,
+        // view rows that aren't on the project SHOULD appear.
+        let store = Arc::new(MemStore::default());
+        let org = Uuid::new_v4();
+        let project = seed_project(&store, org);
+        let on_tab = seed_issue(&store, org, IssueState::Open, "on tab");
+        let off_tab = seed_issue(&store, org, IssueState::Open, "off tab");
+        // `off_tab` is on the project but not the view; `on_tab`
+        // is only on the view (proving the view-tab no longer
+        // depends on project membership).
+        store
+            .memberships
+            .lock()
+            .unwrap()
+            .push((project.id, off_tab.id));
+        let view_id = Uuid::new_v4();
+        store
+            .view_memberships
+            .lock()
+            .unwrap()
+            .push((view_id, on_tab.id));
+        let app = build_app(store, Uuid::new_v4());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/projects/{}/issues?view={}", project.id, view_id))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = json_of(resp).await;
+        assert_eq!(v["total"], 1);
+        assert_eq!(v["rows"][0]["title"], "on tab");
+    }
+
+    #[tokio::test]
+    async fn bulk_add_with_view_id_attaches_to_view_only() {
+        // Per the §5.4 amendment, saved-view tabs are independent
+        // containers: a POST with `view_id` attaches the issues
+        // *only* to the view membership and never touches the
+        // project membership. `expected_version` is therefore
+        // optional in this mode.
+        let store = Arc::new(MemStore::default());
+        let org = Uuid::new_v4();
+        let project = seed_project(&store, org);
+        let issue = seed_issue(&store, org, IssueState::Open, "newly added");
+        let view_id = Uuid::new_v4();
+        let app = build_app(store.clone(), Uuid::new_v4());
+        let body = serde_json::json!({
+            "issue_ids": [issue.id],
+            "view_id": view_id,
+        });
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/projects/{}/issues", project.id))
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        // View membership grew; project membership did not.
+        assert!(store
+            .view_memberships
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(v, i)| *v == view_id && *i == issue.id));
+        assert!(!store
+            .memberships
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(p, i)| *p == project.id && *i == issue.id));
+    }
+
+    #[tokio::test]
+    async fn bulk_add_with_view_id_rejects_cross_org_issue() {
+        // Validation (org match) still runs in view mode so the UI
+        // gets the same `skipped` surface it gets on project-level
+        // adds.
+        let store = Arc::new(MemStore::default());
+        let org = Uuid::new_v4();
+        let other_org = Uuid::new_v4();
+        let project = seed_project(&store, org);
+        let issue = seed_issue(&store, other_org, IssueState::Open, "wrong org");
+        let view_id = Uuid::new_v4();
+        let app = build_app(store.clone(), Uuid::new_v4());
+        let body = serde_json::json!({
+            "issue_ids": [issue.id],
+            "view_id": view_id,
+        });
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/projects/{}/issues", project.id))
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = json_of(resp).await;
+        assert_eq!(v["added"].as_array().unwrap().len(), 0);
+        assert_eq!(v["skipped"][0]["reason"], "cross_org");
+        assert!(store.view_memberships.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn delete_with_view_scope_removes_only_from_view() {
+        // `?view=<id>` scopes the detach to the view's membership
+        // table; the project-level link survives, and no
+        // `expected_version` is required.
+        let store = Arc::new(MemStore::default());
+        let org = Uuid::new_v4();
+        let project = seed_project(&store, org);
+        let issue = seed_issue(&store, org, IssueState::Open, "stays in project");
+        store
+            .memberships
+            .lock()
+            .unwrap()
+            .push((project.id, issue.id));
+        let view_id = Uuid::new_v4();
+        store
+            .view_memberships
+            .lock()
+            .unwrap()
+            .push((view_id, issue.id));
+        let app = build_app(store.clone(), Uuid::new_v4());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!(
+                        "/projects/{}/issues/{}?view={}",
+                        project.id, issue.id, view_id
+                    ))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        // View row gone.
+        assert!(!store
+            .view_memberships
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(v, i)| *v == view_id && *i == issue.id));
+        // Project row preserved.
+        assert!(store
+            .memberships
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(p, i)| *p == project.id && *i == issue.id));
+    }
+
+    #[tokio::test]
+    async fn delete_without_view_still_requires_expected_version() {
+        // The project-level detach path is unchanged: missing
+        // expected_version returns 400.
+        let store = Arc::new(MemStore::default());
+        let org = Uuid::new_v4();
+        let project = seed_project(&store, org);
+        let issue = seed_issue(&store, org, IssueState::Open, "x");
+        store
+            .memberships
+            .lock()
+            .unwrap()
+            .push((project.id, issue.id));
+        let app = build_app(store, Uuid::new_v4());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!(
+                        "/projects/{}/issues/{}",
+                        project.id, issue.id
+                    ))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let v = json_of(resp).await;
+        assert_eq!(v["code"], "missing_expected_version");
     }
 }

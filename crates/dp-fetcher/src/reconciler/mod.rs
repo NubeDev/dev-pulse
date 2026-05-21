@@ -65,7 +65,7 @@ use std::time::Duration;
 
 use chrono::Utc;
 use dp_domain::{
-    FetchCursor, FetchRunKind, ResourceKind, Store, StoreError,
+    fetch::FetchRunErrorSample, FetchCursor, FetchRunKind, ResourceKind, Store, StoreError,
 };
 use tokio::sync::{oneshot, watch, Mutex};
 use tokio::task::JoinHandle;
@@ -228,6 +228,22 @@ impl Reconciler {
 
         let mut stats = TickStats::default();
         let mut successes: i64 = 0;
+        // Bounded sample of per-`(target, kind)` failures so
+        // `/admin/runs` can surface *why* `errors > 0` without the
+        // operator needing to grep the log. Capped well below the
+        // JSONB row-bloat threshold; a tick with hundreds of failures
+        // shows the first handful, which is enough to spot patterns
+        // (one bad repo, one failing kind, total outage).
+        const ERROR_SAMPLE_CAP: usize = 10;
+        const ERROR_MSG_CAP: usize = 500;
+        let mut error_samples: Vec<FetchRunErrorSample> = Vec::new();
+        fn truncate(mut s: String, cap: usize) -> String {
+            if s.len() > cap {
+                s.truncate(cap);
+                s.push_str("\u{2026}");
+            }
+            s
+        }
 
         // -------- org-scoped pass (teams / members) ------------
         //
@@ -257,6 +273,14 @@ impl Reconciler {
                     }
                     Err(e) => {
                         tracing::warn!(error = %e, "reconcile (org) failed");
+                        if error_samples.len() < ERROR_SAMPLE_CAP {
+                            error_samples.push(FetchRunErrorSample {
+                                org: Some(target.owner_login.clone()),
+                                repo: None,
+                                kind: Some(format!("{kind:?}")),
+                                error: truncate(e.to_string(), ERROR_MSG_CAP),
+                            });
+                        }
                         stats.errors += 1;
                     }
                 }
@@ -283,6 +307,17 @@ impl Reconciler {
                     }
                     Err(e) => {
                         tracing::warn!(error = %e, "reconcile failed");
+                        if error_samples.len() < ERROR_SAMPLE_CAP {
+                            error_samples.push(FetchRunErrorSample {
+                                org: Some(target.owner_login.clone()),
+                                repo: Some(format!(
+                                    "{}/{}",
+                                    target.owner_login, target.repo_name
+                                )),
+                                kind: Some(format!("{kind:?}")),
+                                error: truncate(e.to_string(), ERROR_MSG_CAP),
+                            });
+                        }
                         stats.errors += 1;
                     }
                 }
@@ -290,6 +325,19 @@ impl Reconciler {
         }
 
         stats.partial = stats.errors > 0 && successes > 0;
+        // Persist samples before closing the run so a reader who
+        // sees `finished IS NOT NULL` also sees the explanation;
+        // best-effort — a store hiccup here shouldn't mask the
+        // primary tick outcome.
+        if !error_samples.is_empty() {
+            if let Err(e) = self
+                .store
+                .record_fetch_run_errors(run_id, &error_samples)
+                .await
+            {
+                tracing::warn!(error = %e, %run_id, "failed to record reconciler error sample");
+            }
+        }
         self.store
             .finish_fetch_run(run_id, stats.items, stats.errors, stats.partial)
             .await?;

@@ -7,6 +7,41 @@
 
 ---
 
+## 0. Implementation status (May 2026)
+
+All five frontend slices and their backing storage + REST surfaces have
+landed on `main`. A post-design amendment (per-view issue membership)
+shipped on top.
+
+| Slice | Status   | Evidence                                                                                                                                                                                                       |
+|------:|:---------|:---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|     1 | ✅ done  | [frontend/src/projects/milestones-strip.tsx](frontend/src/projects/milestones-strip.tsx); [crates/dp-store-pg/migrations/dp/0030_milestones.sql](crates/dp-store-pg/migrations/dp/0030_milestones.sql)         |
+|     2 | ✅ done  | [frontend/src/projects/project-workbench.tsx](frontend/src/projects/project-workbench.tsx); §7.2 `group_by` wired in [crates/dp-rest/src/project_issues.rs](crates/dp-rest/src/project_issues.rs)              |
+|     3 | ✅ done  | [frontend/src/projects/project-filter-chips.tsx](frontend/src/projects/project-filter-chips.tsx); `filter` param on the same handler                                                                            |
+|     4 | ✅ done  | [crates/dp-store-pg/migrations/dp/0033_project_views.sql](crates/dp-store-pg/migrations/dp/0033_project_views.sql); [crates/dp-rest/src/project_views.rs](crates/dp-rest/src/project_views.rs); [frontend/src/projects/views-tab-strip.tsx](frontend/src/projects/views-tab-strip.tsx) |
+|     5 | ✅ done  | [crates/dp-store-pg/migrations/dp/0035_project_primary_milestone.sql](crates/dp-store-pg/migrations/dp/0035_project_primary_milestone.sql); `POST /projects/{id}/adopt-milestone` in `project_milestones.rs`   |
+|   4.1 | ✅ done  | Amendment — per-view issue membership: [crates/dp-store-pg/migrations/dp/0036_project_view_issues.sql](crates/dp-store-pg/migrations/dp/0036_project_view_issues.sql). Makes tabs behave as containers rather than pure saved searches; the implicit `All` tab is unaffected. |
+
+### Pending / follow-up
+
+- **Open question 1** — ordinal taxonomy config location. Still hardcoded
+  for `gate` / `priority`; no `dp_taxonomy_orders` table yet. Revisit
+  when a tenant needs custom gates.
+- **Open question 2** — shared view auth. `visibility` column exists but
+  is locked to `'private'`; no `(project_views, *)` permission tuple
+  yet. Defer until shared views are scoped.
+- **Open question 3** — high-cardinality `tag:<key>` bucket cap. No
+  server-side cap or `Other` bucket has been added. Revisit on real
+  data.
+- **Open question 4** — sticky-key cleanup. No "tag-key with no data"
+  health badge ships today.
+- **§9 non-goals still hold**: no drag-between-buckets, no Board
+  (Kanban) mode, no cross-project views, no nested group-by.
+- **Slice 6+** (drag → tag mutation): not started. Blocked on
+  [tagging.md](tagging.md) §5.2 push pipeline as originally scoped.
+
+---
+
 ## 1. What we already have
 
 Don't rebuild:
@@ -475,7 +510,7 @@ within one user session.
 
 Land in this order; each is shippable on its own.
 
-### Slice 1 — Milestones strip
+### Slice 1 — Milestones strip — ✅ done
 
 - New component `frontend/src/projects/milestones-strip.tsx`.
 - New hooks: `useProjectMilestones(projectId)`, `useAdoptMilestone(projectId)`.
@@ -485,7 +520,7 @@ Land in this order; each is shippable on its own.
   until Slice 3. Avoids shipping a throwaway pseudo-filter that
   Slice 3 immediately replaces.
 
-### Slice 2 — Group-by dropdown + sectioned list
+### Slice 2 — Group-by dropdown + sectioned list — ✅ done
 
 - New component `frontend/src/projects/project-workbench.tsx` wraps
   the current Issues card.
@@ -495,7 +530,7 @@ Land in this order; each is shippable on its own.
   `<CollapsibleSection>` per server bucket.
 - URL hash: `?group=<dim>`.
 
-### Slice 3 — Filter chips
+### Slice 3 — Filter chips — ✅ done
 
 - `<FilterChipBar>` component with two-step typeahead.
 - `useProjectIssues` extended with `filter` param.
@@ -503,14 +538,18 @@ Land in this order; each is shippable on its own.
 - Wires up Slice 1's `Filter to milestone` overflow item and makes the
   milestone card body clickable.
 
-### Slice 4 — Saved Views
+### Slice 4 — Saved Views — ✅ done
 
 - `dp_project_views` migration + REST + client hooks.
+- Amendment shipped: per-view issue membership via
+  `dp_project_view_issues` (migration 0036) so tabs behave as
+  containers rather than pure saved searches. The implicit `All`
+  tab keeps the pre-existing project-level semantics.
 - `<ViewsTabStrip>` component above the toolbar.
 - Dirty-state `*` marker + `[Save changes]` / `[Discard]` follow-up.
 - Reorder via drag-to-reorder on the tab strip.
 
-### Slice 5 — Primary milestone
+### Slice 5 — Primary milestone — ✅ done
 
 - `dp_projects.primary_milestone_id` migration + DTO field.
 - `★ primary` chip + `Adopt as primary` overflow action wired to a new

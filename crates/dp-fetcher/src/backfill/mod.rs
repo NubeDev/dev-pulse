@@ -74,7 +74,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
-use dp_domain::{FetchCursor, FetchRunKind, ResourceKind, Store, StoreError};
+use dp_domain::{fetch::FetchRunErrorSample, FetchCursor, FetchRunKind, ResourceKind, Store, StoreError};
 use tokio::sync::watch;
 use uuid::Uuid;
 
@@ -315,6 +315,32 @@ impl Backfill {
             Err(_) => (0, 1, false, None),
         };
         let _ = outcome;
+
+        // Persist the failing error string (truncated) so
+        // `/admin/runs` can show *why* a backfill chunk failed
+        // without grepping the log. Skipped here for clean /
+        // skipped chunks — only Err(_) writes a sample.
+        if let Err(e) = &result {
+            let mut msg = e.to_string();
+            const ERROR_MSG_CAP: usize = 500;
+            if msg.len() > ERROR_MSG_CAP {
+                msg.truncate(ERROR_MSG_CAP);
+                msg.push('\u{2026}');
+            }
+            let sample = FetchRunErrorSample {
+                org: Some(target.owner_login.clone()),
+                repo: Some(format!("{}/{}", target.owner_login, target.repo_name)),
+                kind: Some(format!("{kind:?}")),
+                error: msg,
+            };
+            if let Err(re) = self
+                .store
+                .record_fetch_run_errors(run_id, std::slice::from_ref(&sample))
+                .await
+            {
+                tracing::warn!(error = %re, %run_id, "failed to record backfill error sample");
+            }
+        }
 
         // Best-effort close — a store failure on the close path
         // does not invalidate the upserts the chunk already

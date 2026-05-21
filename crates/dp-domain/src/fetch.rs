@@ -70,6 +70,37 @@ pub struct FetchRun {
     /// `true` if the run finished but some items failed (not a hard
     /// failure — the next tick retries).
     pub partial: bool,
+    /// Bounded sample of per-item failures recorded during the run
+    /// (capped at a handful of entries by the writer). `None` for
+    /// runs that completed without errors or that pre-date the
+    /// `error_sample` column.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_sample: Option<Vec<FetchRunErrorSample>>,
+}
+
+/// One captured failure inside a [`FetchRun`]. Carries just enough
+/// context to scan `/admin/runs` without grepping the structured
+/// log: which `(org, repo, resource_kind)` failed and the rendered
+/// error string.
+///
+/// All fields except `error` are `Option` because not every code
+/// path has all three (webhook worker has no resource kind, org
+/// passes have no repo).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FetchRunErrorSample {
+    /// Org login at the time of capture (e.g. `"octocat"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub org: Option<String>,
+    /// `owner/name` of the repo, when the failure was repo-scoped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+    /// Resource kind being reconciled / backfilled when the failure
+    /// happened. Free-form string so the webhook worker can use
+    /// `"webhook"` without inventing a new enum variant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// Rendered error message, truncated by the writer.
+    pub error: String,
 }
 
 /// A per-`(org_id, repo_id, resource_kind)` resume point.
@@ -111,6 +142,7 @@ mod tests {
             items: 0,
             errors: 0,
             partial: false,
+            error_sample: None,
         };
         let back: FetchRun = serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
         assert_eq!(r, back);

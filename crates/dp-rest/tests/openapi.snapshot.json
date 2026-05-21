@@ -307,7 +307,7 @@
           "issues"
         ],
         "summary": "`POST /issues` — create a new GitHub issue.",
-        "description": "No CAS (there is no local row yet). Sequence:\n\n1. Resolve `repo_id -> (Org, Repo)`.\n2. §18.2 step 4 install-permission check.\n3. Call the backend's `create_issue`.\n4. Record the `issue.create` audit row (target = `repo_id#number`).\n\nThe fetcher / webhook receiver materialises the `dp_issues` row\non the next pass.",
+        "description": "No CAS on the issue itself (there is no local row yet). Sequence:\n\n1. Resolve `repo_id -> (Org, Repo)`.\n2. §18.2 step 4 install-permission check.\n3. Call the backend's `create_issue`. On success the backend\n   returns the GitHub issue payload, which we hand to\n   [`dp_fetcher::worker::handlers::parse_issue_upsert`] +\n   [`Store::upsert_issue_from_github`] to materialise the local\n   `dp_issues` row immediately — same two-way-sync trick the\n   PATCH handler uses.\n4. Optional attach: when `project_id` is set, attach the new\n   issue to that project (and to `view_id`'s membership table\n   when set), reusing the same semantics as\n   [`crate::project_issues::bulk_add_issues`]:\n   * `project_id` only → project-level add, requires\n     `expected_version` (`400 missing_expected_version` if not\n     supplied), bumps project version.\n   * `project_id` + `view_id` → view-membership only; no CAS,\n     no project version bump.\n5. Record the `issue.create` audit row (target =\n   `repo_id#number`, with `:project=…` / `:view=…` suffixes\n   when the attach paths fired).",
         "operationId": "create_issue",
         "requestBody": {
           "content": {
@@ -331,10 +331,16 @@
             }
           },
           "400": {
-            "description": "Validation failed at GitHub"
+            "description": "Validation failed at GitHub, or missing expected_version"
           },
           "403": {
             "description": "Writes not available for the target org"
+          },
+          "404": {
+            "description": "Project id supplied but project does not exist"
+          },
+          "409": {
+            "description": "Stale `expected_version` on project-level attach"
           }
         }
       }
@@ -842,6 +848,31 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/UserIssueStateDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/me/orgs": {
+      "get": {
+        "tags": [
+          "directory"
+        ],
+        "summary": "`GET /me/orgs` — orgs the caller has a membership in.",
+        "description": "Narrower than `GET /orgs` (which returns every org dev-pulse\nhas observed). Use this surface when the UI needs to scope a\nwrite to an org the caller is allowed to write to — e.g. the\nAccount → Tags page picking a scope for `POST /tags`, whose\nbackend gate (`tags::ViewerVisibility::visible_org_ids`) only\nadmits orgs the caller is a direct member of. Returning the\nfull directory there causes a confusing 403 when the operator\npicks an org they can see but isn't in.",
+        "operationId": "list_my_orgs",
+        "responses": {
+          "200": {
+            "description": "Orgs the caller is a member of",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/OrgDto"
+                  }
                 }
               }
             }
@@ -1615,6 +1646,56 @@
         }
       }
     },
+    "/projects/{id}/adopt-milestone": {
+      "post": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "`POST /projects/{id}/adopt-milestone` — set or clear the\nproject's [`primary_milestone_id`](ProjectDto::primary_milestone_id).\nReturns the updated [`ProjectDto`] so the caller can refresh\nthe `★ primary` chip without a follow-up GET.",
+        "description": "400 (`milestone_not_linked`) when the milestone exists but\ndoesn't belong to a repo currently linked to this project — the\nstrip never surfaces these but a stale UI must not be able to\nadopt one via a direct API call.",
+        "operationId": "adopt_milestone",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdoptMilestoneBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Updated project",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Milestone not linked to this project's repos"
+          },
+          "404": {
+            "description": "No such project"
+          }
+        }
+      }
+    },
     "/projects/{id}/archive": {
       "post": {
         "tags": [
@@ -1795,6 +1876,43 @@
         }
       }
     },
+    "/projects/{id}/group-by-options": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "`GET /projects/{id}/group-by-options` — dynamic dim list for\nthe Group-by dropdown (PROJECT-VIEW.md §7.3).",
+        "description": "Slice 2: `status` is the only fixed dim; every distinct\n`dp_tags.key` linked to one of the project's issues (non-\narchived, `kind='kv'`) becomes a `tag:<key>` entry. Cache /\ninvalidation per §7.3 is deferred — the query is cheap enough\non the slice-A target (≤100 issues per project) to run inline.",
+        "operationId": "list_group_by_options",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Available group-by dimensions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupByOptionsResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such project"
+          }
+        }
+      }
+    },
     "/projects/{id}/issues": {
       "get": {
         "tags": [
@@ -1850,6 +1968,33 @@
             "schema": {
               "type": "integer",
               "format": "int64"
+            }
+          },
+          {
+            "name": "group_by",
+            "in": "query",
+            "description": "Bucket dimension: status | tag:<key> (PROJECT-VIEW.md §5.1)",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "filter",
+            "in": "query",
+            "description": "AND-combined chips: <dim>:<value>;… — status|assignee|label|tag:<key> (PROJECT-VIEW.md §5.2/§5.4)",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "description": "updated_desc (default) | updated_asc | title_asc",
+            "required": false,
+            "schema": {
+              "type": "string"
             }
           }
         ],
@@ -1973,6 +2118,54 @@
         }
       }
     },
+    "/projects/{id}/milestones": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "`GET /projects/{id}/milestones` — milestones across every linked\nrepo, sorted by `(state ASC, due_on ASC NULLS LAST, title ASC)`\nso the soonest-due open milestone is first and the no-due-date\ntail sinks to the bottom of the open block.",
+        "operationId": "list_project_milestones",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "include_closed",
+            "in": "query",
+            "description": "When `true`, include `state = 'closed'` rows after the open\nset (for the `▸ Show closed` toggle). Defaults to `false`.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Milestones for the project",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MilestoneDto"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such project"
+          }
+        }
+      }
+    },
     "/projects/{id}/repos": {
       "get": {
         "tags": [
@@ -2091,6 +2284,290 @@
         "responses": {
           "204": {
             "description": "Association removed (or already absent)"
+          }
+        }
+      }
+    },
+    "/projects/{id}/views": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "`GET /projects/{id}/views` — caller's saved views in\n`position ASC` order.",
+        "operationId": "list_project_views",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Caller's views, position ASC",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ProjectViewDto"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such project"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "`POST /projects/{id}/views` — create + append.",
+        "operationId": "create_project_view",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectViewCreateBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The created view",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectViewDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure (name, group_by, filter, sort)"
+          },
+          "404": {
+            "description": "No such project"
+          },
+          "409": {
+            "description": "Duplicate name"
+          }
+        }
+      }
+    },
+    "/projects/{id}/views/reorder": {
+      "post": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "`POST /projects/{id}/views/reorder` — atomic position rewrite.",
+        "operationId": "reorder_project_views",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectViewReorderBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Views in the new order",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ProjectViewDto"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`ordered_ids` did not match the caller's view set"
+          },
+          "404": {
+            "description": "No such project"
+          }
+        }
+      }
+    },
+    "/projects/{id}/views/{view_id}": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "`GET /projects/{id}/views/{view_id}`.",
+        "operationId": "get_project_view",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "view_id",
+            "in": "path",
+            "description": "View id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The view",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectViewDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such project or view"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "`DELETE /projects/{id}/views/{view_id}` — 204 on success.",
+        "operationId": "delete_project_view",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "view_id",
+            "in": "path",
+            "description": "View id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "View removed"
+          },
+          "404": {
+            "description": "No such project or view"
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "`PATCH /projects/{id}/views/{view_id}`.",
+        "operationId": "update_project_view",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "view_id",
+            "in": "path",
+            "description": "View id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectViewCreateBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The updated view",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectViewDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure"
+          },
+          "404": {
+            "description": "No such project or view"
+          },
+          "409": {
+            "description": "Duplicate name"
           }
         }
       }
@@ -3303,6 +3780,20 @@
           }
         }
       },
+      "AdoptMilestoneBody": {
+        "type": "object",
+        "description": "Body for [`adopt_milestone`]. `milestone_id = None` clears the\nproject's primary pointer; `Some(id)` adopts that milestone.",
+        "properties": {
+          "milestone_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Milestone to adopt, or `null` to clear the pointer."
+          }
+        }
+      },
       "AppInstallBannerOrgDto": {
         "type": "object",
         "description": "One row in `GET /me/app-install-banner`.\n\n`writes_available` mirrors the write-gate verdict for the\n`(viewer, org)` pair so the frontend can render the §8.4\naffordance without re-querying. `admin_copy_text` is the\n§13.6 copy-able snippet; `manage_url` is the GitHub deep-link\n(omitted when no App slug is configured).",
@@ -3538,14 +4029,16 @@
         "type": "object",
         "description": "Body for `POST /projects/{id}/issues`. CAS-gated on the project's\ncurrent `version` (§7.2); `issue_ids` is capped at\n[`BULK_ADD_ISSUE_CAP`].",
         "required": [
-          "expected_version",
           "issue_ids"
         ],
         "properties": {
           "expected_version": {
-            "type": "integer",
+            "type": [
+              "integer",
+              "null"
+            ],
             "format": "int64",
-            "description": "The `version` the caller observed on the project row. A\nmismatch returns `409 stale_project_version` just like the\n§7.1 PATCH / archive routes."
+            "description": "The `version` the caller observed on the project row. A\nmismatch returns `409 stale_project_version` just like the\n§7.1 PATCH / archive routes. Optional only when `view_id`\nis set — view-scoped adds don't mutate the project row and\ntherefore don't need CAS. Required for project-level adds;\nthe handler returns `400 missing_expected_version` if it's\nmissing in that case."
           },
           "issue_ids": {
             "type": "array",
@@ -3554,6 +4047,14 @@
               "format": "uuid"
             },
             "description": "Issue ids to attach. Capped at [`BULK_ADD_ISSUE_CAP`]; over\nthe cap returns `400 bulk_add_too_large`. An empty array is\naccepted as a no-op (returns `BulkAddResult { added: [],\nskipped: [] }` and does not bump the project version)."
+          },
+          "view_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Optional saved-view id (PROJECT-VIEW.md §5.4 amendment).\nWhen set, the accepted issues are *also* attached to the\nnamed view's membership table after the project add\nsucceeds, so the tab the user added them on retains them.\nSkipped (already-in-project) ids are still added to the\nview — the user expects the issues to appear on the tab\nregardless of whether they were brand new to the project."
           }
         }
       },
@@ -3745,7 +4246,7 @@
       },
       "CreateIssueRequest": {
         "type": "object",
-        "description": "Body for `POST /issues`. The repo to mutate is named explicitly\n(there is no canonical row yet to derive it from).",
+        "description": "Body for `POST /issues`. The repo to mutate is named explicitly\n(there is no canonical row yet to derive it from). The optional\n`project_id` / `view_id` lanes let the handler attach the\nfreshly-created issue to a project (and optionally a saved\nview tab) in the same request, mirroring the bulk-add\nsemantics in [`crate::project_issues::BulkAddIssuesRequest`].",
         "required": [
           "repo_id",
           "title"
@@ -3758,6 +4259,22 @@
             ],
             "description": "Optional body (Markdown)."
           },
+          "expected_version": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "CAS token — the project's observed `version`. Required\nwhen `project_id` is set and `view_id` is unset (project-\nlevel attach mutates the project row); ignored otherwise."
+          },
+          "project_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Optional project id to attach the new issue to in the same\nrequest. When set without `view_id`, the handler runs the\nproject-level add (\"All\" tab semantics) and requires\n`expected_version`. When set together with `view_id`, the\nhandler attaches the issue only to the named view's\nmembership table and does not touch project membership."
+          },
           "repo_id": {
             "type": "string",
             "format": "uuid",
@@ -3766,17 +4283,33 @@
           "title": {
             "type": "string",
             "description": "Issue title; required by GitHub."
+          },
+          "view_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Optional saved-view id (PROJECT-VIEW.md §5.4 amendment).\nRequires `project_id`. Ignored when `project_id` is unset."
           }
         }
       },
       "CreateIssueResponse": {
         "type": "object",
-        "description": "Acknowledgement body for `POST /issues`. Returns the GitHub-side\nnumber GitHub assigned (so the UI can deep-link immediately) and\nechoes the actor's `repo_id` for symmetry with PATCH responses.",
+        "description": "Acknowledgement body for `POST /issues`. Returns the GitHub-side\nnumber GitHub assigned (so the UI can deep-link immediately) and\nechoes the actor's `repo_id` for symmetry with PATCH responses.\n`issue_id` is populated when the local `dp_issues` row was\nmaterialised synchronously from the GitHub create payload — the\nUI can use it to render the new row in-list without waiting for\nthe next sync. It is `None` when the backend could not surface a\npayload (the unconfigured stub, certain fakes), in which case\nthe row appears once the fetcher / webhook brings it down.",
         "required": [
           "repo_id",
           "number"
         ],
         "properties": {
+          "issue_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Local `dp_issues.id` when the row was materialised in this\nrequest, otherwise `None`."
+          },
           "number": {
             "type": "integer",
             "format": "int64",
@@ -4006,6 +4539,16 @@
           "partial"
         ],
         "properties": {
+          "error_sample": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/FetchRunErrorSampleDto"
+            },
+            "description": "Bounded sample of per-item failure context, captured by the\nfetcher so the admin UI can explain *why* `errors > 0`\nwithout leaving the page. `None` for clean runs and for\nruns that pre-date the column."
+          },
           "errors": {
             "type": "integer",
             "format": "int64",
@@ -4041,6 +4584,74 @@
             "type": "string",
             "format": "date-time",
             "description": "Wall-clock start (UTC)."
+          }
+        }
+      },
+      "FetchRunErrorSampleDto": {
+        "type": "object",
+        "description": "One captured failure inside a [`FetchRunDto`]. Mirrors\n[`FetchRunErrorSample`] verbatim so the wire shape matches\nthe domain shape — only added so `ToSchema` shows it in the\nopenapi document.",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "string",
+            "description": "Rendered, truncated error message."
+          },
+          "kind": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Resource kind / source (`\"Issues\"`, `\"webhook:push\"`, …)."
+          },
+          "org": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Org login at the time of capture."
+          },
+          "repo": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`owner/name` of the repo, when the failure was repo-scoped."
+          }
+        }
+      },
+      "GroupByOptionDto": {
+        "type": "object",
+        "description": "One entry in [`GroupByOptionsResponse::dims`].",
+        "required": [
+          "id",
+          "label"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Wire-form dim id passed back as `?group_by=<id>` — e.g.\n`status`, `tag:gate`."
+          },
+          "label": {
+            "type": "string",
+            "description": "Display label. For `tag:<key>` this is the key title-cased\nin v1; richer labels (gate prefix, milestone titles) ride in\nwhen the ordinal-taxonomy config lands (PROJECT-VIEW.md §10.1)."
+          }
+        }
+      },
+      "GroupByOptionsResponse": {
+        "type": "object",
+        "description": "Body for `GET /projects/{id}/group-by-options` — dynamic\ndimension catalogue powering the Group-by dropdown\n(PROJECT-VIEW.md §5.1 / §7.3).",
+        "required": [
+          "dims"
+        ],
+        "properties": {
+          "dims": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GroupByOptionDto"
+            },
+            "description": "Ordered list of dimensions the toolbar can show. `status`\nis always present; one `tag:<key>` entry per distinct kv\nkey observable on the project's issues. Sticky keys from\nsaved views (§5.1) will be merged in when slice 4 lands."
           }
         }
       },
@@ -4104,6 +4715,38 @@
           "snoozed",
           "done"
         ]
+      },
+      "IssueBucket": {
+        "type": "object",
+        "description": "One bucket in [`IssueListResponse::buckets`]. The label is the\nhuman-readable form the client renders verbatim; `key` is the\nstable identifier used for collapse state and as the\n`bucket_keys` value on `IssueDto`.",
+        "required": [
+          "label",
+          "open",
+          "closed"
+        ],
+        "properties": {
+          "closed": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Closed issue count in this bucket, post-filter."
+          },
+          "key": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Stable bucket key (`g3-mvp-build`, `open`, `<uuid>` for\nmilestone/type buckets). `None` for the synthetic \"No <key>\"\nbucket."
+          },
+          "label": {
+            "type": "string",
+            "description": "Human-readable label (`G3 · MVP build`, `Open`). For now\nequals `key` for tag buckets; richer labels (gate prefix,\nmilestone title) land with the ordinal-taxonomy config\n(PROJECT-VIEW.md §5.1 / §10.1) and milestone joins."
+          },
+          "open": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Open issue count in this bucket, post-filter."
+          }
+        }
       },
       "IssueDatesDto": {
         "type": "object",
@@ -4193,6 +4836,19 @@
             ],
             "description": "Body, when present."
           },
+          "bucket_keys": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "description": "Bucket keys assigned by an active `group_by` (PROJECT-VIEW.md\n§7.2). Populated **only** by `GET /projects/{id}/issues` when\n`?group_by=` is set. Each entry is the bucket the issue\nbelongs to — `None` (serialised as `null`) for the synthetic\n\"No <key>\" bucket. An issue can appear in multiple buckets\nwhen `group_by=tag:<key>` and the issue carries multiple kv\nvalues for the same key (e.g. `category:firmware` +\n`category:hardware`). Omitted entirely when no grouping is\nactive."
+          },
           "id": {
             "type": "string",
             "format": "uuid",
@@ -4268,6 +4924,16 @@
           "offset"
         ],
         "properties": {
+          "buckets": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/IssueBucket"
+            },
+            "description": "Server-side bucket sidecar — populated **only** by\n`GET /projects/{id}/issues` when `?group_by=` is set\n(PROJECT-VIEW.md §7.2). Counts are **post-filter** (§5.2)\nand authoritative; the client never re-buckets. `key` is\n`None` for the synthetic \"No <key>\" bucket. Bucket ordering\nis server-decided (§5.1 — ordinal taxonomies first, then\ncount desc)."
+          },
           "limit": {
             "type": "integer",
             "format": "int64",
@@ -4571,6 +5237,89 @@
             "type": "string",
             "format": "uuid",
             "description": "User side of the join."
+          }
+        }
+      },
+      "MilestoneDto": {
+        "type": "object",
+        "description": "One milestone row on the wire. The strip needs every\nprogress-bar field — `open_issues`, `closed_issues`,\n`due_on` — plus the `repo_id` so the chip can disambiguate\nwhen two repos share a milestone title.",
+        "required": [
+          "id",
+          "repo_id",
+          "github_number",
+          "title",
+          "state",
+          "open_issues",
+          "closed_issues",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "closed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "GitHub close timestamp (only on `state = \"closed\"`)."
+          },
+          "closed_issues": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Closed issues on GitHub. Authoritative."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "GitHub creation timestamp."
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Long-form description. May contain markdown."
+          },
+          "due_on": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date",
+            "description": "Due date (`YYYY-MM-DD`) or `null`."
+          },
+          "github_number": {
+            "type": "integer",
+            "format": "int32",
+            "description": "GitHub-side milestone number (the integer in the\n`https://github.com/{owner}/{repo}/milestone/{n}` URL)."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Stable id."
+          },
+          "open_issues": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Open issues on GitHub. Authoritative."
+          },
+          "repo_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Parent repo. The strip uses this for the\ndisambiguation suffix when two linked repos share a\nmilestone title."
+          },
+          "state": {
+            "type": "string",
+            "description": "`\"open\"` | `\"closed\"`."
+          },
+          "title": {
+            "type": "string",
+            "description": "Milestone title."
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "GitHub last-update timestamp."
           }
         }
       },
@@ -4904,6 +5653,14 @@
             "format": "uuid",
             "description": "Parent org."
           },
+          "primary_milestone_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Adopted primary milestone (PROJECT-VIEW.md §5.5 / §9.5).\nSet / cleared by `POST /projects/{id}/adopt-milestone`."
+          },
           "start_at": {
             "type": [
               "string",
@@ -5016,6 +5773,124 @@
           "done",
           "archived"
         ]
+      },
+      "ProjectViewCreateBody": {
+        "type": "object",
+        "description": "`POST /projects/{id}/views` body. Identical to PATCH apart from\nbeing required (POST has no partial-update semantics).",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "filter_clauses": {
+            "type": "array",
+            "items": {},
+            "description": "Canonical filter clauses; validated against\n[`ProjectViewFilterClause`] before insert."
+          },
+          "group_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Group-by dimension, or `null` for a flat view. `\"status\"`\nor `\"tag:<key>\"`."
+          },
+          "name": {
+            "type": "string",
+            "description": "Tab label. 1..=60 chars after trim."
+          },
+          "sort": {
+            "type": "string",
+            "description": "Sort order. Empty string is rejected — the client sends\n`\"updated_desc\"` to mean \"default\"."
+          }
+        }
+      },
+      "ProjectViewDto": {
+        "type": "object",
+        "description": "One saved view on the wire. The serialised shape of\n`filter_clauses` is the discriminated `#[serde(tag = \"dim\")]`\nenum mirrored in `dp_domain::project_view`.",
+        "required": [
+          "id",
+          "project_id",
+          "owner_user_id",
+          "name",
+          "filter_clauses",
+          "sort",
+          "position",
+          "visibility",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "First write timestamp."
+          },
+          "filter_clauses": {
+            "type": "array",
+            "items": {},
+            "description": "Canonical filter clauses (`{\"dim\": …, …}` objects)."
+          },
+          "group_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Group-by dimension or `null` for a flat view."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Stable id."
+          },
+          "name": {
+            "type": "string",
+            "description": "Tab label."
+          },
+          "owner_user_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Owner — v1 always the caller."
+          },
+          "position": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Per-owner position within the project's tab strip."
+          },
+          "project_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Parent project."
+          },
+          "sort": {
+            "type": "string",
+            "description": "Sort order. `updated_desc` | `updated_asc` | `title_asc`."
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Most recent mutation."
+          },
+          "visibility": {
+            "type": "string",
+            "description": "`\"private\"` (v1) or `\"project\"` (reserved)."
+          }
+        }
+      },
+      "ProjectViewReorderBody": {
+        "type": "object",
+        "description": "`POST /projects/{id}/views/reorder` body — the full ordered\nid list for the caller's views on this project.",
+        "required": [
+          "ordered_ids"
+        ],
+        "properties": {
+          "ordered_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "New order. Must equal the caller's existing view-id set."
+          }
+        }
       },
       "PutSettingRequest": {
         "type": "object",

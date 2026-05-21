@@ -57,12 +57,13 @@ import { Spinner } from "@/components/ui/spinner";
 
 import type { IssueListItem, ProjectDto } from "../api/client.js";
 import { PageHeading } from "../components/page-heading.jsx";
-import { navigate, projectDetailRoute, projectSelectedIssue, useRoute } from "../routes.js";
+import { navigate, projectDetailRoute, projectDetailRouteWithParams, projectFilter, projectGroupBy, projectSelectedIssue, projectSort, projectViewId, useRoute } from "../routes.js";
 import { IssueEditCard } from "../workflow/issues-page.js";
 
 import { LinkBoardDialog } from "./link-board-dialog.js";
 import { MilestonesStrip } from "./milestones-strip.js";
 import { ManageReposDialog } from "./project-repos-card.js";
+import { parseFilterString, serializeFilterChips } from "./project-filter-chips.js";
 import { ProjectWorkbench } from "./project-workbench.js";
 import {
   useArchiveProject,
@@ -305,6 +306,26 @@ function ProjectDetailBody({ project }: { project: ProjectDto }): JSX.Element {
         milestones={milestones.data ?? []}
         primaryMilestoneId={project.primary_milestone_id ?? null}
         onAdoptPrimary={(mid) => adoptMilestone.mutate(mid)}
+        onFilterToMilestone={(mid) => {
+          // Append/replace the milestone chip on the current
+          // workbench filter. One milestone chip max: dropping
+          // any pre-existing milestone:* keeps the URL idempotent
+          // (clicking twice on different cards swaps the chip
+          // rather than stacking unsatisfiable AND-clauses).
+          const current = parseFilterString(projectFilter(route));
+          const next = current.filter((c) => c.dim !== "milestone");
+          next.push({ dim: "milestone", value: mid });
+          const serialised = serializeFilterChips(next);
+          navigate(
+            projectDetailRouteWithParams(project.id, {
+              issueId: selectedIssueId,
+              view: projectViewId(route),
+              group: projectGroupBy(route),
+              filter: serialised.length > 0 ? serialised : null,
+              sort: projectSort(route),
+            }),
+          );
+        }}
         adoptBusy={adoptMilestone.isPending}
         isPending={milestones.isPending}
       />
@@ -320,6 +341,7 @@ function ProjectDetailBody({ project }: { project: ProjectDto }): JSX.Element {
             row={row}
             selected={selected}
             onSelect={() => openIssue(row.id)}
+            activeViewId={projectViewId(route)}
           />
         )}
       />
@@ -617,11 +639,17 @@ function ProjectIssueRowWired({
   row,
   selected,
   onSelect,
+  activeViewId,
 }: {
   project: ProjectDto;
   row: IssueListItem;
   selected: boolean;
   onSelect: () => void;
+  /** When set, Remove scopes the detach to the active saved-view
+   *  tab's membership only (issue stays on the project). When
+   *  null/undefined (the "All" tab), Remove detaches from the
+   *  project itself — the historical behaviour. */
+  activeViewId?: string | null;
 }): JSX.Element {
   const remove = useRemoveIssueFromProject(project.id);
   return (
@@ -632,7 +660,8 @@ function ProjectIssueRowWired({
       onRemove={() =>
         remove.mutate({
           issueId: row.id,
-          expectedVersion: project.version,
+          expectedVersion: activeViewId ? null : project.version,
+          viewId: activeViewId ?? undefined,
         })
       }
       removePending={remove.isPending}
@@ -810,3 +839,4 @@ function EditDatesDialog({
     </Dialog>
   );
 }
+

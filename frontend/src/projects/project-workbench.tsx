@@ -147,6 +147,7 @@ export function ProjectWorkbench({
     group_by: groupBy ?? undefined,
     filter: filterRaw ?? undefined,
     sort: sort ?? undefined,
+    view: activeView ? activeView.id : undefined,
   });
   const groupOptions = useProjectGroupByOptions(project.id);
   const milestonesForFilter = useProjectMilestones(project.id);
@@ -315,9 +316,9 @@ export function ProjectWorkbench({
         <Button
           size="sm"
           onClick={() => setDialogOpen(true)}
-          data-testid="project-add-issues-button"
+          data-testid="project-add-issue-button"
         >
-          + Add issues
+          + Add issue
         </Button>
       </CardHeader>
 
@@ -371,7 +372,7 @@ export function ProjectWorkbench({
             className="py-6 text-center text-sm text-muted-foreground"
             data-testid="project-issues-empty"
           >
-            No issues in this project yet. Click [+ Add issues] to attach work from the workflow surface.
+            No issues in this project yet. Click [+ Add issue] to attach work from the workflow surface.
           </p>
         )}
 
@@ -420,6 +421,8 @@ export function ProjectWorkbench({
         open={dialogOpen}
         onOpenChange={setDialogOpen}
         project={project}
+        activeViewId={activeView ? activeView.id : null}
+        activeViewName={activeView ? activeView.name : null}
       />
     </Card>
   );

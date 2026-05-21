@@ -748,14 +748,20 @@ impl Client {
     // `dp_rest::IssueWriteError` so the adapter is one-to-one.
 
     /// `POST /repos/{owner}/{repo}/issues`. Returns the
-    /// GitHub-assigned issue number on success.
+    /// GitHub-assigned issue number plus the full GitHub-side
+    /// payload so the caller can hand it to
+    /// [`crate::worker::handlers::parse_issue_upsert`] and
+    /// materialise the local `dp_issues` row immediately — without
+    /// waiting for the next webhook / reconciler tick. This is what
+    /// lets the REST `POST /issues` handler attach the freshly
+    /// created issue to a project / view in the same request.
     pub async fn gh_create_issue(
         &self,
         owner: &str,
         repo: &str,
         title: &str,
         body: Option<&str>,
-    ) -> Result<i64, GhWriteError> {
+    ) -> Result<(i64, serde_json::Value), GhWriteError> {
         self.check_and_count_budget()?;
         let handler = self.inner.issues(owner, repo);
         let mut builder = handler.create(title);
@@ -763,7 +769,13 @@ impl Client {
             builder = builder.body(b);
         }
         let issue = builder.send().await.map_err(map_octocrab_write_err)?;
-        Ok(issue.number as i64)
+        let number = issue.number as i64;
+        let payload = serde_json::to_value(issue).map_err(|e| {
+            GhWriteError::Upstream(format!(
+                "serialize created issue payload from github: {e}"
+            ))
+        })?;
+        Ok((number, payload))
     }
 
     /// `PATCH /repos/{owner}/{repo}/issues/{number}`. Forwards

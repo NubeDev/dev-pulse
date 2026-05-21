@@ -380,6 +380,7 @@ impl Store for FakeStore {
                 items: 0,
                 errors: 0,
                 partial: false,
+                error_sample: None,
             },
         );
         Ok(id)

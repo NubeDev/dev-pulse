@@ -314,17 +314,30 @@ A `partial: true` response means the request budget (default
 `[github].max_requests_per_run = 200`) was exhausted — run `/admin/refresh`
 again, or bump the budget in `crates/dev-pulse/config.fly.toml`.
 
-### Optional: enable the scheduler
+### Enable the scheduler (recommended)
 
-By default `DP_SCHEDULER_ENABLE=false` and sync only happens when
-`POST /admin/refresh` is called. To enable the every-5-minute tick:
+With the scheduler off, the only way data updates is a manual
+`POST /admin/refresh`. Turn it on so the reconciler ticks every
+`[scheduler].tick_interval_secs` (default **300 s / 5 min**):
 
 ```bash
 fly secrets set -a dev-pulse DP_SCHEDULER_ENABLE=true
 ```
 
-Keep this `false` if you scale to >1 Machine without per-machine
-overrides — multiple tickers will race.
+Each tick is capped by `[github].max_requests_per_run` (default
+**200 req/tick**). With ~200 repos a single tick won't reach all of
+them — the reconciler round-robins, so over a few ticks every repo
+gets touched. To bump throughput, edit
+`crates/dev-pulse/config.fly.toml` and redeploy.
+
+> Keep `DP_SCHEDULER_ENABLE=false` if you scale to >1 Machine without
+> per-machine overrides — multiple tickers will race.
+
+Verify it's running:
+
+```bash
+fly logs -a dev-pulse --no-tail | grep -iE 'reconciler|tick' | tail
+```
 
 ---
 

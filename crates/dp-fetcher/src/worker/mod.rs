@@ -57,7 +57,7 @@ mod fixture_tests;
 use std::sync::Arc;
 use std::time::Duration;
 
-use dp_domain::{FetchRunKind, Store, StoreError};
+use dp_domain::{fetch::FetchRunErrorSample, FetchRunKind, Store, StoreError};
 use tokio::sync::watch;
 
 pub use handlers::{apply_delivery, HandlerError, HandlerOutcome};
@@ -169,6 +169,13 @@ impl Worker {
             failed: 0,
         };
 
+        // Bounded sample of per-delivery handler failures — lets
+        // `/admin/runs` show which webhook event / repo blew up
+        // without grepping the structured log.
+        const ERROR_SAMPLE_CAP: usize = 10;
+        const ERROR_MSG_CAP: usize = 500;
+        let mut error_samples: Vec<FetchRunErrorSample> = Vec::new();
+
         for delivery in &claimed {
             // Per-delivery span so the structured logs join on
             // `webhook.delivery_id` the receiver already set.
@@ -223,6 +230,19 @@ impl Worker {
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "handler failed; leaving claimable");
+                    if error_samples.len() < ERROR_SAMPLE_CAP {
+                        let mut msg = e.to_string();
+                        if msg.len() > ERROR_MSG_CAP {
+                            msg.truncate(ERROR_MSG_CAP);
+                            msg.push('\u{2026}');
+                        }
+                        error_samples.push(FetchRunErrorSample {
+                            org: None,
+                            repo: None,
+                            kind: Some(format!("webhook:{}", delivery.event)),
+                            error: msg,
+                        });
+                    }
                     self.store
                         .mark_webhook_failed(delivery.id, &e.to_string())
                         .await?;
@@ -233,6 +253,15 @@ impl Worker {
 
         // partial = the batch finished but some rows failed; the
         // next drain will pick them back up.
+        if !error_samples.is_empty() {
+            if let Err(e) = self
+                .store
+                .record_fetch_run_errors(run_id, &error_samples)
+                .await
+            {
+                tracing::warn!(error = %e, %run_id, "failed to record webhook worker error sample");
+            }
+        }
         self.store
             .finish_fetch_run(run_id, stats.processed, stats.failed, stats.failed > 0)
             .await?;

@@ -58,7 +58,7 @@ pub mod state;
 pub mod tags;
 
 pub use admin::{
-    admin_router, anonymise_user, export_user, list_runs, AdminState, ExportEvent, FetchRunDto,
+    admin_router, anonymise_user, export_user, list_runs, AdminState, ExportEvent, FetchRunDto, FetchRunErrorSampleDto,
     MembershipDto, RefreshQuery, RefreshResponse, RunsQuery, UserExport, EXPORT_PAGE_SIZE,
     RUNS_DEFAULT_LIMIT, RUNS_MAX_LIMIT,
 };

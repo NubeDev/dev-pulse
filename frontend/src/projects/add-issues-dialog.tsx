@@ -1,24 +1,26 @@
 /**
- * §6.3 Add-issues dialog — the project-detail surface for
- * attaching issues to a project. v1 ships a substring search over
- * `GET /issues?org_id=<project.org_id>&q=…`; the user multi-selects
- * rows and submits them as a single `POST /projects/{id}/issues`
- * (CAS-gated on `project.version`).
+ * §6.3 / PROJECT-VIEW.md §5.4 Add-issue dialog — the single
+ * detail-page entry point for getting issues into a project.
  *
- * Per-row outcomes from the `BulkAddResult` envelope are surfaced
- * inline so the user can see exactly which issues were added and
- * which were skipped (with reason) — the §7.2 contract is
- * specifically optimised for this: one round-trip, per-row
- * verdicts, no second probe.
+ * Two tabs:
+ *   - **Add existing** — substring search over
+ *     `GET /issues?org_id=<project.org_id>&q=…` plus multi-select
+ *     and bulk POST `/projects/{id}/issues`. Per-row outcomes
+ *     (`added` / `skipped` with reason) are surfaced inline.
+ *   - **Create new** — title + body + repo picker against
+ *     `POST /issues`. The backend creates on GitHub, materialises
+ *     the local `dp_issues` row from the GitHub payload
+ *     synchronously, and attaches it to the project / view in
+ *     the same request.
  *
- * v1 limitations carried forward from `SCOPE-PROJECTS.md`:
- *   - search is by title substring only (no advanced filters);
- *   - the triage detail-pane / bulk-add-from-list surfaces (§6.5
- *     / §6.6) are separate components; this dialog is the
- *     detail-page entry point only.
+ * Tab-aware: when `activeViewId` is set the dialog title shows
+ * the view name and both panes attach to that view's membership
+ * table only (no project-level mutation). When `activeViewId` is
+ * null the All-tab project-level semantics apply (CAS-gated on
+ * `project.version`).
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import {
@@ -38,7 +40,17 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
 
 import {
   api,
@@ -47,27 +59,129 @@ import {
   type IssueListItem,
   type IssueListResponse,
   type ProjectDto,
+  type ProjectRepoDto,
 } from "../api/client.js";
 
-import { useAddIssuesToProject, useProjectRepos } from "./use-projects-data.js";
+import {
+  useAddIssuesToProject,
+  useCreateIssue,
+  useProjectRepos,
+} from "./use-projects-data.js";
 
 export interface AddIssuesDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   project: ProjectDto;
+  /** PROJECT-VIEW.md §5.4 amendment — when the user opened the
+   *  dialog from a named saved-view tab, accepted issues are
+   *  attached to that view's membership only. `null` / omitted =
+   *  the "All" tab, project-level. */
+  activeViewId?: string | null;
+  /** Optional active-view display name to title the dialog.
+   *  When omitted (All tab) the title falls back to the project
+   *  name. */
+  activeViewName?: string | null;
 }
 
 export function AddIssuesDialog({
   open,
   onOpenChange,
   project,
+  activeViewId,
+  activeViewName,
 }: AddIssuesDialogProps): JSX.Element {
+  const [tab, setTab] = useState<"existing" | "new">("existing");
+  // Reset to the default tab on every reopen so users don't land
+  // on a stale selection from a prior session.
+  useEffect(() => {
+    if (open) setTab("existing");
+  }, [open]);
+
+  const close = (): void => onOpenChange(false);
+
+  const destination = activeViewId
+    ? `“${activeViewName ?? "this tab"}”`
+    : project.name;
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(o) => {
+        if (!o) close();
+        else onOpenChange(o);
+      }}
+    >
+      <DialogContent
+        className="sm:max-w-2xl max-h-[85vh] flex flex-col overflow-hidden"
+        data-testid="add-issue-dialog"
+      >
+        <DialogHeader>
+          <DialogTitle>Add issue to {destination}</DialogTitle>
+          <DialogDescription>
+            {activeViewId
+              ? "The issue will appear in this tab only."
+              : "The issue will appear in this project."}
+          </DialogDescription>
+        </DialogHeader>
+
+        <Tabs
+          value={tab}
+          onValueChange={(v) => setTab(v as "existing" | "new")}
+          className="min-h-0 flex-1"
+        >
+          <TabsList>
+            <TabsTrigger value="existing" data-testid="add-issue-tab-existing">
+              Add existing
+            </TabsTrigger>
+            <TabsTrigger value="new" data-testid="add-issue-tab-new">
+              Create new
+            </TabsTrigger>
+          </TabsList>
+          <TabsContent
+            value="existing"
+            className="min-h-0 flex-1 flex-col gap-3 data-[state=active]:flex"
+          >
+            <ExistingPanel
+              project={project}
+              activeViewId={activeViewId ?? null}
+              onClose={close}
+            />
+          </TabsContent>
+          <TabsContent
+            value="new"
+            className="min-h-0 flex-1 flex-col gap-3 data-[state=active]:flex"
+          >
+            <NewPanel
+              project={project}
+              activeViewId={activeViewId ?? null}
+              onClose={close}
+            />
+          </TabsContent>
+        </Tabs>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Existing — substring search + multi-select + bulk attach.
+// ---------------------------------------------------------------------------
+
+function ExistingPanel({
+  project,
+  activeViewId,
+  onClose,
+}: {
+  project: ProjectDto;
+  activeViewId: string | null;
+  onClose: () => void;
+}): JSX.Element {
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [result, setResult] = useState<BulkAddResult | null>(null);
   const [linkedReposOnly, setLinkedReposOnly] = useState(true);
 
-  const projectRepos = useProjectRepos(open ? project.id : null);
+  const projectRepos = useProjectRepos(project.id);
   const repoIds = (projectRepos.data ?? []).map((r) => r.repo_id);
   const filterByRepos = linkedReposOnly && repoIds.length > 0;
 
@@ -87,7 +201,7 @@ export function AddIssuesDialog({
         repo_ids: filterByRepos ? repoIds : undefined,
         limit: 50,
       }),
-    enabled: open && (!linkedReposOnly || !projectRepos.isPending),
+    enabled: !linkedReposOnly || !projectRepos.isPending,
     staleTime: 10_000,
   });
 
@@ -108,8 +222,12 @@ export function AddIssuesDialog({
     if (selected.size === 0) return;
     add.mutate(
       {
+        // Backend ignores `expected_version` when `view_id` is set;
+        // supplying it is harmless and keeps the All-tab path CAS-
+        // correct.
         expected_version: project.version,
         issue_ids: Array.from(selected),
+        view_id: activeViewId ?? undefined,
       },
       {
         onSuccess: (r) => {
@@ -120,143 +238,116 @@ export function AddIssuesDialog({
     );
   };
 
-  const close = (): void => {
-    setSearch("");
-    setSelected(new Set());
-    setResult(null);
-    add.reset();
-    onOpenChange(false);
-  };
-
   return (
-    <Dialog
-      open={open}
-      onOpenChange={(o) => {
-        if (!o) close();
-        else onOpenChange(o);
-      }}
-    >
-      <DialogContent
-        className="sm:max-w-2xl max-h-[85vh] flex flex-col overflow-hidden"
-        data-testid="add-issues-dialog"
-      >
-        <DialogHeader>
-          <DialogTitle>Add issues to {project.name}</DialogTitle>
-          <DialogDescription>
-            Pick up to {BULK_ADD_ISSUE_CAP} issues from this org. Issues already
-            attached to a different project are skipped with a clear reason.
-          </DialogDescription>
-        </DialogHeader>
+    <>
+      <div className="flex min-h-0 flex-1 flex-col gap-3">
+        <Input
+          data-testid="add-issues-search"
+          placeholder="Search by title…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          autoFocus
+        />
 
-        <div className="flex min-h-0 flex-1 flex-col gap-3">
-          <Input
-            data-testid="add-issues-search"
-            placeholder="Search by title…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            autoFocus
-          />
+        {repoIds.length > 0 && (
+          <label className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Checkbox
+              checked={linkedReposOnly}
+              onCheckedChange={(v) => setLinkedReposOnly(!!v)}
+              data-testid="add-issues-linked-repos-only"
+            />
+            Only show issues from this project's {repoIds.length} linked
+            repo{repoIds.length === 1 ? "" : "s"}
+          </label>
+        )}
 
-          {repoIds.length > 0 && (
-            <label className="flex items-center gap-2 text-xs text-muted-foreground">
-              <Checkbox
-                checked={linkedReposOnly}
-                onCheckedChange={(v) => setLinkedReposOnly(!!v)}
-                data-testid="add-issues-linked-repos-only"
-              />
-              Only show issues from this project's {repoIds.length} linked
-              repo{repoIds.length === 1 ? "" : "s"}
-            </label>
-          )}
-
-          <div className="flex items-center justify-between text-xs text-muted-foreground">
-            <span data-testid="add-issues-selected-count">
-              {selected.size} selected (cap {BULK_ADD_ISSUE_CAP})
+        <div className="flex items-center justify-between text-xs text-muted-foreground">
+          <span data-testid="add-issues-selected-count">
+            {selected.size} selected (cap {BULK_ADD_ISSUE_CAP})
+          </span>
+          {issuesQ.data && (
+            <span>
+              {rows.length} of {issuesQ.data.total} matching
             </span>
-            {issuesQ.data && (
-              <span>
-                {rows.length} of {issuesQ.data.total} matching
-              </span>
-            )}
-          </div>
-
-          <div className="min-h-0 flex-1 overflow-y-auto rounded-md border border-border">
-            {issuesQ.isPending && (
-              <div className="flex items-center gap-2 px-3 py-4 text-sm text-muted-foreground">
-                <Spinner /> Loading issues…
-              </div>
-            )}
-            {issuesQ.isError && (
-              <Alert variant="destructive" className="m-2">
-                <AlertTitle>Couldn't load issues</AlertTitle>
-                <AlertDescription>{issuesQ.error.message}</AlertDescription>
-              </Alert>
-            )}
-            {!issuesQ.isPending && !issuesQ.isError && rows.length === 0 && (
-              <p className="px-3 py-6 text-center text-sm text-muted-foreground">
-                No issues match that search.
-              </p>
-            )}
-            {rows.map((row) => (
-              <AddIssueRow
-                key={row.id}
-                row={row}
-                checked={selected.has(row.id)}
-                onToggle={() => toggle(row.id)}
-              />
-            ))}
-          </div>
-
-          {add.error && (
-            <Alert variant="destructive" data-testid="add-issues-error">
-              <AlertTitle>Add failed</AlertTitle>
-              <AlertDescription>{add.error.message}</AlertDescription>
-            </Alert>
-          )}
-
-          {result && (
-            <Alert data-testid="add-issues-result">
-              <AlertTitle>
-                Added {result.added.length}, skipped {result.skipped.length}
-              </AlertTitle>
-              <AlertDescription>
-                {result.skipped.length > 0 && (
-                  <ul className="mt-2 list-disc pl-5 text-xs">
-                    {result.skipped.map((s) => (
-                      <li key={s.issue_id}>
-                        <code className="font-mono">{s.issue_id.slice(0, 8)}</code>
-                        : {s.reason}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </AlertDescription>
-            </Alert>
           )}
         </div>
 
-        <DialogFooter>
-          <Button
-            type="button"
-            variant="ghost"
-            onClick={close}
-            disabled={add.isPending}
-          >
-            Close
-          </Button>
-          <Button
-            type="button"
-            data-testid="add-issues-submit"
-            onClick={onSubmit}
-            disabled={selected.size === 0 || add.isPending}
-          >
-            {add.isPending
-              ? "Adding…"
-              : `Add ${selected.size} issue${selected.size === 1 ? "" : "s"}`}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        <div className="min-h-0 flex-1 overflow-y-auto rounded-md border border-border">
+          {issuesQ.isPending && (
+            <div className="flex items-center gap-2 px-3 py-4 text-sm text-muted-foreground">
+              <Spinner /> Loading issues…
+            </div>
+          )}
+          {issuesQ.isError && (
+            <Alert variant="destructive" className="m-2">
+              <AlertTitle>Couldn't load issues</AlertTitle>
+              <AlertDescription>{issuesQ.error.message}</AlertDescription>
+            </Alert>
+          )}
+          {!issuesQ.isPending && !issuesQ.isError && rows.length === 0 && (
+            <p className="px-3 py-6 text-center text-sm text-muted-foreground">
+              No issues match that search.
+            </p>
+          )}
+          {rows.map((row) => (
+            <AddIssueRow
+              key={row.id}
+              row={row}
+              checked={selected.has(row.id)}
+              onToggle={() => toggle(row.id)}
+            />
+          ))}
+        </div>
+
+        {add.error && (
+          <Alert variant="destructive" data-testid="add-issues-error">
+            <AlertTitle>Add failed</AlertTitle>
+            <AlertDescription>{add.error.message}</AlertDescription>
+          </Alert>
+        )}
+
+        {result && (
+          <Alert data-testid="add-issues-result">
+            <AlertTitle>
+              Added {result.added.length}, skipped {result.skipped.length}
+            </AlertTitle>
+            <AlertDescription>
+              {result.skipped.length > 0 && (
+                <ul className="mt-2 list-disc pl-5 text-xs">
+                  {result.skipped.map((s) => (
+                    <li key={s.issue_id}>
+                      <code className="font-mono">{s.issue_id.slice(0, 8)}</code>
+                      : {s.reason}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </AlertDescription>
+          </Alert>
+        )}
+      </div>
+
+      <DialogFooter>
+        <Button
+          type="button"
+          variant="ghost"
+          onClick={onClose}
+          disabled={add.isPending}
+        >
+          Close
+        </Button>
+        <Button
+          type="button"
+          data-testid="add-issues-submit"
+          onClick={onSubmit}
+          disabled={selected.size === 0 || add.isPending}
+        >
+          {add.isPending
+            ? "Adding…"
+            : `Add ${selected.size} issue${selected.size === 1 ? "" : "s"}`}
+        </Button>
+      </DialogFooter>
+    </>
   );
 }
 
@@ -286,5 +377,173 @@ function AddIssueRow({
       </span>
       <span className="flex-1 truncate">{row.title}</span>
     </label>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// New — create on GitHub and attach in one request.
+// ---------------------------------------------------------------------------
+
+function NewPanel({
+  project,
+  activeViewId,
+  onClose,
+}: {
+  project: ProjectDto;
+  activeViewId: string | null;
+  onClose: () => void;
+}): JSX.Element {
+  const repoLinks = useProjectRepos(project.id);
+  const repos: ProjectRepoDto[] = repoLinks.data ?? [];
+  const create = useCreateIssue(project.id);
+
+  const [repoId, setRepoId] = useState("");
+  const [title, setTitle] = useState("");
+  const [body, setBody] = useState("");
+
+  // Seed / refresh the repo selection when the list loads.
+  useEffect(() => {
+    setRepoId((prev) => {
+      if (prev && repos.some((r) => r.repo_id === prev)) return prev;
+      return repos[0]?.repo_id ?? "";
+    });
+  }, [repos]);
+
+  const canSubmit =
+    !create.isPending &&
+    !create.isSuccess &&
+    repoId.length > 0 &&
+    title.trim().length > 0;
+
+  const onSubmit = (e: React.FormEvent): void => {
+    e.preventDefault();
+    if (!canSubmit) return;
+    create.mutate({
+      repo_id: repoId,
+      title: title.trim(),
+      body: body.trim() ? body.trim() : undefined,
+      project_id: project.id,
+      // View-only attach when a tab is active; otherwise project-
+      // level attach with CAS via `expected_version`.
+      view_id: activeViewId ?? undefined,
+      expected_version: activeViewId ? undefined : project.version,
+    });
+  };
+
+  if (create.isSuccess) {
+    return (
+      <div
+        className="flex flex-col gap-3"
+        data-testid="add-issue-new-success"
+      >
+        <Alert>
+          <AlertTitle>Created #{create.data.number}</AlertTitle>
+          <AlertDescription>
+            {create.data.issue_id
+              ? activeViewId
+                ? "The issue is live on GitHub and attached to this tab."
+                : "The issue is live on GitHub and attached to this project."
+              : "The issue is live on GitHub. It'll appear in the list within a few seconds once sync catches up."}
+          </AlertDescription>
+        </Alert>
+        <DialogFooter>
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={() => {
+              create.reset();
+              setTitle("");
+              setBody("");
+            }}
+          >
+            Create another
+          </Button>
+          <Button type="button" onClick={onClose}>
+            Done
+          </Button>
+        </DialogFooter>
+      </div>
+    );
+  }
+
+  return (
+    <form className="flex flex-col gap-4" onSubmit={onSubmit}>
+      <div className="flex flex-col gap-2">
+        <Label htmlFor="add-issue-new-repo">Repo</Label>
+        {repos.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No repos linked to this project yet. Open Settings → Manage
+            repos… to link one.
+          </p>
+        ) : (
+          <Select value={repoId} onValueChange={setRepoId}>
+            <SelectTrigger
+              id="add-issue-new-repo"
+              data-testid="add-issue-new-repo"
+            >
+              <SelectValue placeholder="Select a repo" />
+            </SelectTrigger>
+            <SelectContent>
+              {repos.map((r) => (
+                <SelectItem key={r.repo_id} value={r.repo_id}>
+                  {r.repo_name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <Label htmlFor="add-issue-new-title">Title</Label>
+        <Input
+          id="add-issue-new-title"
+          data-testid="add-issue-new-title"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          placeholder="Short, action-oriented summary"
+          maxLength={300}
+          autoFocus
+          required
+        />
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <Label htmlFor="add-issue-new-body">Body (Markdown)</Label>
+        <Textarea
+          id="add-issue-new-body"
+          data-testid="add-issue-new-body"
+          rows={6}
+          value={body}
+          onChange={(e) => setBody(e.target.value)}
+          placeholder="What's the context? What does done look like?"
+        />
+      </div>
+
+      {create.isError && (
+        <Alert variant="destructive" data-testid="add-issue-new-error">
+          <AlertTitle>Create failed</AlertTitle>
+          <AlertDescription>{create.error.message}</AlertDescription>
+        </Alert>
+      )}
+
+      <DialogFooter>
+        <Button
+          type="button"
+          variant="ghost"
+          onClick={onClose}
+          disabled={create.isPending}
+        >
+          Cancel
+        </Button>
+        <Button
+          type="submit"
+          data-testid="add-issue-new-submit"
+          disabled={!canSubmit}
+        >
+          {create.isPending ? "Creating…" : "Create issue"}
+        </Button>
+      </DialogFooter>
+    </form>
   );
 }

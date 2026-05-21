@@ -26,6 +26,8 @@ import {
   type BulkAddIssuesRequest,
   type BulkAddResult,
   type CreateBoardLinkRequest,
+  type CreateIssueRequest,
+  type CreateIssueResponse,
   type CreateProjectRequest,
   type GroupByOptionsResponse,
   type IssueListResponse,
@@ -80,6 +82,9 @@ export interface ListProjectIssuesQuery {
   filter?: string;
   /** PROJECT-VIEW.md §5.3 — sort order. */
   sort?: string;
+  /** PROJECT-VIEW.md §5.4 amendment — scope to a saved view's
+   *  manual membership table. Omitted = "All" tab. */
+  view?: string;
 }
 
 /** Per-status count probe, backed by `GET /projects?count_only=1`.
@@ -421,24 +426,56 @@ export function useAddIssuesToProject(projectId: string) {
   });
 }
 
+/** `POST /issues` — create a fresh GitHub issue. The local
+ *  `dp_issues` row materialises on the next fetcher / webhook
+ *  pass; we invalidate the project's issue list so the row
+ *  shows up as soon as it lands. */
+export function useCreateIssue(projectId?: string) {
+  const qc = useQueryClient();
+  return useMutation<CreateIssueResponse, Error, CreateIssueRequest>({
+    mutationFn: (body) => api.createIssue(body),
+    onSuccess: () => {
+      if (projectId) {
+        qc.invalidateQueries({ queryKey: ["projects", "issues", projectId] });
+        qc.invalidateQueries({ queryKey: projectsKeys.detail(projectId) });
+      }
+      qc.invalidateQueries({ queryKey: ["issues"] });
+    },
+  });
+}
+
 /** `DELETE /projects/{id}/issues/{issue_id}` — single detach.
- *  Takes the project's `expected_version` plus the issue id; the
- *  store advances `version` on success and the hook invalidates
- *  the detail / membership / for-issue caches. */
+ *  When `viewId` is omitted (the "All" tab), the detach is
+ *  project-level and requires the project's `expectedVersion`.
+ *  When `viewId` is set (any named saved-view tab), the detach is
+ *  scoped to that view's membership only; `expectedVersion` is
+ *  ignored. */
 export function useRemoveIssueFromProject(projectId: string) {
   const qc = useQueryClient();
   return useMutation<
     void,
     Error,
-    { issueId: string; expectedVersion: number }
+    {
+      issueId: string;
+      /** Required when `viewId` is null/undefined. */
+      expectedVersion: number | null;
+      /** When set, scopes the detach to this saved view's tab
+       *  membership table and leaves the project link alone. */
+      viewId?: string | null;
+    }
   >({
-    mutationFn: ({ issueId, expectedVersion }) =>
-      api.removeIssueFromProject(projectId, issueId, expectedVersion),
-    onSuccess: (_, { issueId }) => {
+    mutationFn: ({ issueId, expectedVersion, viewId }) =>
+      api.removeIssueFromProject(projectId, issueId, expectedVersion, viewId),
+    onSuccess: (_, { issueId, viewId }) => {
       qc.invalidateQueries({ queryKey: ["projects", "issues", projectId] });
-      qc.invalidateQueries({ queryKey: projectsKeys.detail(projectId) });
-      qc.invalidateQueries({ queryKey: projectsKeys.forIssue(issueId) });
-      invalidateProjectsRoot(qc);
+      // Project-level state (counts, version) only changes when the
+      // detach is project-level; skip the noisy invalidations for a
+      // view-scoped detach.
+      if (!viewId) {
+        qc.invalidateQueries({ queryKey: projectsKeys.detail(projectId) });
+        qc.invalidateQueries({ queryKey: projectsKeys.forIssue(issueId) });
+        invalidateProjectsRoot(qc);
+      }
     },
   });
 }

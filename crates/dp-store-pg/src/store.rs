@@ -27,7 +27,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use dp_domain::audit::AuditEntry;
 use dp_domain::event::{ActivityEvent, ActorRole, EventActor};
-use dp_domain::fetch::{FetchCursor, FetchRun, FetchRunKind, ResourceKind};
+use dp_domain::fetch::{FetchCursor, FetchRun, FetchRunErrorSample, FetchRunKind, ResourceKind};
 use dp_domain::freshness::DataAsOf;
 use dp_domain::identity::{IdentityLinkPending, UserIdentity, VerifiedVia};
 use dp_domain::inbox::{InboxIssueRow, InboxStatus, UserIssueState};
@@ -407,6 +407,11 @@ fn row_to_fetch_run(r: &sqlx::postgres::PgRow) -> Result<FetchRun, StoreError> {
         items: r.try_get("items").map_err(map_sqlx)?,
         errors: r.try_get("errors").map_err(map_sqlx)?,
         partial: r.try_get("partial").map_err(map_sqlx)?,
+        error_sample: r
+            .try_get::<Option<JsonValue>, _>("error_sample")
+            .map_err(map_sqlx)?
+            .map(|v| serde_json::from_value(v).map_err(|e| invalid(e.to_string())))
+            .transpose()?,
     })
 }
 
@@ -2625,9 +2630,36 @@ impl Store for PgStore {
         Ok(())
     }
 
+    async fn record_fetch_run_errors(
+        &self,
+        id: Uuid,
+        samples: &[FetchRunErrorSample],
+    ) -> Result<(), StoreError> {
+        // Empty input clears the column — callers that find
+        // themselves with no samples after a retry get a clean slate
+        // rather than a stale partial sample.
+        let value: Option<JsonValue> = if samples.is_empty() {
+            None
+        } else {
+            Some(serde_json::to_value(samples).map_err(|e| invalid(e.to_string()))?)
+        };
+        let result = sqlx::query(
+            "UPDATE dp_fetch_runs SET error_sample = $2 WHERE id = $1",
+        )
+        .bind(id)
+        .bind(value)
+        .execute(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        if result.rows_affected() == 0 {
+            return Err(not_found("fetch_run", id));
+        }
+        Ok(())
+    }
+
     async fn list_recent_fetch_runs(&self, limit: i64) -> Result<Vec<FetchRun>, StoreError> {
         let rows = sqlx::query(
-            "SELECT id, kind, started, finished, items, errors, partial \
+            "SELECT id, kind, started, finished, items, errors, partial, error_sample \
              FROM dp_fetch_runs ORDER BY started DESC LIMIT $1",
         )
         .bind(limit)
@@ -2643,7 +2675,7 @@ impl Store for PgStore {
         offset: i64,
     ) -> Result<Vec<FetchRun>, StoreError> {
         let rows = sqlx::query(
-            "SELECT id, kind, started, finished, items, errors, partial \
+            "SELECT id, kind, started, finished, items, errors, partial, error_sample \
              FROM dp_fetch_runs ORDER BY started DESC LIMIT $1 OFFSET $2",
         )
         .bind(limit.max(0))
@@ -4232,6 +4264,67 @@ impl Store for PgStore {
         .map_err(map_sqlx)?;
         tx.commit().await.map_err(map_sqlx)?;
         rows.iter().map(project_view_from_row).collect()
+    }
+
+    // ---- per-view (per-tab) issue membership ----------------------
+
+    async fn list_issue_ids_for_view(
+        &self,
+        view_id: Uuid,
+    ) -> Result<Vec<Uuid>, StoreError> {
+        let rows: Vec<(Uuid,)> = sqlx::query_as(
+            r#"SELECT issue_id
+                 FROM dp_project_view_issues
+                WHERE view_id = $1
+             ORDER BY added_at ASC, issue_id ASC"#,
+        )
+        .bind(view_id)
+        .fetch_all(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        Ok(rows.into_iter().map(|(i,)| i).collect())
+    }
+
+    async fn add_issues_to_view(
+        &self,
+        view_id: Uuid,
+        issue_ids: &[Uuid],
+    ) -> Result<(), StoreError> {
+        if issue_ids.is_empty() {
+            return Ok(());
+        }
+        // One round-trip via UNNEST; ON CONFLICT keeps the call
+        // idempotent so retries after a partial network failure
+        // don't churn `added_at`.
+        sqlx::query(
+            r#"INSERT INTO dp_project_view_issues (view_id, issue_id)
+                    SELECT $1, x.issue_id
+                      FROM UNNEST($2::uuid[]) AS x(issue_id)
+                ON CONFLICT (view_id, issue_id) DO NOTHING"#,
+        )
+        .bind(view_id)
+        .bind(issue_ids)
+        .execute(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        Ok(())
+    }
+
+    async fn remove_issue_from_view(
+        &self,
+        view_id: Uuid,
+        issue_id: Uuid,
+    ) -> Result<(), StoreError> {
+        sqlx::query(
+            r#"DELETE FROM dp_project_view_issues
+                WHERE view_id = $1 AND issue_id = $2"#,
+        )
+        .bind(view_id)
+        .bind(issue_id)
+        .execute(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        Ok(())
     }
 
     // ---- project ↔ repo associations -----------------------------
