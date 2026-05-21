@@ -129,6 +129,12 @@ async fn webhook_github_stub() {}
         crate::issues_read::get_issue_timeline,
         // Repo read surface + slice-2 sync endpoints.
         crate::repos::list_repos,
+        crate::repos::get_repo_metadata,
+        crate::repos::get_repo_pr_size_stats,
+        crate::repos::get_repo_ci_stats,
+        crate::repos::get_repo_activity_heatmap,
+        crate::repos::get_repo_review_velocity,
+        crate::repos::get_repo_contributor_diversity,
         crate::repos::get_repo_sync_status,
         crate::repos::request_repo_sync,
         // Reports — slice 2 issue-metric surface.
@@ -202,6 +208,14 @@ async fn webhook_github_stub() {}
         // Repo wire DTOs.
         crate::repos::RepoSummaryDto,
         crate::repos::RepoListResponse,
+        crate::repos::RepoMetadataDto,
+        crate::repos::PercentileTripleDto,
+        crate::repos::RepoPrSizeStatsDto,
+        crate::repos::RepoCiStatsDto,
+        crate::repos::HeatmapBucketDto,
+        crate::repos::RepoActivityHeatmapDto,
+        crate::repos::RepoReviewVelocityDto,
+        crate::repos::RepoContributorDiversityDto,
         crate::repos::RepoSyncStatusDto,
         crate::repos::RepoSyncQueuedDto,
         // Issue-metrics reports (slice 2).

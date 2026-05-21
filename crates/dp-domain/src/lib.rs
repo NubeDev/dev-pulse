@@ -61,9 +61,13 @@ pub use issue_mutation::{IssueMutation, IssueMutationOp, IssueMutationResult};
 pub use membership::{Membership, MembershipRole};
 pub use org::Org;
 pub use pin::{Pin, PinKind, PIN_CAP};
-pub use repo::Repo;
+pub use repo::{Repo, RepoMetadata};
 pub use store::{PendingRemoteIssue, Store, StoreError};
 pub use store::{IssueListFilter, RepoListFilter, DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT};
+pub use store::{
+    HeatmapBucket, PercentileTriple, RepoActivityHeatmap, RepoCiStats,
+    RepoContributorDiversity, RepoPrSizeStats, RepoReviewVelocity,
+};
 pub use store::{
     IssueMetric, IssueMetricGroupBy, IssueMetricRow, IssueMetricsFilter, IssueTimelineRow,
     RepoSyncStatus,

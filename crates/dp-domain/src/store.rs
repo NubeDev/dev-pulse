@@ -32,7 +32,7 @@ use crate::issue_mutation::{IssueMutation, IssueMutationResult};
 use crate::membership::Membership;
 use crate::org::Org;
 use crate::pin::Pin;
-use crate::repo::Repo;
+use crate::repo::{Repo, RepoMetadata};
 use crate::tag::Tag;
 use crate::tag_link::{TagLink, TagLinkKind};
 use crate::team::Team;
@@ -71,6 +71,193 @@ pub enum StoreError {
     /// `dp-domain`.
     #[error("backend error: {0}")]
     Backend(#[source] Box<dyn StdError + Send + Sync>),
+}
+
+/// p50 / p90 / p95 percentile triple over a numeric distribution.
+///
+/// All three are `Some(_)` when the underlying sample has at least
+/// the §15.9 minimum (`n >= 5`); below that, every percentile is
+/// `None` and the caller should render "—" rather than a noisy
+/// single-data-point reading. The actual sample size travels
+/// alongside (e.g. on [`RepoPrSizeStats::sample_n`]) so the UI can
+/// communicate why the values are missing.
+#[derive(Debug, Clone, Copy, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+pub struct PercentileTriple {
+    /// 50th percentile (median).
+    pub p50: Option<f64>,
+    /// 90th percentile.
+    pub p90: Option<f64>,
+    /// 95th percentile.
+    pub p95: Option<f64>,
+}
+
+/// Per-repo pull-request size distribution over a time window.
+///
+/// SCOPE §4 fit: every percentile describes the **repo's** change
+/// volume, never an individual contributor's. The leaderboard /
+/// user-report surfaces explicitly do not call this method.
+///
+/// Backed by the JSONB payload GitHub already ships on every
+/// `pull_request` webhook (`additions`, `deletions`, `changed_files`,
+/// `commits`) — no schema change, no extra API call. Scope is
+/// `EventKind::PullRequestMerged` so closed-without-merge PRs
+/// (which routinely include speculative diff sizes) don't skew
+/// the distribution.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct RepoPrSizeStats {
+    /// Number of merged PRs whose payload carried diff-size fields
+    /// inside `[since, until)`. Below 5 the `*_lines` / `files` /
+    /// `commits` percentiles are all `None`.
+    pub sample_n: i64,
+    /// Lines added (`payload->>'additions'`).
+    pub additions: PercentileTriple,
+    /// Lines removed (`payload->>'deletions'`).
+    pub deletions: PercentileTriple,
+    /// `additions + deletions` per PR.
+    pub total_lines: PercentileTriple,
+    /// Files touched (`payload->>'changed_files'`).
+    pub changed_files: PercentileTriple,
+    /// Commits in the PR (`payload->>'commits'`).
+    pub commits: PercentileTriple,
+}
+
+/// Per-repo CI workflow-run statistics over a time window.
+///
+/// SCOPE §4 fit: counts and durations describe the **repo's** CI
+/// health, never an individual contributor's. The leaderboard /
+/// user-report surfaces explicitly do not call this method.
+///
+/// Backed by the JSONB payload GitHub ships on every
+/// `workflow_run.completed` webhook (`conclusion`,
+/// `run_started_at`, `updated_at`, `name`). No schema change, no
+/// extra API call. Duration percentiles use `updated_at -
+/// run_started_at` for the run; the `n < 5` sample-size guard
+/// applies (SCOPE §15.9).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct RepoCiStats {
+    /// Total workflow runs in `[since, until)` whose payload
+    /// carried a `conclusion`.
+    pub total_runs: i64,
+    /// `conclusion = 'success'`.
+    pub success: i64,
+    /// `conclusion = 'failure'`.
+    pub failure: i64,
+    /// `conclusion = 'cancelled'`.
+    pub cancelled: i64,
+    /// Any other terminal conclusion (`skipped`, `neutral`,
+    /// `timed_out`, `action_required`, `stale`).
+    pub other: i64,
+    /// `success / (success + failure)` as a fraction in `[0.0,
+    /// 1.0]`, or `None` when `success + failure == 0` (cancellations
+    /// and skips don't carry signal here).
+    pub success_rate: Option<f64>,
+    /// Number of runs whose payload carried both
+    /// `run_started_at` and `updated_at` and a finite duration
+    /// (the input set for `duration_seconds`).
+    pub duration_sample_n: i64,
+    /// Percentiles over `updated_at - run_started_at`, in seconds.
+    /// `None` triple when `duration_sample_n < 5`.
+    pub duration_seconds: PercentileTriple,
+}
+
+/// Repo-scoped activity heatmap: counts of activity events
+/// bucketed by `(day_of_week, hour_of_day)` in a fixed timezone.
+///
+/// The bucket grid is dense — 7 days × 24 hours = 168 cells, all
+/// returned even when the count is zero — so the UI never has to
+/// fill in gaps and the JSON is self-describing.
+///
+/// SCOPE §4 fit: describes the **repo's** activity cadence (when
+/// the team tends to push / open PRs / merge), never an
+/// individual contributor's. Intentionally not surfaced on the
+/// user-report or leaderboard pages.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct RepoActivityHeatmap {
+    /// IANA timezone name used to derive the local day-of-week
+    /// and hour-of-day (e.g. `"UTC"`, `"America/Los_Angeles"`).
+    pub timezone: String,
+    /// Total events across all buckets in the window — handy for
+    /// the "n too small" guard at the UI layer.
+    pub total: i64,
+    /// 168 cells: one per `(dow, hour)` pair. `dow` is 0..=6
+    /// using the ISO convention (0 = Monday, 6 = Sunday), `hour`
+    /// is 0..=23.
+    pub buckets: Vec<HeatmapBucket>,
+}
+
+/// One `(day_of_week, hour_of_day)` cell in a [`RepoActivityHeatmap`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct HeatmapBucket {
+    /// 0 = Monday … 6 = Sunday (ISO 8601).
+    pub dow: i16,
+    /// 0..=23 in the heatmap's timezone.
+    pub hour: i16,
+    /// Number of events whose `ts` fell in this bucket.
+    pub count: i64,
+}
+
+/// Repo-scoped review-velocity statistics: how long PRs in this
+/// repo took to go from `created_at` to `merged_at`.
+///
+/// Backed by the JSONB payload GitHub already ships on every
+/// `pull_request.closed` (merged) webhook — both timestamps are
+/// in the same row, so no self-join is needed. PRs closed
+/// without merging are excluded by `EventKind::PullRequestMerged`.
+///
+/// SCOPE §4 fit: percentiles describe the **repo's** merge
+/// cadence (how quickly the team turns code around), never an
+/// individual contributor's. The leaderboard / user-report
+/// surfaces explicitly do not call this method.
+///
+/// Sample-size guard (SCOPE §15.9): percentiles are `None` when
+/// `sample_n < 5` so a 1-PR-this-month window doesn't look like
+/// "median merge: 4h".
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct RepoReviewVelocity {
+    /// Number of merged PRs in `[since, until)` whose payload
+    /// carried both `created_at` and `merged_at` with a
+    /// strictly-positive delta.
+    pub sample_n: i64,
+    /// Percentiles over `merged_at - created_at`, in seconds.
+    /// `None` triple when `sample_n < 5`.
+    pub time_to_merge_seconds: PercentileTriple,
+}
+
+/// Repo-scoped contributor-diversity ("bus factor") statistics.
+///
+/// Answers the operational question *"if our top contributor
+/// went on leave, how much of this repo's merge volume would
+/// stall?"* — without naming anyone. Concentration is reported
+/// as the **share of merges attributable to the top 1 / top 3
+/// authors**, alongside the raw distinct-author count.
+///
+/// SCOPE §4 fit: this is a property of the **repo's** risk
+/// profile, not a ranking of contributors. The wire shape
+/// deliberately omits any user identifier, and the leaderboard
+/// / user-report surfaces do not call this method.
+///
+/// Backed by the existing `(event, author)` join on
+/// `EventKind::PullRequestMerged` events — no schema change. We
+/// count one row per *(merged-PR-event, author-user)* pair, so
+/// a PR with multiple authors contributes a small fraction to
+/// each rather than double-counting.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct RepoContributorDiversity {
+    /// Total (event, author) pairs across merged PRs in
+    /// `[since, until)`. Used as the denominator for the
+    /// `top*_share` fields and the §15.9 sample-size guard.
+    pub sample_n: i64,
+    /// Number of distinct PR authors observed in the window.
+    pub distinct_authors: i64,
+    /// Fraction in `[0.0, 1.0]` of `sample_n` attributable to
+    /// the single most-active author. `None` when `sample_n < 5`
+    /// — the "bus factor" framing isn't meaningful at low n.
+    pub top1_share: Option<f64>,
+    /// Fraction in `[0.0, 1.0]` of `sample_n` attributable to
+    /// the three most-active authors combined. Equals
+    /// `top1_share` when `distinct_authors <= 3`. `None` under
+    /// the same n < 5 guard.
+    pub top3_share: Option<f64>,
 }
 
 /// The set of [`EventActor`] rows joined back through their parent
@@ -288,6 +475,149 @@ pub trait Store: Send + Sync {
 
     /// Upsert repo by `(org_id, github_id)`.
     async fn upsert_repo(&self, repo: &Repo) -> Result<Repo, StoreError>;
+
+    /// Upsert the mutable GitHub-side snapshot for a repo
+    /// ([`RepoMetadata`]). Default implementation is a no-op so
+    /// backends and test fakes that don't model metadata stay
+    /// unaffected; the Postgres backend overrides this.
+    ///
+    /// Implementations should preserve known-good nullable values
+    /// when the supplied row's optional field is `None`
+    /// (`COALESCE(EXCLUDED.x, dp_repo_metadata.x)`). Counter fields
+    /// (`stars`, `forks`, `watchers`, `open_issues_remote`) are
+    /// always written as supplied — the caller is responsible for
+    /// only invoking this method with a payload that carried fresh
+    /// counter values.
+    async fn upsert_repo_metadata(
+        &self,
+        _metadata: &RepoMetadata,
+    ) -> Result<(), StoreError> {
+        Ok(())
+    }
+
+    /// Read the [`RepoMetadata`] snapshot for a repo, if one has
+    /// been recorded. Default returns `None` so backends that don't
+    /// model metadata yet present as "snapshot unavailable" to the
+    /// UI rather than erroring.
+    async fn get_repo_metadata(
+        &self,
+        _repo_id: Uuid,
+    ) -> Result<Option<RepoMetadata>, StoreError> {
+        Ok(None)
+    }
+
+    /// Aggregate the pull-request size distribution for one repo
+    /// across `[since, until)` (UTC, half-open). See
+    /// [`RepoPrSizeStats`].
+    ///
+    /// Default returns a zero-sample row so test fakes don't have
+    /// to model JSONB aggregation. The Postgres backend overrides.
+    async fn pr_size_stats_for_repo(
+        &self,
+        _repo_id: Uuid,
+        _since: DateTime<Utc>,
+        _until: DateTime<Utc>,
+    ) -> Result<RepoPrSizeStats, StoreError> {
+        Ok(RepoPrSizeStats {
+            sample_n: 0,
+            additions: PercentileTriple::default(),
+            deletions: PercentileTriple::default(),
+            total_lines: PercentileTriple::default(),
+            changed_files: PercentileTriple::default(),
+            commits: PercentileTriple::default(),
+        })
+    }
+
+    /// Aggregate CI workflow-run statistics for one repo across
+    /// `[since, until)` (UTC, half-open). See [`RepoCiStats`].
+    ///
+    /// Default returns a zero-sample row so test fakes don't have
+    /// to model JSONB aggregation. The Postgres backend overrides.
+    async fn ci_stats_for_repo(
+        &self,
+        _repo_id: Uuid,
+        _since: DateTime<Utc>,
+        _until: DateTime<Utc>,
+    ) -> Result<RepoCiStats, StoreError> {
+        Ok(RepoCiStats {
+            total_runs: 0,
+            success: 0,
+            failure: 0,
+            cancelled: 0,
+            other: 0,
+            success_rate: None,
+            duration_sample_n: 0,
+            duration_seconds: PercentileTriple::default(),
+        })
+    }
+
+    /// Aggregate `(day_of_week, hour_of_day)` activity counts for
+    /// one repo across `[since, until)` (UTC, half-open). The
+    /// caller supplies an IANA `timezone` to bucket against — UI
+    /// surfaces typically pass the viewer's local zone so "9am"
+    /// means 9am to whoever is reading.
+    ///
+    /// Default returns an empty 168-cell grid so test fakes don't
+    /// have to model `EXTRACT()` aggregation. The Postgres
+    /// backend overrides.
+    async fn activity_heatmap_for_repo(
+        &self,
+        _repo_id: Uuid,
+        _since: DateTime<Utc>,
+        _until: DateTime<Utc>,
+        timezone: &str,
+    ) -> Result<RepoActivityHeatmap, StoreError> {
+        let mut buckets = Vec::with_capacity(168);
+        for dow in 0..7 {
+            for hour in 0..24 {
+                buckets.push(HeatmapBucket { dow, hour, count: 0 });
+            }
+        }
+        Ok(RepoActivityHeatmap {
+            timezone: timezone.to_string(),
+            total: 0,
+            buckets,
+        })
+    }
+
+    /// Aggregate review-velocity (time-to-merge) statistics for
+    /// one repo across `[since, until)` (UTC, half-open). See
+    /// [`RepoReviewVelocity`].
+    ///
+    /// Default returns a zero-sample row so test fakes don't have
+    /// to model JSONB aggregation. The Postgres backend overrides.
+    async fn review_velocity_for_repo(
+        &self,
+        _repo_id: Uuid,
+        _since: DateTime<Utc>,
+        _until: DateTime<Utc>,
+    ) -> Result<RepoReviewVelocity, StoreError> {
+        Ok(RepoReviewVelocity {
+            sample_n: 0,
+            time_to_merge_seconds: PercentileTriple::default(),
+        })
+    }
+
+    /// Aggregate contributor-diversity ("bus factor") statistics
+    /// for one repo across `[since, until)` (UTC, half-open). See
+    /// [`RepoContributorDiversity`].
+    ///
+    /// Default returns a zero-sample row so test fakes don't have
+    /// to model the (event, actor) join. The Postgres backend
+    /// overrides.
+    async fn contributor_diversity_for_repo(
+        &self,
+        _repo_id: Uuid,
+        _since: DateTime<Utc>,
+        _until: DateTime<Utc>,
+    ) -> Result<RepoContributorDiversity, StoreError> {
+        Ok(RepoContributorDiversity {
+            sample_n: 0,
+            distinct_authors: 0,
+            top1_share: None,
+            top3_share: None,
+        })
+    }
 
     /// Upsert a `(user, org)` membership, preserving `home_org` if
     /// already set — `set_home_org` is the only way to change it.

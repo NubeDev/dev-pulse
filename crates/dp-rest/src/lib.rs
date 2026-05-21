@@ -92,8 +92,14 @@ pub use issues_read::{
     TimelineEntryDto, TimelineQuery, TimelineResponse,
 };
 pub use repos::{
-    get_repo_sync_status, list_repos, repos_router, request_repo_sync, ListReposQuery,
-    RepoListResponse, RepoSummaryDto, RepoSyncQueuedDto, RepoSyncStatusDto,
+    get_repo_activity_heatmap, get_repo_ci_stats, get_repo_contributor_diversity,
+    get_repo_metadata, get_repo_pr_size_stats, get_repo_review_velocity,
+    get_repo_sync_status, list_repos, repos_router, request_repo_sync,
+    ActivityHeatmapQuery, CiStatsQuery, ContributorDiversityQuery, HeatmapBucketDto,
+    ListReposQuery, PercentileTripleDto, PrSizeStatsQuery, RepoActivityHeatmapDto,
+    RepoCiStatsDto, RepoContributorDiversityDto, RepoListResponse, RepoMetadataDto,
+    RepoPrSizeStatsDto, RepoReviewVelocityDto, RepoSummaryDto, RepoSyncQueuedDto,
+    RepoSyncStatusDto, ReviewVelocityQuery,
 };
 pub use repo_project_link::{
     delete_repo_project_link, get_repo_project_link, list_repo_projects,

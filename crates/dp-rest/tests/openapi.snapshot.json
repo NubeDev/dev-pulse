@@ -1467,6 +1467,287 @@
         }
       }
     },
+    "/repos/{id}/activity-heatmap": {
+      "get": {
+        "tags": [
+          "repos"
+        ],
+        "summary": "`GET /repos/{id}/activity-heatmap` — repo-level activity\n`(day_of_week, hour_of_day)` distribution.\nAuthorisation: `(\"repos\", \"read\")`.",
+        "operationId": "get_repo_activity_heatmap",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Repo id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "description": "Inclusive window start (default: now - 90d)",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "description": "Exclusive window end (default: now)",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "timezone",
+            "in": "query",
+            "description": "IANA timezone for bucketing (default: UTC)",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Repo activity heatmap",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoActivityHeatmapDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid window or timezone"
+          },
+          "404": {
+            "description": "No such repo"
+          }
+        }
+      }
+    },
+    "/repos/{id}/ci-stats": {
+      "get": {
+        "tags": [
+          "repos"
+        ],
+        "summary": "`GET /repos/{id}/ci-stats` — repo-level CI workflow-run\nstatistics. Authorisation: `(\"repos\", \"read\")`.",
+        "operationId": "get_repo_ci_stats",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Repo id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "description": "Inclusive window start (default: now - 90d)",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "description": "Exclusive window end (default: now)",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Repo CI run statistics",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoCiStatsDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid window (since >= until, or span > 366d)"
+          },
+          "404": {
+            "description": "No such repo"
+          }
+        }
+      }
+    },
+    "/repos/{id}/contributor-diversity": {
+      "get": {
+        "tags": [
+          "repos"
+        ],
+        "summary": "`GET /repos/{id}/contributor-diversity` — repo-level\n\"bus factor\" view. Authorisation: `(\"repos\", \"read\")`.",
+        "operationId": "get_repo_contributor_diversity",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Repo id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "description": "Inclusive window start (default: now - 90d)",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "description": "Exclusive window end (default: now)",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Repo contributor-diversity stats",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoContributorDiversityDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid window (since >= until, or span > 366d)"
+          },
+          "404": {
+            "description": "No such repo"
+          }
+        }
+      }
+    },
+    "/repos/{id}/metadata": {
+      "get": {
+        "tags": [
+          "repos"
+        ],
+        "summary": "`GET /repos/{id}/metadata` — repo snapshot for the\nrepo-activity dashboard. Authorisation: `(\"repos\", \"read\")`.",
+        "operationId": "get_repo_metadata",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Repo id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Repo metadata snapshot",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoMetadataDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such repo, or no snapshot recorded yet"
+          }
+        }
+      }
+    },
+    "/repos/{id}/pr-size-stats": {
+      "get": {
+        "tags": [
+          "repos"
+        ],
+        "summary": "`GET /repos/{id}/pr-size-stats` — repo-level PR-size\ndistribution. Authorisation: `(\"repos\", \"read\")`.",
+        "operationId": "get_repo_pr_size_stats",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Repo id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "description": "Inclusive window start (default: now - 90d)",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "description": "Exclusive window end (default: now)",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Repo PR-size percentile distribution",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoPrSizeStatsDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid window (since >= until, or span > 366d)"
+          },
+          "404": {
+            "description": "No such repo"
+          }
+        }
+      }
+    },
     "/repos/{id}/project-link": {
       "get": {
         "tags": [
@@ -1599,6 +1880,65 @@
           },
           "503": {
             "description": "Projects picker not configured"
+          }
+        }
+      }
+    },
+    "/repos/{id}/review-velocity": {
+      "get": {
+        "tags": [
+          "repos"
+        ],
+        "summary": "`GET /repos/{id}/review-velocity` — repo-level time-to-merge\npercentile distribution. Authorisation: `(\"repos\", \"read\")`.",
+        "operationId": "get_repo_review_velocity",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Repo id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "description": "Inclusive window start (default: now - 90d)",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "description": "Exclusive window end (default: now)",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Repo time-to-merge percentiles",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoReviewVelocityDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid window (since >= until, or span > 366d)"
+          },
+          "404": {
+            "description": "No such repo"
           }
         }
       }
@@ -2575,6 +2915,32 @@
           }
         }
       },
+      "HeatmapBucketDto": {
+        "type": "object",
+        "description": "One `(dow, hour)` cell in a [`RepoActivityHeatmapDto`].",
+        "required": [
+          "dow",
+          "hour",
+          "count"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Event count in this bucket."
+          },
+          "dow": {
+            "type": "integer",
+            "format": "int32",
+            "description": "0 = Monday … 6 = Sunday (ISO 8601)."
+          },
+          "hour": {
+            "type": "integer",
+            "format": "int32",
+            "description": "0..=23 in the response's timezone."
+          }
+        }
+      },
       "HomeOrgSplitRow": {
         "type": "object",
         "description": "One row of the `/reports/home-org-split` shape — per (user, org)\nbucket, count of distinct events the user is credited on within\nthat org.",
@@ -3155,6 +3521,36 @@
         ],
         "description": "Body for PATCH `/issues/{id}`."
       },
+      "PercentileTripleDto": {
+        "type": "object",
+        "description": "p50 / p90 / p95 over a numeric distribution. Every field is\n`null` when the sample is too small (SCOPE §15.9, `n < 5`); the\n`sample_n` on the parent response carries the actual count so\nthe UI can render \"n too small\" instead of zeros.",
+        "properties": {
+          "p50": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "50th percentile (median)."
+          },
+          "p90": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "90th percentile."
+          },
+          "p95": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "95th percentile."
+          }
+        }
+      },
       "PinDto": {
         "type": "object",
         "description": "One row in `GET /me/pins`. Hydration of `target_id` to a full\nrepo / tag payload is a follow-up stage — for now the client\njoins against `/orgs`, `/repos`, `/tags` itself.",
@@ -3304,6 +3700,162 @@
           }
         }
       },
+      "RepoActivityHeatmapDto": {
+        "type": "object",
+        "description": "`GET /repos/{id}/activity-heatmap` response — dense 168-cell\n`(dow, hour)` grid of activity events for the repo. Describes\nthe repo's collaboration cadence, never an individual's\n(SCOPE §4).",
+        "required": [
+          "since",
+          "until",
+          "timezone",
+          "total",
+          "buckets"
+        ],
+        "properties": {
+          "buckets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HeatmapBucketDto"
+            },
+            "description": "168 cells, ordered by `(dow, hour)`."
+          },
+          "since": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Echoed window start."
+          },
+          "timezone": {
+            "type": "string",
+            "description": "Echoed IANA timezone used for bucketing."
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Total events across all buckets in the window."
+          },
+          "until": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Echoed window end."
+          }
+        }
+      },
+      "RepoCiStatsDto": {
+        "type": "object",
+        "description": "`GET /repos/{id}/ci-stats` response — repo-level CI\nworkflow-run health. Every field describes the repo's CI, not\nan individual contributor (SCOPE §4).",
+        "required": [
+          "since",
+          "until",
+          "total_runs",
+          "success",
+          "failure",
+          "cancelled",
+          "other",
+          "duration_sample_n",
+          "duration_seconds"
+        ],
+        "properties": {
+          "cancelled": {
+            "type": "integer",
+            "format": "int64",
+            "description": "`conclusion = 'cancelled'`."
+          },
+          "duration_sample_n": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Runs whose payload carried both `run_started_at` and\n`updated_at` and a strictly-positive delta."
+          },
+          "duration_seconds": {
+            "$ref": "#/components/schemas/PercentileTripleDto",
+            "description": "p50 / p90 / p95 over `updated_at - run_started_at`, in\nseconds. `null` triple when `duration_sample_n < 5`."
+          },
+          "failure": {
+            "type": "integer",
+            "format": "int64",
+            "description": "`conclusion = 'failure'`."
+          },
+          "other": {
+            "type": "integer",
+            "format": "int64",
+            "description": "`skipped`, `neutral`, `timed_out`, `action_required`, `stale`."
+          },
+          "since": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Echoed window start."
+          },
+          "success": {
+            "type": "integer",
+            "format": "int64",
+            "description": "`conclusion = 'success'`."
+          },
+          "success_rate": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "`success / (success + failure)` ∈ `[0.0, 1.0]`, or `null`\nwhen there were no terminal success / failure runs."
+          },
+          "total_runs": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Total workflow runs in the window."
+          },
+          "until": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Echoed window end."
+          }
+        }
+      },
+      "RepoContributorDiversityDto": {
+        "type": "object",
+        "description": "`GET /repos/{id}/contributor-diversity` response —\nrepo-level \"bus factor\" view. Every field describes the\nrepo's concentration risk, not an individual contributor\n(SCOPE §4). The wire shape deliberately carries no user\nidentifiers.",
+        "required": [
+          "since",
+          "until",
+          "sample_n",
+          "distinct_authors"
+        ],
+        "properties": {
+          "distinct_authors": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Distinct PR authors observed."
+          },
+          "sample_n": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Total (merged-PR, author) pairs in the window."
+          },
+          "since": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Echoed window start."
+          },
+          "top1_share": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Share of `sample_n` from the single top author, in\n`[0.0, 1.0]`. `null` when `sample_n < 5`."
+          },
+          "top3_share": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Share of `sample_n` from the top 3 authors combined.\n`null` when `sample_n < 5`."
+          },
+          "until": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Echoed window end."
+          }
+        }
+      },
       "RepoListResponse": {
         "type": "object",
         "description": "Paginated envelope. Carries `total` so the UI can render\n`Showing X–Y of Z` without a second round-trip.",
@@ -3338,6 +3890,146 @@
           }
         }
       },
+      "RepoMetadataDto": {
+        "type": "object",
+        "description": "`GET /repos/{id}/metadata` response — the per-repo snapshot of\nmutable GitHub-side fields (stars / forks / language / default\nbranch / archival state, …) populated by the fetcher off every\nwebhook delivery's `repository` block.\n\nAll numeric fields default to `0`; nullable fields default to\n`null`. The endpoint returns `404` when no snapshot row has been\nrecorded for the repo yet (fresh install before the first\nwebhook lands) — the UI shows a \"snapshot pending\" placeholder\nrather than rendering zeros.",
+        "required": [
+          "stars",
+          "forks",
+          "watchers",
+          "open_issues_remote",
+          "is_archived",
+          "is_fork",
+          "is_private",
+          "metadata_updated_at"
+        ],
+        "properties": {
+          "default_branch": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Default branch name."
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Repo description."
+          },
+          "forks": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Forks on GitHub."
+          },
+          "homepage": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Repo homepage URL."
+          },
+          "is_archived": {
+            "type": "boolean",
+            "description": "GitHub's archived flag."
+          },
+          "is_fork": {
+            "type": "boolean",
+            "description": "GitHub's fork flag."
+          },
+          "is_private": {
+            "type": "boolean",
+            "description": "GitHub's private flag."
+          },
+          "metadata_updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Wall-clock the dev-pulse fetcher last refreshed this row."
+          },
+          "open_issues_remote": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Open issues + PRs as GitHub itself counts them. Differs\nfrom the dev-pulse `open_issue_count` (issues only) by the\nnumber of open PRs."
+          },
+          "primary_language": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Primary language detected by GitHub, if any."
+          },
+          "pushed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "GitHub's `pushed_at` — last push to any branch."
+          },
+          "stars": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Stars on GitHub."
+          },
+          "watchers": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Watchers (`subscribers_count`, not the legacy alias)."
+          }
+        }
+      },
+      "RepoPrSizeStatsDto": {
+        "type": "object",
+        "description": "`GET /repos/{id}/pr-size-stats` response — repo-level\npull-request size distribution. Every field describes the\nrepo, never an individual contributor (SCOPE §4).",
+        "required": [
+          "since",
+          "until",
+          "sample_n",
+          "additions",
+          "deletions",
+          "total_lines",
+          "changed_files",
+          "commits"
+        ],
+        "properties": {
+          "additions": {
+            "$ref": "#/components/schemas/PercentileTripleDto",
+            "description": "`payload->>'additions'`."
+          },
+          "changed_files": {
+            "$ref": "#/components/schemas/PercentileTripleDto",
+            "description": "`payload->>'changed_files'`."
+          },
+          "commits": {
+            "$ref": "#/components/schemas/PercentileTripleDto",
+            "description": "`payload->>'commits'`."
+          },
+          "deletions": {
+            "$ref": "#/components/schemas/PercentileTripleDto",
+            "description": "`payload->>'deletions'`."
+          },
+          "sample_n": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Number of merged PRs whose payload carried diff-size fields\ninside the window."
+          },
+          "since": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Echoed window start."
+          },
+          "total_lines": {
+            "$ref": "#/components/schemas/PercentileTripleDto",
+            "description": "`additions + deletions`."
+          },
+          "until": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Echoed window end."
+          }
+        }
+      },
       "RepoProjectLinkDto": {
         "type": "object",
         "description": "Wire shape for `dp_repo_project_link`. Mirrors\n[`RepoProjectLink`] one-for-one.",
@@ -3368,6 +4060,37 @@
               "null"
             ],
             "description": "Field node id for the start-date column, or `null` when\nthe project does not configure one."
+          }
+        }
+      },
+      "RepoReviewVelocityDto": {
+        "type": "object",
+        "description": "`GET /repos/{id}/review-velocity` response — repo-level\ntime-to-merge percentile distribution. Every field describes\nthe repo's merge cadence, not an individual contributor's\n(SCOPE §4).",
+        "required": [
+          "since",
+          "until",
+          "sample_n",
+          "time_to_merge_seconds"
+        ],
+        "properties": {
+          "sample_n": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Merged PRs in the window whose payload carried both\n`created_at` and `merged_at` with a positive delta."
+          },
+          "since": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Echoed window start."
+          },
+          "time_to_merge_seconds": {
+            "$ref": "#/components/schemas/PercentileTripleDto",
+            "description": "p50 / p90 / p95 over `merged_at - created_at`, in seconds.\n`null` triple when `sample_n < 5`."
+          },
+          "until": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Echoed window end."
           }
         }
       },

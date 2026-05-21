@@ -36,6 +36,12 @@ import {
   RepoActivityFilters,
   RepoBreakdownTable,
   RepoFocusPanel,
+  RepoPrSizePanel,
+  RepoCiPanel,
+  RepoActivityHeatmapPanel,
+  RepoReviewVelocityPanel,
+  RepoContributorDiversityPanel,
+  RepoSnapshotPanel,
   useRepoActivityData,
   type RepoActivityDirectory,
 } from "./repo-activity/index.js";
@@ -252,6 +258,31 @@ export function RepoActivityPage(): JSX.Element {
               selectedRepoId={focusedRepoId}
             />
           </div>
+
+          {focusedRepoId && directory.reposById.get(focusedRepoId) ? (
+            <div className="grid gap-4 px-4 @5xl/main:grid-cols-2 lg:px-6">
+              <RepoSnapshotPanel
+                repo={directory.reposById.get(focusedRepoId)!}
+              />
+              <RepoPrSizePanel
+                repo={directory.reposById.get(focusedRepoId)!}
+              />
+              <RepoReviewVelocityPanel
+                repo={directory.reposById.get(focusedRepoId)!}
+              />
+              <RepoCiPanel
+                repo={directory.reposById.get(focusedRepoId)!}
+              />
+              <RepoContributorDiversityPanel
+                repo={directory.reposById.get(focusedRepoId)!}
+              />
+              <div className="@5xl/main:col-span-2">
+                <RepoActivityHeatmapPanel
+                  repo={directory.reposById.get(focusedRepoId)!}
+                />
+              </div>
+            </div>
+          ) : null}
 
           {focusedRepoId && directory.reposById.get(focusedRepoId) ? (
             <div className="px-4 lg:px-6">

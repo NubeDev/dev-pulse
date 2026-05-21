@@ -99,7 +99,8 @@ export function ContributorBarChart({
         ) : (
           <ChartContainer
             config={config}
-            className="aspect-auto h-[360px] w-full"
+            className="aspect-auto w-full"
+            style={{ height: `${Math.max(360, top.length * 28 + 80)}px` }}
           >
             <BarChart
               data={data}
