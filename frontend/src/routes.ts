@@ -65,6 +65,29 @@ export function projectsRoute(status?: ProjectStatusRoute | null): string {
   return `#/projects?status=${status}`;
 }
 
+/** Parse `#/projects/{id}` → the project id (UUID), or `null` for
+ *  the list landing (`#/projects` / `#/projects?status=…`). The
+ *  detail page is opened by §6.3 once a project exists; slice B
+ *  uses it as the host for the Link-a-board dialog and the
+ *  per-link mirror status rows. */
+export function projectDetailIdOf(route: string): string | null {
+  const q = route.indexOf("?");
+  const pathPart = q < 0 ? route : route.slice(0, q);
+  const parts = pathPart.replace(/^#/, "").replace(/^\/+/, "").split("/");
+  if (parts[0] !== "projects") return null;
+  const id = parts[1];
+  if (!id) return null;
+  // Crude UUID guard — anything else falls back to the list page
+  // so a typo doesn't land in detail-with-no-data.
+  if (!/^[0-9a-fA-F-]{36}$/.test(id)) return null;
+  return id;
+}
+
+/** Build a `#/projects/{id}` URL. */
+export function projectDetailRoute(id: string): string {
+  return `#/projects/${id}`;
+}
+
 /** Sub-route under the account section
  *  (`linear-projects-idea.md` §10 multi-identity). Defaults to
  *  `identities` — the link / unlink / transfer / set-primary
@@ -193,11 +216,18 @@ export type ReportTab = "user" | "team" | "org" | "home-org-split" | "leaderboar
  *  - `runs` (default): paginated fetch_runs log.
  *  - `refresh`       : operator-triggered reconciler tick + org scope.
  *  - `users`         : GDPR controls (anonymise + export).
- *  - `projects`      : SCOPE-PROJECTS §3.10 repo → Projects v2 board
- *                      linker + field picker. */
-export type AdminTab = "runs" | "refresh" | "users" | "projects";
+ *  - `project-sync`  : §9.4 "advanced / paste node ids" escape
+ *                      hatch — the legacy SCOPE-PROJECTS §3.10
+ *                      per-repo board linker, demoted from the
+ *                      primary surface once slice B of
+ *                      `linear-projects-v2.md` shipped the
+ *                      Link-a-board dialog. */
+export type AdminTab = "runs" | "refresh" | "users" | "project-sync";
 
-/** Parse `#/admin/...` → the active sub-tab. Defaults to `runs`. */
+/** Parse `#/admin/...` → the active sub-tab. Defaults to `runs`.
+ *  The legacy `/admin/projects` URL is honoured as an alias for
+ *  `project-sync` so any deep links sitting in chat/bookmarks
+ *  still land somewhere sensible after the §9.4 rename. */
 export function adminTabOf(route: string): AdminTab {
   const path = route.replace(/^#/, "").replace(/^\/+/, "").split("/");
   if (path[0] !== "admin") return "runs";
@@ -206,8 +236,9 @@ export function adminTabOf(route: string): AdminTab {
       return "refresh";
     case "users":
       return "users";
+    case "project-sync":
     case "projects":
-      return "projects";
+      return "project-sync";
     case "runs":
     case undefined:
     case "":

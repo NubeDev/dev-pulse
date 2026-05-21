@@ -562,6 +562,62 @@ export interface ListProjectsQuery {
   count_only?: boolean;
 }
 
+// --- Board links (linear-projects-v2.md §7.3, slice B) --------------------
+//
+// Org-scoped GitHub Projects v2 board picker + per-project link
+// CRUD. Wire DTOs mirror `crates/dp-rest/src/board_links.rs` —
+// `OrgProjectPickerDto`, `BoardPickerDto`, `DateFieldDto`,
+// `BoardLinkDto`, `CreateBoardLinkRequest`. The picker is org-
+// scoped so it returns _every_ Projects v2 board visible to the
+// installation, not just the ones a single repo touches; the
+// dialog narrows by the project's own org.
+
+export const DateFieldDtoSchema = z.object({
+  node_id: z.string(),
+  name: z.string(),
+});
+export type DateFieldDto = z.infer<typeof DateFieldDtoSchema>;
+
+export const BoardPickerDtoSchema = z.object({
+  node_id: z.string(),
+  title: z.string(),
+  url: z.string().nullable().optional(),
+  number: z.number().int().nullable().optional(),
+  date_fields: z.array(DateFieldDtoSchema),
+});
+export type BoardPickerDto = z.infer<typeof BoardPickerDtoSchema>;
+
+export const OrgProjectPickerDtoSchema = z.object({
+  boards: z.array(BoardPickerDtoSchema),
+  fetched_at: isoDateTime,
+});
+export type OrgProjectPickerDto = z.infer<typeof OrgProjectPickerDtoSchema>;
+
+export const BoardLinkDtoSchema = z.object({
+  id: uuid,
+  project_id: uuid,
+  github_board_node_id: z.string(),
+  github_board_title: z.string().nullable().optional(),
+  github_board_url: z.string().nullable().optional(),
+  github_board_cached_at: isoDateTime.nullable().optional(),
+  start_field_node_id: z.string().nullable().optional(),
+  due_field_node_id: z.string().nullable().optional(),
+  last_mirror_at: isoDateTime.nullable().optional(),
+  last_mirror_error: z.string().nullable().optional(),
+  created_at: isoDateTime,
+  updated_at: isoDateTime,
+});
+export type BoardLinkDto = z.infer<typeof BoardLinkDtoSchema>;
+
+export const CreateBoardLinkRequestSchema = z.object({
+  github_board_node_id: z.string().min(1),
+  github_board_title: z.string().nullable().optional(),
+  github_board_url: z.string().nullable().optional(),
+  start_field_node_id: z.string().nullable().optional(),
+  due_field_node_id: z.string().nullable().optional(),
+});
+export type CreateBoardLinkRequest = z.infer<typeof CreateBoardLinkRequestSchema>;
+
 export const CreateCommentRequestSchema = z.object({
   expected_version: z.number().int(),
   body: z.string().min(1),
@@ -1236,6 +1292,98 @@ export class DevPulseApi {
       `/projects${qs ? `?${qs}` : ""}`,
       ProjectListResponseSchema,
     );
+  }
+
+  /** `GET /projects/{id}` — fetch one project. Returns `null` on
+   *  404 so the detail page can render a clean "not found" state
+   *  instead of a fetch error. */
+  async getProject(id: string): Promise<ProjectDto | null> {
+    try {
+      return await this.getJson(
+        `/projects/${encodeURIComponent(id)}`,
+        ProjectDtoSchema,
+      );
+    } catch (e) {
+      if (e instanceof DpRestError && e.status === 404) return null;
+      throw e;
+    }
+  }
+
+  // --- board links (linear-projects-v2.md §7.3, slice B) -----------
+
+  /** `GET /orgs/{org_id}/projects-v2` — normalized org-wide board
+   *  picker for the §6.4 Link-a-board dialog. Returns `null` when
+   *  the picker backend is unconfigured (HTTP 400
+   *  `upstream_unavailable`) so the dialog can fall through to the
+   *  "[Open GitHub project settings]" hint without ever showing
+   *  a node-id paste field on the primary path. */
+  async getOrgProjectsV2(
+    orgId: string,
+  ): Promise<OrgProjectPickerDto | null> {
+    try {
+      return await this.getJson(
+        `/orgs/${encodeURIComponent(orgId)}/projects-v2`,
+        OrgProjectPickerDtoSchema,
+      );
+    } catch (e) {
+      if (
+        e instanceof DpRestError &&
+        (e.code === "upstream_unavailable" ||
+          e.code === "github_validation_failed")
+      ) {
+        return null;
+      }
+      throw e;
+    }
+  }
+
+  /** `GET /projects/{id}/board-links` — list a project's linked
+   *  GitHub Projects v2 boards in `created_at ASC` order. Each row
+   *  carries `last_mirror_at` / `last_mirror_error` so the detail
+   *  page can render mirror status per link without a second
+   *  round-trip. */
+  async listBoardLinks(projectId: string): Promise<BoardLinkDto[]> {
+    return this.getJson(
+      `/projects/${encodeURIComponent(projectId)}/board-links`,
+      z.array(BoardLinkDtoSchema),
+    );
+  }
+
+  /** `POST /projects/{id}/board-links` — link a board to the
+   *  project. The natural-key `(project_id, github_board_node_id)`
+   *  UNIQUE constraint surfaces a re-link as `DpRestError` with
+   *  `status === 409` / `code === "board_already_linked"`. */
+  async createBoardLink(
+    projectId: string,
+    body: CreateBoardLinkRequest,
+  ): Promise<BoardLinkDto> {
+    return this.sendJson(
+      "POST",
+      `/projects/${encodeURIComponent(projectId)}/board-links`,
+      body,
+      BoardLinkDtoSchema,
+    );
+  }
+
+  /** `DELETE /projects/{id}/board-links/{link_id}` — unlink the
+   *  board. §9.2 elevation: caller must be the project's
+   *  `created_by`, its `lead_user_id`, or hold `(projects, admin)`;
+   *  surfaces as `DpRestError` with `status === 403` /
+   *  `code === "project_board_unlink_forbidden"` otherwise. */
+  async deleteBoardLink(
+    projectId: string,
+    linkId: string,
+  ): Promise<void> {
+    try {
+      await this.sendNoContent(
+        "DELETE",
+        `/projects/${encodeURIComponent(projectId)}/board-links/${encodeURIComponent(linkId)}`,
+        undefined,
+      );
+    } catch (e) {
+      if (e instanceof DpRestError && e.status === 404) return;
+      throw e;
+    }
   }
 
   /** `POST /issues` — create. May throw `DpRestError` with

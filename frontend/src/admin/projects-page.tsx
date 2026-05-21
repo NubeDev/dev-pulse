@@ -1,13 +1,21 @@
 /**
- * Admin · Projects page — SCOPE-PROJECTS §3.10 repo → GitHub
- * Projects v2 board linker.
+ * Admin · Project sync page (§9.4 of `linear-projects-v2.md`).
  *
- * The §3.10 best-effort mirror needs three node ids per linked
- * repo: the board (`project_node_id`) plus optional Start / Due
- * `dateField` ids. We surface them via the picker (`GET
- * /repos/{id}/projects`) when the deployment has a GraphQL
- * transport wired, and fall back to raw text inputs otherwise so
- * the operator can paste ids from `gh project list --format=json`.
+ * This page is the **advanced / paste-node-ids escape hatch** for
+ * the SCOPE-PROJECTS §3.10 per-repo board linker. The primary
+ * surface for wiring a dev-pulse Project to a GitHub Projects v2
+ * board now lives in `#/projects/{id}` via the §6.4
+ * `LinkBoardDialog` (`frontend/src/projects/link-board-dialog.tsx`),
+ * which uses the org-scoped picker and never shows a node-id
+ * paste field.
+ *
+ * This admin page survives for two operator-only cases the spec
+ * calls out (§9.4): GraphQL transport is unavailable (so the
+ * picker on the primary path can't fire) or someone needs to
+ * attach a board whose org is different from the project's org.
+ * Neither is a user-facing flow — the sidebar entry is
+ * "Admin ▸ Project sync" to clear the naming collision with the
+ * new top-level Projects section.
  *
  * Layout: PageHeading + a two-column form Card. Left column picks a
  * repo (autocomplete-flavoured `<Select>`). Right column shows the
@@ -166,8 +174,17 @@ export function ProjectsPage(): JSX.Element {
   return (
     <div className="flex flex-col gap-4">
       <PageHeading
-        title="Projects v2 link"
-        description="Link a repo to a GitHub Projects v2 board so the date editor mirrors Start / Due fields."
+        title="Project sync (advanced)"
+        description={
+          <>
+            §9.4 escape hatch — the primary path for linking a GitHub
+            Projects v2 board lives on each project's detail page
+            (<code>#/projects/&#123;id&#125;</code>) via the org-scoped
+            picker. This admin form remains for the two operator-only
+            cases the spec calls out: no GraphQL transport, or a
+            cross-org link.
+          </>
+        }
       />
 
       <Card>
