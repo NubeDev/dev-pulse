@@ -41,6 +41,10 @@ use dp_domain::event::EventKind;
 use dp_domain::issue_dates::{
     IssueDates, ProjectV2MirrorTask, ProjectV2MirrorTaskKind, RepoProjectLink,
 };
+use dp_domain::project::{
+    Project, ProjectIssueAddOutcome, ProjectIssueAddSkip, ProjectListFilter, ProjectStatus,
+    ProjectUpsert,
+};
 use dp_domain::store::{
     EventActorRow, IssueDatesMirrorOutcome, IssueListFilter, IssueMetric, IssueMetricGroupBy,
     IssueMetricRow, IssueMetricsFilter, IssueTimelineRow, PendingRemoteIssue, RepoListFilter,
@@ -2905,6 +2909,472 @@ impl Store for PgStore {
         .map_err(map_sqlx)?;
         rows.iter().map(row_to_projectv2_mirror_task).collect()
     }
+
+    // ---- projects (linear-projects-v2.md slice A) ----------------
+
+    async fn list_projects(
+        &self,
+        filter: &ProjectListFilter,
+    ) -> Result<Vec<Project>, StoreError> {
+        let q_norm = filter
+            .q
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let status_text = filter.status.map(|s| s.as_str().to_string());
+        let rows = sqlx::query(
+            r#"SELECT id, org_id, name, description, lead_user_id, status,
+                      start_at, due_at, issue_count, closed_issue_count,
+                      created_by, created_at, updated_at, version
+                 FROM dp_projects
+                WHERE ($1::uuid IS NULL OR org_id = $1)
+                  AND ($2::text IS NULL OR status = $2)
+                  AND ($3::text IS NULL OR name ILIKE '%' || $3 || '%')
+             ORDER BY
+                  CASE status
+                      WHEN 'active'   THEN 0
+                      WHEN 'backlog'  THEN 1
+                      WHEN 'done'     THEN 2
+                      WHEN 'archived' THEN 3
+                  END,
+                  due_at ASC NULLS LAST,
+                  name ASC
+                LIMIT $4 OFFSET $5"#,
+        )
+        .bind(filter.org_id)
+        .bind(status_text)
+        .bind(q_norm)
+        .bind(filter.limit)
+        .bind(filter.offset)
+        .fetch_all(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        rows.iter().map(row_to_project).collect()
+    }
+
+    async fn count_projects(
+        &self,
+        filter: &ProjectListFilter,
+    ) -> Result<i64, StoreError> {
+        let q_norm = filter
+            .q
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let status_text = filter.status.map(|s| s.as_str().to_string());
+        let (count,): (i64,) = sqlx::query_as(
+            r#"SELECT COUNT(*)::bigint
+                 FROM dp_projects
+                WHERE ($1::uuid IS NULL OR org_id = $1)
+                  AND ($2::text IS NULL OR status = $2)
+                  AND ($3::text IS NULL OR name ILIKE '%' || $3 || '%')"#,
+        )
+        .bind(filter.org_id)
+        .bind(status_text)
+        .bind(q_norm)
+        .fetch_one(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        Ok(count)
+    }
+
+    async fn get_project(&self, id: Uuid) -> Result<Option<Project>, StoreError> {
+        let row = sqlx::query(
+            r#"SELECT id, org_id, name, description, lead_user_id, status,
+                      start_at, due_at, issue_count, closed_issue_count,
+                      created_by, created_at, updated_at, version
+                 FROM dp_projects WHERE id = $1"#,
+        )
+        .bind(id)
+        .fetch_optional(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        row.map(|r| row_to_project(&r)).transpose()
+    }
+
+    async fn create_project(
+        &self,
+        upsert: &ProjectUpsert,
+    ) -> Result<Project, StoreError> {
+        let row = sqlx::query(
+            r#"INSERT INTO dp_projects
+                   (id, org_id, name, description, lead_user_id, status,
+                    start_at, due_at, created_by, created_at, updated_at, version)
+               VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8,
+                       now(), now(), 1)
+               RETURNING id, org_id, name, description, lead_user_id, status,
+                         start_at, due_at, issue_count, closed_issue_count,
+                         created_by, created_at, updated_at, version"#,
+        )
+        .bind(upsert.org_id)
+        .bind(&upsert.name)
+        .bind(upsert.description.as_deref())
+        .bind(upsert.lead_user_id)
+        .bind(upsert.status.as_str())
+        .bind(upsert.start_at)
+        .bind(upsert.due_at)
+        .bind(upsert.created_by)
+        .fetch_one(self.pool.sqlx())
+        .await
+        .map_err(|e| match &e {
+            sqlx::Error::Database(db)
+                if db.constraint().is_some()
+                    && (db.message().contains("dp_projects_check")
+                        || db.message().contains("dp_projects")
+                            && db.message().contains("check")) =>
+            {
+                invalid("project violates a CHECK constraint (status / dates / counts)")
+            }
+            _ => map_sqlx(e),
+        })?;
+        row_to_project(&row)
+    }
+
+    async fn update_project(
+        &self,
+        id: Uuid,
+        expected_version: i64,
+        upsert: &ProjectUpsert,
+    ) -> Result<Project, StoreError> {
+        // §8.2 CAS: WHERE id = ? AND version = ?. A miss is either
+        // "row gone" (NotFound) or "stale version" (Conflict). One
+        // extra SELECT distinguishes them; cheaper than a serializable
+        // transaction and lets the REST layer pick its 404 vs 409.
+        let row = sqlx::query(
+            r#"UPDATE dp_projects
+                  SET name         = $3,
+                      description  = $4,
+                      lead_user_id = $5,
+                      status       = $6,
+                      start_at     = $7,
+                      due_at       = $8,
+                      version      = version + 1,
+                      updated_at   = now()
+                WHERE id = $1 AND version = $2
+               RETURNING id, org_id, name, description, lead_user_id, status,
+                         start_at, due_at, issue_count, closed_issue_count,
+                         created_by, created_at, updated_at, version"#,
+        )
+        .bind(id)
+        .bind(expected_version)
+        .bind(&upsert.name)
+        .bind(upsert.description.as_deref())
+        .bind(upsert.lead_user_id)
+        .bind(upsert.status.as_str())
+        .bind(upsert.start_at)
+        .bind(upsert.due_at)
+        .fetch_optional(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        match row {
+            Some(r) => row_to_project(&r),
+            None => disambiguate_project_miss(self, id).await,
+        }
+    }
+
+    async fn archive_project(
+        &self,
+        id: Uuid,
+        expected_version: i64,
+    ) -> Result<Project, StoreError> {
+        // Idempotent: archiving an already-archived row returns the
+        // row as-is without a version bump (§9.2 wording). Anything
+        // else CAS-gates on version.
+        let current = self.get_project(id).await?;
+        let Some(current) = current else {
+            return Err(not_found("project", id));
+        };
+        if current.status == ProjectStatus::Archived {
+            // No-op: caller's expected_version may even be stale but
+            // there is nothing to bump. Return the row unchanged.
+            return Ok(current);
+        }
+        let row = sqlx::query(
+            r#"UPDATE dp_projects
+                  SET status     = 'archived',
+                      version    = version + 1,
+                      updated_at = now()
+                WHERE id = $1 AND version = $2
+               RETURNING id, org_id, name, description, lead_user_id, status,
+                         start_at, due_at, issue_count, closed_issue_count,
+                         created_by, created_at, updated_at, version"#,
+        )
+        .bind(id)
+        .bind(expected_version)
+        .fetch_optional(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        match row {
+            Some(r) => row_to_project(&r),
+            None => disambiguate_project_miss(self, id).await,
+        }
+    }
+
+    async fn add_issues_to_project(
+        &self,
+        project_id: Uuid,
+        expected_version: i64,
+        issue_ids: &[Uuid],
+        actor: Option<Uuid>,
+    ) -> Result<ProjectIssueAddOutcome, StoreError> {
+        // One transaction so a concurrent writer cannot observe the
+        // half-bumped counts or race the version gate. `FOR UPDATE`
+        // serialises against any other writer touching this project
+        // row.
+        let mut tx = self.pool.sqlx().begin().await.map_err(map_sqlx)?;
+
+        let project_row: Option<(Uuid, i64, String)> = sqlx::query_as(
+            "SELECT org_id, version, status FROM dp_projects WHERE id = $1 FOR UPDATE",
+        )
+        .bind(project_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(map_sqlx)?;
+        let (project_org, current_version, _status) = match project_row {
+            Some(r) => r,
+            None => return Err(not_found("project", project_id)),
+        };
+        if current_version != expected_version {
+            return Err(StoreError::Conflict(format!(
+                "project version mismatch: expected {expected_version}, found {current_version}"
+            )));
+        }
+
+        let mut added: Vec<Uuid> = Vec::new();
+        let mut skipped: Vec<ProjectIssueAddSkip> = Vec::new();
+
+        for &issue_id in issue_ids {
+            // Resolve the issue plus its current membership (if any)
+            // in a single round-trip so the per-row decision below
+            // doesn't need a second query.
+            let row: Option<(Uuid, Option<Uuid>)> = sqlx::query_as(
+                r#"SELECT i.org_id, pi.project_id
+                     FROM dp_issues i
+                     LEFT JOIN dp_project_issues pi ON pi.issue_id = i.id
+                    WHERE i.id = $1"#,
+            )
+            .bind(issue_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(map_sqlx)?;
+
+            let Some((issue_org, existing_project)) = row else {
+                skipped.push(ProjectIssueAddSkip {
+                    issue_id,
+                    reason: "unknown_issue".into(),
+                    existing_project_id: None,
+                });
+                continue;
+            };
+            if issue_org != project_org {
+                skipped.push(ProjectIssueAddSkip {
+                    issue_id,
+                    reason: "cross_org".into(),
+                    existing_project_id: None,
+                });
+                continue;
+            }
+            if let Some(existing) = existing_project {
+                // Already attached — either to this project (idempotent
+                // re-add) or to another. v1 collapses both to
+                // `already_in_project`; the existing project id lets
+                // the UI offer `Move here?` when it's a different one.
+                skipped.push(ProjectIssueAddSkip {
+                    issue_id,
+                    reason: "already_in_project".into(),
+                    existing_project_id: Some(existing),
+                });
+                continue;
+            }
+
+            sqlx::query(
+                r#"INSERT INTO dp_project_issues (project_id, issue_id, added_by, added_at)
+                       VALUES ($1, $2, $3, now())"#,
+            )
+            .bind(project_id)
+            .bind(issue_id)
+            .bind(actor)
+            .execute(&mut *tx)
+            .await
+            .map_err(map_sqlx)?;
+            added.push(issue_id);
+        }
+
+        // Recompute counts + bump version inside the same tx so the
+        // returned outcome reflects committed state. We only bump
+        // `version` when at least one issue was added — the §7.2
+        // contract.
+        if !added.is_empty() {
+            sqlx::query(
+                r#"UPDATE dp_projects p
+                      SET issue_count = (
+                              SELECT COUNT(*) FROM dp_project_issues
+                               WHERE project_id = p.id),
+                          closed_issue_count = (
+                              SELECT COUNT(*)
+                                FROM dp_project_issues pi
+                                JOIN dp_issues i ON i.id = pi.issue_id
+                               WHERE pi.project_id = p.id AND i.state = 'closed'),
+                          version    = version + 1,
+                          updated_at = now()
+                    WHERE id = $1"#,
+            )
+            .bind(project_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(map_sqlx)?;
+        }
+
+        tx.commit().await.map_err(map_sqlx)?;
+
+        Ok(ProjectIssueAddOutcome { added, skipped })
+    }
+
+    async fn remove_issue_from_project(
+        &self,
+        project_id: Uuid,
+        issue_id: Uuid,
+        expected_version: i64,
+    ) -> Result<Project, StoreError> {
+        let mut tx = self.pool.sqlx().begin().await.map_err(map_sqlx)?;
+
+        let project_row: Option<(i64,)> = sqlx::query_as(
+            "SELECT version FROM dp_projects WHERE id = $1 FOR UPDATE",
+        )
+        .bind(project_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(map_sqlx)?;
+        let current_version = match project_row {
+            Some((v,)) => v,
+            None => return Err(not_found("project", project_id)),
+        };
+        if current_version != expected_version {
+            return Err(StoreError::Conflict(format!(
+                "project version mismatch: expected {expected_version}, found {current_version}"
+            )));
+        }
+
+        let res = sqlx::query(
+            "DELETE FROM dp_project_issues WHERE project_id = $1 AND issue_id = $2",
+        )
+        .bind(project_id)
+        .bind(issue_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_sqlx)?;
+        if res.rows_affected() == 0 {
+            return Err(not_found("project_issue", issue_id));
+        }
+
+        let row = sqlx::query(
+            r#"UPDATE dp_projects p
+                  SET issue_count = (
+                          SELECT COUNT(*) FROM dp_project_issues
+                           WHERE project_id = p.id),
+                      closed_issue_count = (
+                          SELECT COUNT(*)
+                            FROM dp_project_issues pi
+                            JOIN dp_issues i ON i.id = pi.issue_id
+                           WHERE pi.project_id = p.id AND i.state = 'closed'),
+                      version    = version + 1,
+                      updated_at = now()
+                WHERE id = $1
+               RETURNING id, org_id, name, description, lead_user_id, status,
+                         start_at, due_at, issue_count, closed_issue_count,
+                         created_by, created_at, updated_at, version"#,
+        )
+        .bind(project_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(map_sqlx)?;
+        let project = row_to_project(&row)?;
+        tx.commit().await.map_err(map_sqlx)?;
+        Ok(project)
+    }
+
+    async fn get_project_for_issue(
+        &self,
+        issue_id: Uuid,
+    ) -> Result<Option<Project>, StoreError> {
+        let row = sqlx::query(
+            r#"SELECT p.id, p.org_id, p.name, p.description, p.lead_user_id, p.status,
+                      p.start_at, p.due_at, p.issue_count, p.closed_issue_count,
+                      p.created_by, p.created_at, p.updated_at, p.version
+                 FROM dp_projects p
+                 JOIN dp_project_issues pi ON pi.project_id = p.id
+                WHERE pi.issue_id = $1"#,
+        )
+        .bind(issue_id)
+        .fetch_optional(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        row.map(|r| row_to_project(&r)).transpose()
+    }
+
+    async fn list_issue_ids_for_project(
+        &self,
+        project_id: Uuid,
+    ) -> Result<Vec<Uuid>, StoreError> {
+        let rows = sqlx::query(
+            r#"SELECT issue_id
+                 FROM dp_project_issues
+                WHERE project_id = $1
+             ORDER BY added_at ASC, issue_id ASC"#,
+        )
+        .bind(project_id)
+        .fetch_all(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        rows.iter()
+            .map(|r| r.try_get::<Uuid, _>("issue_id").map_err(map_sqlx))
+            .collect()
+    }
+}
+
+/// Resolve whether an `UPDATE dp_projects ... WHERE id = ? AND
+/// version = ?` that affected zero rows was caused by the row going
+/// away (NotFound) or by a stale `expected_version` (Conflict).
+/// Pulled out so `update_project` and `archive_project` share one
+/// place that picks the right `StoreError` variant.
+async fn disambiguate_project_miss(
+    store: &PgStore,
+    id: Uuid,
+) -> Result<Project, StoreError> {
+    let existing: Option<(i64,)> =
+        sqlx::query_as("SELECT version FROM dp_projects WHERE id = $1")
+            .bind(id)
+            .fetch_optional(store.pool().sqlx())
+            .await
+            .map_err(map_sqlx)?;
+    match existing {
+        Some((v,)) => Err(StoreError::Conflict(format!(
+            "project version mismatch: row currently at version {v}"
+        ))),
+        None => Err(not_found("project", id)),
+    }
+}
+
+fn row_to_project(r: &sqlx::postgres::PgRow) -> Result<Project, StoreError> {
+    let status_text: String = r.try_get("status").map_err(map_sqlx)?;
+    let status = ProjectStatus::from_str(&status_text)
+        .ok_or_else(|| invalid(format!("unknown project status: {status_text}")))?;
+    Ok(Project {
+        id: r.try_get("id").map_err(map_sqlx)?,
+        org_id: r.try_get("org_id").map_err(map_sqlx)?,
+        name: r.try_get("name").map_err(map_sqlx)?,
+        description: r.try_get("description").map_err(map_sqlx)?,
+        lead_user_id: r.try_get("lead_user_id").map_err(map_sqlx)?,
+        status,
+        start_at: r.try_get("start_at").map_err(map_sqlx)?,
+        due_at: r.try_get("due_at").map_err(map_sqlx)?,
+        issue_count: r.try_get("issue_count").map_err(map_sqlx)?,
+        closed_issue_count: r.try_get("closed_issue_count").map_err(map_sqlx)?,
+        created_by: r.try_get("created_by").map_err(map_sqlx)?,
+        created_at: r.try_get("created_at").map_err(map_sqlx)?,
+        updated_at: r.try_get("updated_at").map_err(map_sqlx)?,
+        version: r.try_get("version").map_err(map_sqlx)?,
+    })
 }
 
 fn row_to_issue_dates(r: &sqlx::postgres::PgRow) -> Result<IssueDates, StoreError> {

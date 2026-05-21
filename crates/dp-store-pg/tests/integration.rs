@@ -62,6 +62,8 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use dp_domain::event::{ActivityEvent, ActorRole, EventActor, EventKind};
+use dp_domain::issue::{IssueState, IssueUpsert};
+use dp_domain::project::{ProjectListFilter, ProjectStatus, ProjectUpsert};
 use dp_domain::fetch::{FetchCursor, FetchRunKind, ResourceKind};
 use dp_domain::membership::{Membership, MembershipRole};
 use dp_domain::org::Org;
@@ -1082,4 +1084,285 @@ async fn identity_link_pending_round_trip() {
     let purged = s.purge_expired_identity_link_pending(now).await.unwrap();
     assert!(purged >= 1);
     assert!(s.consume_identity_link_pending(nonce2).await.unwrap().is_none());
+}
+
+// ---------- projects (linear-projects-v2.md slice A) ----------------
+
+/// Seed an open issue under a repo via the GitHub upsert path. Used
+/// by the project-membership tests so the FK to `dp_issues` is real.
+async fn seed_issue(s: &PgStore, org: &Org, repo: &Repo, github_id: i64, number: i64) -> Uuid {
+    let now = Utc::now();
+    let (issue, _outcome) = s
+        .upsert_issue_from_github(
+            &IssueUpsert {
+                org_id: org.id,
+                repo_id: repo.id,
+                github_id,
+                github_node_id: None,
+                number,
+                title: format!("seed #{number}"),
+                body: None,
+                state: IssueState::Open,
+                labels: vec![],
+                assignees: vec![],
+                milestone: None,
+                author: None,
+                state_reason: None,
+                created_at: now,
+                updated_at: now,
+                closed_at: None,
+            },
+            Duration::seconds(60),
+        )
+        .await
+        .unwrap();
+    issue.id
+}
+
+/// Create / list / update / archive round-trip plus the partial-
+/// unique name index (archived rows can reuse the name).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Docker or DP_TEST_DATABASE_URL"]
+async fn projects_crud_round_trip() {
+    let f = fixture().await;
+    let s = f.store();
+
+    let org = seed_org(s, 7000, "acme").await;
+    let lead = seed_user(s, 7001, "lead").await;
+
+    // Create.
+    let p = s
+        .create_project(&ProjectUpsert {
+            org_id: org.id,
+            name: "Rubix v2 launch".into(),
+            description: Some("ship it".into()),
+            lead_user_id: Some(lead.id),
+            status: ProjectStatus::Active,
+            start_at: None,
+            due_at: None,
+            created_by: Some(lead.id),
+        })
+        .await
+        .unwrap();
+    assert_eq!(p.status, ProjectStatus::Active);
+    assert_eq!(p.version, 1);
+    assert_eq!(p.issue_count, 0);
+
+    // Duplicate (case-insensitive, same status) → Conflict via the
+    // partial-unique index `dp_projects_org_name_unique`.
+    let dup = s
+        .create_project(&ProjectUpsert {
+            org_id: org.id,
+            name: "rubix v2 LAUNCH".into(),
+            description: None,
+            lead_user_id: None,
+            status: ProjectStatus::Active,
+            start_at: None,
+            due_at: None,
+            created_by: Some(lead.id),
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(dup, StoreError::Conflict(_)));
+
+    // PATCH with the right version bumps `version` and persists
+    // the new fields.
+    let p2 = s
+        .update_project(
+            p.id,
+            p.version,
+            &ProjectUpsert {
+                org_id: org.id, // ignored on update
+                name: "Rubix v2 launch".into(),
+                description: Some("ship it sooner".into()),
+                lead_user_id: Some(lead.id),
+                status: ProjectStatus::Backlog,
+                start_at: None,
+                due_at: None,
+                created_by: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(p2.version, p.version + 1);
+    assert_eq!(p2.status, ProjectStatus::Backlog);
+    assert_eq!(p2.description.as_deref(), Some("ship it sooner"));
+
+    // Stale `expected_version` → Conflict (not Backend).
+    let stale = s
+        .update_project(
+            p.id,
+            p.version, // already bumped
+            &ProjectUpsert {
+                org_id: org.id,
+                name: "renamed".into(),
+                description: None,
+                lead_user_id: None,
+                status: ProjectStatus::Active,
+                start_at: None,
+                due_at: None,
+                created_by: None,
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(stale, StoreError::Conflict(_)));
+
+    // Filter list by org + status.
+    let listed = s
+        .list_projects(&ProjectListFilter {
+            org_id: Some(org.id),
+            status: Some(ProjectStatus::Backlog),
+            q: None,
+            limit: 50,
+            offset: 0,
+        })
+        .await
+        .unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].id, p.id);
+    assert_eq!(
+        s.count_projects(&ProjectListFilter {
+            org_id: Some(org.id),
+            status: Some(ProjectStatus::Backlog),
+            q: None,
+            limit: 50,
+            offset: 0
+        })
+        .await
+        .unwrap(),
+        1
+    );
+
+    // Archive bumps version + status.
+    let archived = s.archive_project(p.id, p2.version).await.unwrap();
+    assert_eq!(archived.status, ProjectStatus::Archived);
+    assert_eq!(archived.version, p2.version + 1);
+
+    // Re-archive is idempotent (no version bump).
+    let again = s
+        .archive_project(p.id, archived.version)
+        .await
+        .unwrap();
+    assert_eq!(again.version, archived.version);
+
+    // Now the original name can be reused — the partial index
+    // excludes archived rows.
+    let p3 = s
+        .create_project(&ProjectUpsert {
+            org_id: org.id,
+            name: "Rubix v2 launch".into(),
+            description: None,
+            lead_user_id: None,
+            status: ProjectStatus::Active,
+            start_at: None,
+            due_at: None,
+            created_by: Some(lead.id),
+        })
+        .await
+        .unwrap();
+    assert_ne!(p3.id, p.id);
+}
+
+/// Bulk membership: per-row outcomes, the `UNIQUE (issue_id)` v1
+/// rule, the cross-org rejection, and the denormalised counters.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Docker or DP_TEST_DATABASE_URL"]
+async fn project_issue_membership_outcomes() {
+    let f = fixture().await;
+    let s = f.store();
+
+    let org_a = seed_org(s, 7100, "org-a").await;
+    let org_b = seed_org(s, 7101, "org-b").await;
+    let repo_a = seed_repo(s, &org_a, 9100, "ra").await;
+    let repo_b = seed_repo(s, &org_b, 9101, "rb").await;
+    let actor = seed_user(s, 7102, "actor").await;
+
+    let i1 = seed_issue(s, &org_a, &repo_a, 1, 1).await;
+    let i2 = seed_issue(s, &org_a, &repo_a, 2, 2).await;
+    let i_cross = seed_issue(s, &org_b, &repo_b, 3, 3).await;
+    let bogus_issue = Uuid::new_v4();
+
+    let project = s
+        .create_project(&ProjectUpsert {
+            org_id: org_a.id,
+            name: "p".into(),
+            description: None,
+            lead_user_id: None,
+            status: ProjectStatus::Active,
+            start_at: None,
+            due_at: None,
+            created_by: Some(actor.id),
+        })
+        .await
+        .unwrap();
+
+    // First add: i1, i2 land; i_cross is `cross_org`; bogus is
+    // `unknown_issue`.
+    let outcome = s
+        .add_issues_to_project(
+            project.id,
+            project.version,
+            &[i1, i2, i_cross, bogus_issue],
+            Some(actor.id),
+        )
+        .await
+        .unwrap();
+    assert_eq!(outcome.added.len(), 2);
+    assert!(outcome.added.contains(&i1) && outcome.added.contains(&i2));
+    assert_eq!(outcome.skipped.len(), 2);
+    let reasons: Vec<&str> = outcome.skipped.iter().map(|sk| sk.reason.as_str()).collect();
+    assert!(reasons.contains(&"cross_org"));
+    assert!(reasons.contains(&"unknown_issue"));
+
+    let after = s.get_project(project.id).await.unwrap().unwrap();
+    assert_eq!(after.issue_count, 2);
+    assert_eq!(after.closed_issue_count, 0);
+    assert_eq!(after.version, project.version + 1);
+
+    // Adding i1 again surfaces `already_in_project` with the
+    // current project id filled in.
+    let again = s
+        .add_issues_to_project(after.id, after.version, &[i1], Some(actor.id))
+        .await
+        .unwrap();
+    assert!(again.added.is_empty());
+    assert_eq!(again.skipped.len(), 1);
+    assert_eq!(again.skipped[0].reason, "already_in_project");
+    assert_eq!(again.skipped[0].existing_project_id, Some(project.id));
+
+    // Zero added → no version bump.
+    let after2 = s.get_project(project.id).await.unwrap().unwrap();
+    assert_eq!(after2.version, after.version);
+
+    // Reverse lookup.
+    let proj_for_i1 = s.get_project_for_issue(i1).await.unwrap().unwrap();
+    assert_eq!(proj_for_i1.id, project.id);
+    assert!(s.get_project_for_issue(i_cross).await.unwrap().is_none());
+
+    // Listed ids.
+    let ids = s.list_issue_ids_for_project(project.id).await.unwrap();
+    assert_eq!(ids.len(), 2);
+    assert!(ids.contains(&i1) && ids.contains(&i2));
+
+    // Stale CAS on bulk add → Conflict.
+    let conflict = s
+        .add_issues_to_project(project.id, project.version, &[i1], None)
+        .await
+        .unwrap_err();
+    assert!(matches!(conflict, StoreError::Conflict(_)));
+
+    // Remove i1 bumps version, decrements count.
+    let removed = s
+        .remove_issue_from_project(project.id, i1, after2.version)
+        .await
+        .unwrap();
+    assert_eq!(removed.issue_count, 1);
+    assert_eq!(removed.version, after2.version + 1);
+    // Removing an issue that is not in the project → NotFound.
+    let miss = s
+        .remove_issue_from_project(project.id, bogus_issue, removed.version)
+        .await
+        .unwrap_err();
+    assert!(matches!(miss, StoreError::NotFound { .. }));
 }

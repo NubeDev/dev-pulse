@@ -35,6 +35,7 @@ pub mod issue_mutation;
 pub mod membership;
 pub mod org;
 pub mod pin;
+pub mod project;
 pub mod repo;
 pub mod store;
 pub mod tag;
@@ -61,6 +62,10 @@ pub use issue_mutation::{IssueMutation, IssueMutationOp, IssueMutationResult};
 pub use membership::{Membership, MembershipRole};
 pub use org::Org;
 pub use pin::{Pin, PinKind, PIN_CAP};
+pub use project::{
+    Project, ProjectIssueAddOutcome, ProjectIssueAddSkip, ProjectListFilter, ProjectStatus,
+    ProjectUpsert,
+};
 pub use repo::Repo;
 pub use store::{PendingRemoteIssue, Store, StoreError};
 pub use store::{IssueListFilter, RepoListFilter, DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT};

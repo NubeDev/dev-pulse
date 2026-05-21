@@ -1330,6 +1330,152 @@ pub trait Store: Send + Sync {
     ) -> Result<Vec<ProjectV2MirrorTask>, StoreError> {
         Ok(Vec::new())
     }
+
+    // ---- projects (linear-projects-v2.md slice A) ----------------
+
+    /// List projects matching `filter`, ordered for the §6.2 list
+    /// page: `status` ASC then `due_at ASC NULLS LAST` then `name`.
+    /// Default impl returns the empty vec so in-memory fakes that
+    /// don't care about projects stay quiet.
+    async fn list_projects(
+        &self,
+        _filter: &crate::project::ProjectListFilter,
+    ) -> Result<Vec<crate::project::Project>, StoreError> {
+        Ok(Vec::new())
+    }
+
+    /// Count projects matching `filter`. Used by the §6.1 sidebar
+    /// counts (`?count_only=1`). Default impl returns 0.
+    async fn count_projects(
+        &self,
+        _filter: &crate::project::ProjectListFilter,
+    ) -> Result<i64, StoreError> {
+        Ok(0)
+    }
+
+    /// Fetch a single project by id, or `None` when absent.
+    async fn get_project(
+        &self,
+        _id: Uuid,
+    ) -> Result<Option<crate::project::Project>, StoreError> {
+        Ok(None)
+    }
+
+    /// Insert a new project. The store assigns `id`, stamps
+    /// `created_at` / `updated_at`, initialises `version = 1`, and
+    /// zeroes the denormalised issue counts. Default impl rejects
+    /// the call so fakes that haven't opted in fail loudly rather
+    /// than silently swallowing the write.
+    async fn create_project(
+        &self,
+        _upsert: &crate::project::ProjectUpsert,
+    ) -> Result<crate::project::Project, StoreError> {
+        Err(StoreError::Invalid(
+            "projects not supported by this store".into(),
+        ))
+    }
+
+    /// Update a project under §8.2 CAS. `expected_version` matches
+    /// the row's current `version`; a mismatch returns
+    /// [`StoreError::Conflict`] and the caller surfaces it as a
+    /// 409. `created_by` is immutable per §9.2 and is therefore
+    /// not in the upsert payload's update path.
+    ///
+    /// `org_id` on the upsert is ignored on update — projects do
+    /// not move between orgs (v1: §4 — cross-org rollups are §10).
+    async fn update_project(
+        &self,
+        _id: Uuid,
+        _expected_version: i64,
+        _upsert: &crate::project::ProjectUpsert,
+    ) -> Result<crate::project::Project, StoreError> {
+        Err(StoreError::Invalid(
+            "projects not supported by this store".into(),
+        ))
+    }
+
+    /// Archive a project (§9.2 elevated op). Sets `status =
+    /// 'archived'`, bumps `version`, and stamps `updated_at`.
+    /// Idempotent — archiving an already-archived project returns
+    /// the row unchanged (no `version` bump). `expected_version`
+    /// CAS gate matches `update_project`.
+    async fn archive_project(
+        &self,
+        _id: Uuid,
+        _expected_version: i64,
+    ) -> Result<crate::project::Project, StoreError> {
+        Err(StoreError::Invalid(
+            "projects not supported by this store".into(),
+        ))
+    }
+
+    /// Attach a batch of issues to a project. CAS-gated on the
+    /// project's `version` (§7.2). Per-row outcomes flow back via
+    /// [`crate::project::ProjectIssueAddOutcome`]:
+    ///
+    /// * `added` — rows the store accepted; the project's
+    ///   `version`, `issue_count`, and `closed_issue_count` are
+    ///   updated to reflect the additions.
+    /// * `skipped` — rows refused because of the v1 `UNIQUE
+    ///   (issue_id)` constraint (already in another project), an
+    ///   unknown issue id, or a cross-org issue. The project's
+    ///   `version` is still bumped if at least one issue was
+    ///   added; otherwise it is unchanged.
+    ///
+    /// `expected_version` mismatch returns
+    /// [`StoreError::Conflict`].
+    async fn add_issues_to_project(
+        &self,
+        _project_id: Uuid,
+        _expected_version: i64,
+        _issue_ids: &[Uuid],
+        _actor: Option<Uuid>,
+    ) -> Result<crate::project::ProjectIssueAddOutcome, StoreError> {
+        Err(StoreError::Invalid(
+            "projects not supported by this store".into(),
+        ))
+    }
+
+    /// Detach an issue from a project. CAS-gated on the project's
+    /// `version`. Returns the post-removal `Project` row so the
+    /// caller can echo the new counts back to the UI. A no-op
+    /// remove (the issue is not currently in this project) is a
+    /// [`StoreError::NotFound`] — the REST layer collapses that to
+    /// 404 so retries are idempotent at the application boundary.
+    async fn remove_issue_from_project(
+        &self,
+        _project_id: Uuid,
+        _issue_id: Uuid,
+        _expected_version: i64,
+    ) -> Result<crate::project::Project, StoreError> {
+        Err(StoreError::Invalid(
+            "projects not supported by this store".into(),
+        ))
+    }
+
+    /// Resolve the (single, per the v1 `UNIQUE (issue_id)` rule)
+    /// project an issue is attached to, or `None` when the issue
+    /// is not in any project. Backs `GET /issues/{id}/project`
+    /// (§7.2) and the §6.5 detail-pane chip.
+    async fn get_project_for_issue(
+        &self,
+        _issue_id: Uuid,
+    ) -> Result<Option<crate::project::Project>, StoreError> {
+        Ok(None)
+    }
+
+    /// List the `dp_issues.id`s currently attached to a project.
+    /// Returned in `added_at ASC` order so the §6.3 issue list can
+    /// render a stable "first added" sort without a join through
+    /// `dp_issues`. The full issue rows come from the existing
+    /// [`Store::list_issues`] surface — this method only resolves
+    /// membership.
+    async fn list_issue_ids_for_project(
+        &self,
+        _project_id: Uuid,
+    ) -> Result<Vec<Uuid>, StoreError> {
+        Ok(Vec::new())
+    }
 }
 
 /// Outcome of a single Projects v2 mirror attempt, fed back into
