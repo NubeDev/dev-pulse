@@ -653,6 +653,17 @@ export type BulkAddResult = z.infer<typeof BulkAddResultSchema>;
  *  client-side. */
 export const BULK_ADD_ISSUE_CAP = 100;
 
+/** Row in `GET /projects/{id}/repos` — soft repo association. */
+export const ProjectRepoDtoSchema = z.object({
+  project_id: uuid,
+  repo_id: uuid,
+  repo_org_id: uuid,
+  repo_name: z.string(),
+  added_by: uuid.nullable().optional(),
+  added_at: isoDateTime,
+});
+export type ProjectRepoDto = z.infer<typeof ProjectRepoDtoSchema>;
+
 export const CreateCommentRequestSchema = z.object({
   expected_version: z.number().int(),
   body: z.string().min(1),
@@ -1562,6 +1573,47 @@ export class DevPulseApi {
     );
   }
 
+  /** `GET /projects/{id}/repos` — list the repos associated with a
+   *  project (soft scoping for the §6.3 issue picker). */
+  async listProjectRepos(projectId: string): Promise<ProjectRepoDto[]> {
+    return this.getJson(
+      `/projects/${encodeURIComponent(projectId)}/repos`,
+      z.array(ProjectRepoDtoSchema),
+    );
+  }
+
+  /** `PUT /projects/{id}/repos/{repo_id}` — idempotently associate
+   *  a repo with the project. */
+  async addProjectRepo(
+    projectId: string,
+    repoId: string,
+  ): Promise<ProjectRepoDto> {
+    return this.sendJson(
+      "PUT",
+      `/projects/${encodeURIComponent(projectId)}/repos/${encodeURIComponent(repoId)}`,
+      undefined,
+      ProjectRepoDtoSchema,
+    );
+  }
+
+  /** `DELETE /projects/{id}/repos/{repo_id}` — remove the
+   *  association. Idempotent. */
+  async removeProjectRepo(
+    projectId: string,
+    repoId: string,
+  ): Promise<void> {
+    try {
+      await this.sendNoContent(
+        "DELETE",
+        `/projects/${encodeURIComponent(projectId)}/repos/${encodeURIComponent(repoId)}`,
+        undefined,
+      );
+    } catch (e) {
+      if (e instanceof DpRestError && e.status === 404) return;
+      throw e;
+    }
+  }
+
   /** `GET /repos/{id}/metadata` — repo snapshot for the
    *  repo-activity dashboard. Returns `null` when the snapshot has
    *  not been recorded yet (the backend replies 404; the client
@@ -1632,6 +1684,23 @@ export class DevPulseApi {
       `/projects/${encodeURIComponent(projectId)}/board-links`,
       body,
       BoardLinkDtoSchema,
+    );
+  }
+
+  /** `POST /orgs/{org_id}/projects-v2/date-fields` — create a Date
+   *  field on a Projects v2 board so the §6.4 link dialog has a
+   *  target to mirror Start / Due into. Returns the new field's
+   *  GraphQL node id, suitable to drop straight into a
+   *  `start_field_node_id` / `due_field_node_id` on the link row. */
+  async createOrgProjectV2DateField(
+    orgId: string,
+    body: { project_node_id: string; name: string },
+  ): Promise<{ node_id: string; name: string }> {
+    return this.sendJson(
+      "POST",
+      `/orgs/${encodeURIComponent(orgId)}/projects-v2/date-fields`,
+      body,
+      z.object({ node_id: z.string(), name: z.string() }),
     );
   }
 

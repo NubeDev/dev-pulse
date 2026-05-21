@@ -47,6 +47,7 @@ pub mod me_identities;
 pub mod openapi;
 pub mod pins;
 pub mod project_issues;
+pub mod project_repos;
 pub mod projects;
 pub mod reports;
 pub mod repos;
@@ -124,6 +125,10 @@ pub use project_issues::{
     bulk_add_issues, get_project_for_issue, list_project_issues, project_issues_router,
     remove_project_issue, BulkAddIssuesRequest, BulkAddResult, BulkAddSkipDto,
     ListProjectIssuesQuery, RemoveIssueQuery, BULK_ADD_ISSUE_CAP,
+};
+pub use project_repos::{
+    add_project_repo, list_project_repos, project_repos_router, remove_project_repo,
+    ProjectRepoDto,
 };
 pub use reports::{
     freshness_report, home_org_split_report, issues_report, org_report, reports_router,

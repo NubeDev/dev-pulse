@@ -84,7 +84,8 @@ use dp_fetcher::webhook::{self, WebhookMetrics, WebhookSecretSource, WebhookStat
 use dp_rest::{
     admin_router, app_permissions_router, board_links_router, directory_router, inbox_router,
     issue_dates_router, issues_read_router, issues_write_router, me_identities_router,
-    pins_router, project_issues_router, projects_router, repos_router, reports_router,
+    pins_router, project_issues_router, project_repos_router, projects_router, repos_router,
+    reports_router,
     tags_router, AdminState, AppState as RestAppState, DevPulseApi,
 };
 
@@ -298,6 +299,10 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
     // project?". Routes ride the same `(projects, read|write)` lanes
     // as the §7.1 CRUD spine.
     let project_issues = project_issues_router(rest_state.clone());
+    // Project ↔ repo soft scoping — used by the §6.3 issue
+    // picker to narrow candidates to repos the operator has
+    // associated with the project.
+    let project_repos = project_repos_router(rest_state.clone());
     // First-class Project ↔ GitHub Projects v2 board picker + link
     // CRUD (linear-projects-v2.md §7.3). Replaces the retired
     // per-repo admin surface on the primary path; the §6.4 dialog
@@ -337,6 +342,7 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
         .merge(pins)
         .merge(projects)
         .merge(project_issues)
+        .merge(project_repos)
         .merge(board_links)
         .merge(tags)
         .merge(repos)

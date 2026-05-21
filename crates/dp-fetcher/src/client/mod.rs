@@ -981,6 +981,45 @@ impl Client {
         Ok(())
     }
 
+    /// `createProjectV2Field` mutation — adds a new `Date` field
+    /// to the board so the §6.4 link dialog has a target to
+    /// mirror Start / Due into. Used by the "Create date fields"
+    /// affordance when an operator picks a board that ships with
+    /// only the GitHub default fields (Status / Iteration /
+    /// Assignees) and no Date column.
+    pub async fn gh_create_projectv2_date_field(
+        &self,
+        project_node_id: &str,
+        name: &str,
+    ) -> Result<String, GhWriteError> {
+        let query = r#"
+            mutation CreateDateField($project: ID!, $name: String!) {
+              createProjectV2Field(input: {
+                projectId: $project,
+                dataType: DATE,
+                name: $name
+              }) {
+                projectV2Field { ... on ProjectV2FieldCommon { id } }
+              }
+            }
+        "#;
+        let vars = serde_json::json!({
+            "project": project_node_id,
+            "name": name,
+        });
+        let data = self.gh_graphql(query, vars).await?;
+        data.get("createProjectV2Field")
+            .and_then(|v| v.get("projectV2Field"))
+            .and_then(|v| v.get("id"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .ok_or_else(|| {
+                GhWriteError::Upstream(
+                    "graphql createProjectV2Field missing projectV2Field.id".into(),
+                )
+            })
+    }
+
     /// `repository(owner, name) { issue(number) { id } }` — the
     /// lazy fallback the mirror adapter calls when an issue row
     /// pre-dates the 0021 migration (no `dp_issues.github_node_id`

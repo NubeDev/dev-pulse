@@ -23,6 +23,7 @@
  */
 
 import { useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -45,8 +46,9 @@ import {
   TableRow,
 } from "@/components/ui/table";
 
-import type { ProjectDto, ProjectStatusDto } from "../api/client.js";
+import { api, type OrgDto, type ProjectDto, type ProjectStatusDto } from "../api/client.js";
 import { PageHeading } from "../components/page-heading.jsx";
+import { ProjectRowActions } from "./project-row-actions.js";
 import {
   navigate,
   projectDetailRoute,
@@ -97,6 +99,17 @@ export function ProjectsPage(): JSX.Element {
     // second pagination surface on day one.
     limit: 200,
   });
+
+  const orgsQ = useQuery<OrgDto[]>({
+    queryKey: ["orgs"],
+    queryFn: () => api.listOrgs(),
+    staleTime: 60_000,
+  });
+  const orgMap = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const o of orgsQ.data ?? []) m.set(o.id, o.login);
+    return m;
+  }, [orgsQ.data]);
 
   const rows = list.data?.rows ?? [];
   const grouped = useMemo<Record<ProjectStatusDto, ProjectDto[]>>(() => {
@@ -182,7 +195,7 @@ export function ProjectsPage(): JSX.Element {
           {!list.isPending && !list.isError && rows.length > 0 && (
             <div className="flex flex-col gap-6" data-testid="projects-list">
               {status ? (
-                <ProjectTable rows={rows} />
+                <ProjectTable rows={rows} orgMap={orgMap} />
               ) : (
                 STATUS_ORDER.map((s) =>
                   grouped[s].length > 0 ? (
@@ -193,7 +206,7 @@ export function ProjectsPage(): JSX.Element {
                           {grouped[s].length}
                         </Badge>
                       </h2>
-                      <ProjectTable rows={grouped[s]} />
+                      <ProjectTable rows={grouped[s]} orgMap={orgMap} />
                     </section>
                   ) : null,
                 )
@@ -212,16 +225,18 @@ export function ProjectsPage(): JSX.Element {
   );
 }
 
-function ProjectTable({ rows }: { rows: ProjectDto[] }): JSX.Element {
+function ProjectTable({ rows, orgMap }: { rows: ProjectDto[]; orgMap: Map<string, string> }): JSX.Element {
   return (
-    <Table>
+    <Table className="table-fixed">
       <TableHeader>
         <TableRow>
-          <TableHead>Name</TableHead>
-          <TableHead className="w-24">Status</TableHead>
-          <TableHead className="w-40">Progress</TableHead>
-          <TableHead className="w-32">Due</TableHead>
-          <TableHead className="w-20 text-right">Issues</TableHead>
+          <TableHead className="w-[40%]">Name</TableHead>
+          <TableHead className="w-[12%]">Org</TableHead>
+          <TableHead className="w-[10%]">Status</TableHead>
+          <TableHead className="w-[18%]">Progress</TableHead>
+          <TableHead className="w-[12%]">Due</TableHead>
+          <TableHead className="w-[8%] text-right">Issues</TableHead>
+          <TableHead className="w-[60px]"></TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -251,6 +266,9 @@ function ProjectTable({ rows }: { rows: ProjectDto[] }): JSX.Element {
                   </span>
                 )}
               </TableCell>
+              <TableCell className="text-xs text-muted-foreground">
+                {orgMap.get(p.org_id) ?? "—"}
+              </TableCell>
               <TableCell>
                 <Badge variant={STATUS_VARIANT[p.status]}>
                   {STATUS_LABEL[p.status]}
@@ -269,6 +287,12 @@ function ProjectTable({ rows }: { rows: ProjectDto[] }): JSX.Element {
               </TableCell>
               <TableCell className="text-right tabular-nums">
                 {p.closed_issue_count}/{p.issue_count}
+              </TableCell>
+              <TableCell
+                className="text-right"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <ProjectRowActions project={p} />
               </TableCell>
             </TableRow>
           );

@@ -65,8 +65,8 @@ pub use membership::{Membership, MembershipRole};
 pub use org::Org;
 pub use pin::{Pin, PinKind, PIN_CAP};
 pub use project::{
-    Project, ProjectIssueAddOutcome, ProjectIssueAddSkip, ProjectListFilter, ProjectStatus,
-    ProjectUpsert,
+    Project, ProjectIssueAddOutcome, ProjectIssueAddSkip, ProjectListFilter, ProjectRepo,
+    ProjectStatus, ProjectUpsert,
 };
 pub use repo::{Repo, RepoMetadata};
 pub use store::{PendingRemoteIssue, Store, StoreError};

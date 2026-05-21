@@ -153,6 +153,10 @@ pub const PROJECT_ISSUE_REMOVE: &str = "project.issue.remove";
 pub const PROJECT_BOARD_LINK: &str = "project.board.link";
 /// `project.board.unlink` — `DELETE /projects/{id}/board-links/{link_id}`.
 pub const PROJECT_BOARD_UNLINK: &str = "project.board.unlink";
+/// `project.repo.add` — `PUT /projects/{id}/repos/{repo_id}`.
+pub const PROJECT_REPO_ADD: &str = "project.repo.add";
+/// `project.repo.remove` — `DELETE /projects/{id}/repos/{repo_id}`.
+pub const PROJECT_REPO_REMOVE: &str = "project.repo.remove";
 
 /// `issue.pending_remote_timeout` — emitted by the §8.5 sweeper
 /// when a `dp_issues.pending_remote` flag has lingered past

@@ -30,10 +30,13 @@ import { Spinner } from "@/components/ui/spinner";
 
 import type { BoardLinkDto, IssueListItem, ProjectDto } from "../api/client.js";
 import { PageHeading } from "../components/page-heading.jsx";
-import { workflowIssuesRoute } from "../routes.js";
+import { navigate, projectDetailRoute, projectSelectedIssue, useRoute } from "../routes.js";
+import { IssueEditCard } from "../workflow/issues-page.js";
 
 import { LinkBoardDialog } from "./link-board-dialog.js";
 import { AddIssuesDialog } from "./add-issues-dialog.js";
+import { ProjectRowActions } from "./project-row-actions.js";
+import { ProjectReposCard } from "./project-repos-card.js";
 import {
   useBoardLinks,
   useDeleteBoardLink,
@@ -116,6 +119,8 @@ export function ProjectDetailPage({
 }
 
 function ProjectDetailBody({ project }: { project: ProjectDto }): JSX.Element {
+  const route = useRoute();
+  const selectedIssueId = projectSelectedIssue(route);
   const links = useBoardLinks(project.id);
   const deleteLink = useDeleteBoardLink(project.id);
 
@@ -124,8 +129,13 @@ function ProjectDetailBody({ project }: { project: ProjectDto }): JSX.Element {
       ? Math.round((project.closed_issue_count / project.issue_count) * 100)
       : 0;
 
+  const openIssue = (id: string | null): void => {
+    navigate(projectDetailRoute(project.id, id));
+  };
+
   return (
-    <div className="flex flex-col gap-4 px-4 lg:px-6" data-testid="project-detail">
+    <div className="flex gap-4 px-4 lg:px-6" data-testid="project-detail">
+    <div className="flex min-w-0 flex-1 flex-col gap-4">
       <PageHeading
         title={
           <span className="flex items-center gap-3">
@@ -139,6 +149,7 @@ function ProjectDetailBody({ project }: { project: ProjectDto }): JSX.Element {
           </span>
         }
         description={project.description ?? undefined}
+        trailing={<ProjectRowActions project={project} />}
       />
 
       <Card>
@@ -173,7 +184,25 @@ function ProjectDetailBody({ project }: { project: ProjectDto }): JSX.Element {
         unlinkError={deleteLink.error?.message ?? null}
       />
 
-      <ProjectIssuesCard project={project} />
+      <ProjectReposCard
+        projectId={project.id}
+        projectOrgId={project.org_id}
+      />
+
+      <ProjectIssuesCard project={project} onSelectIssue={openIssue} selectedIssueId={selectedIssueId} />
+    </div>
+
+    {selectedIssueId && (
+      <aside className="hidden w-[400px] shrink-0 flex-col border-l border-border xl:flex" data-testid="project-issue-detail">
+        <header className="flex items-center justify-between border-b border-border px-4 py-2">
+          <span className="text-sm font-medium">Issue detail</span>
+          <Button variant="ghost" size="sm" onClick={() => openIssue(null)}>✕</Button>
+        </header>
+        <div className="flex-1 overflow-y-auto p-4">
+          <IssueEditCard issueId={selectedIssueId} />
+        </div>
+      </aside>
+    )}
     </div>
   );
 }
@@ -201,7 +230,7 @@ function MetaCell({
 
 function fmtDate(s: string | null | undefined): string {
   if (!s) return "—";
-  return new Date(s).toLocaleDateString();
+  return new Date(s).toLocaleDateString("en-AU");
 }
 
 /** §6.3 `Linked GitHub boards` section. Each row carries the
@@ -400,7 +429,7 @@ function renderMirrorStatus(link: BoardLinkDto): {
 // `workflowIssuesRoute({ issueId })` deep link.
 // ---------------------------------------------------------------------------
 
-function ProjectIssuesCard({ project }: { project: ProjectDto }): JSX.Element {
+function ProjectIssuesCard({ project, onSelectIssue, selectedIssueId }: { project: ProjectDto; onSelectIssue: (id: string | null) => void; selectedIssueId: string | null }): JSX.Element {
   const [dialogOpen, setDialogOpen] = useState(false);
   const issues = useProjectIssues(project.id, { state: "all", limit: 100 });
   const remove = useRemoveIssueFromProject(project.id);
@@ -448,6 +477,8 @@ function ProjectIssuesCard({ project }: { project: ProjectDto }): JSX.Element {
           <ProjectIssueRow
             key={row.id}
             row={row}
+            selected={row.id === selectedIssueId}
+            onSelect={() => onSelectIssue(row.id)}
             onRemove={() =>
               remove.mutate({
                 issueId: row.id,
@@ -476,17 +507,24 @@ function ProjectIssuesCard({ project }: { project: ProjectDto }): JSX.Element {
 
 function ProjectIssueRow({
   row,
+  selected,
+  onSelect,
   onRemove,
   removePending,
 }: {
   row: IssueListItem;
+  selected: boolean;
+  onSelect: () => void;
   onRemove: () => void;
   removePending: boolean;
 }): JSX.Element {
   return (
     <div
-      className="flex items-center gap-3 rounded-md border border-border bg-muted/10 px-3 py-2 text-sm"
+      className={`flex cursor-pointer items-center gap-3 rounded-md border px-3 py-2 text-sm ${
+        selected ? "border-primary bg-accent/40" : "border-border bg-muted/10 hover:bg-accent/20"
+      }`}
       data-testid="project-issue-row"
+      onClick={onSelect}
     >
       <Badge
         variant={row.state === "open" ? "default" : "secondary"}
@@ -497,16 +535,13 @@ function ProjectIssueRow({
       <span className="shrink-0 font-mono text-xs text-muted-foreground tabular-nums">
         {row.repo_slug ?? "—"}#{row.number}
       </span>
-      <a
-        className="flex-1 truncate hover:underline"
-        href={workflowIssuesRoute({ issueId: row.id })}
-      >
+      <span className="flex-1 truncate">
         {row.title}
-      </a>
+      </span>
       <Button
         variant="ghost"
         size="sm"
-        onClick={onRemove}
+        onClick={(e) => { e.stopPropagation(); onRemove(); }}
         disabled={removePending}
         data-testid="project-issue-remove"
         title="Remove from project"

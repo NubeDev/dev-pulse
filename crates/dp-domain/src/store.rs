@@ -1771,6 +1771,44 @@ pub trait Store: Send + Sync {
         Ok(Vec::new())
     }
 
+    // ---- project ↔ repo associations -----------------------------
+
+    /// List the repos associated with a project (soft scoping for
+    /// the §6.3 issue picker). Returned in `added_at ASC` order so
+    /// the UI renders a stable "first added" sequence.
+    async fn list_project_repos(
+        &self,
+        _project_id: Uuid,
+    ) -> Result<Vec<crate::project::ProjectRepo>, StoreError> {
+        Ok(Vec::new())
+    }
+
+    /// Idempotently attach a repo to a project. The natural-key
+    /// `(project_id, repo_id)` PK makes a re-add a no-op. Returns
+    /// the row (newly-inserted or pre-existing).
+    async fn add_project_repo(
+        &self,
+        _project_id: Uuid,
+        _repo_id: Uuid,
+        _actor: Option<Uuid>,
+    ) -> Result<crate::project::ProjectRepo, StoreError> {
+        Err(StoreError::Invalid(
+            "project repos not supported by this store".into(),
+        ))
+    }
+
+    /// Detach a repo from a project. Idempotent — a no-op delete
+    /// returns `Ok(())` so retries don't 404 the caller. (Unlike
+    /// `delete_board_link`, the row carries no auxiliary state
+    /// the caller might need to learn about a stale UI.)
+    async fn remove_project_repo(
+        &self,
+        _project_id: Uuid,
+        _repo_id: Uuid,
+    ) -> Result<(), StoreError> {
+        Ok(())
+    }
+
     // ---- project ↔ board mirror (linear-projects-v2.md slice B) --
 
     /// List every `dp_project_board_links` row for a project, in

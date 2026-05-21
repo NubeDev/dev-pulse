@@ -49,7 +49,7 @@ import {
   type ProjectDto,
 } from "../api/client.js";
 
-import { useAddIssuesToProject } from "./use-projects-data.js";
+import { useAddIssuesToProject, useProjectRepos } from "./use-projects-data.js";
 
 export interface AddIssuesDialogProps {
   open: boolean;
@@ -65,17 +65,29 @@ export function AddIssuesDialog({
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [result, setResult] = useState<BulkAddResult | null>(null);
+  const [linkedReposOnly, setLinkedReposOnly] = useState(true);
+
+  const projectRepos = useProjectRepos(open ? project.id : null);
+  const repoIds = (projectRepos.data ?? []).map((r) => r.repo_id);
+  const filterByRepos = linkedReposOnly && repoIds.length > 0;
 
   const issuesQ = useQuery<IssueListResponse>({
-    queryKey: ["issues", "for-project-add", project.org_id, search.trim()],
+    queryKey: [
+      "issues",
+      "for-project-add",
+      project.org_id,
+      search.trim(),
+      filterByRepos ? repoIds.slice().sort().join(",") : "",
+    ],
     queryFn: () =>
       api.listIssues({
         org_id: project.org_id,
         state: "all",
         q: search.trim() || undefined,
+        repo_ids: filterByRepos ? repoIds : undefined,
         limit: 50,
       }),
-    enabled: open,
+    enabled: open && (!linkedReposOnly || !projectRepos.isPending),
     staleTime: 10_000,
   });
 
@@ -125,7 +137,7 @@ export function AddIssuesDialog({
       }}
     >
       <DialogContent
-        className="sm:max-w-2xl"
+        className="sm:max-w-2xl max-h-[85vh] flex flex-col overflow-hidden"
         data-testid="add-issues-dialog"
       >
         <DialogHeader>
@@ -136,7 +148,7 @@ export function AddIssuesDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="flex flex-col gap-3">
+        <div className="flex min-h-0 flex-1 flex-col gap-3">
           <Input
             data-testid="add-issues-search"
             placeholder="Search by title…"
@@ -144,6 +156,18 @@ export function AddIssuesDialog({
             onChange={(e) => setSearch(e.target.value)}
             autoFocus
           />
+
+          {repoIds.length > 0 && (
+            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+              <Checkbox
+                checked={linkedReposOnly}
+                onCheckedChange={(v) => setLinkedReposOnly(!!v)}
+                data-testid="add-issues-linked-repos-only"
+              />
+              Only show issues from this project's {repoIds.length} linked
+              repo{repoIds.length === 1 ? "" : "s"}
+            </label>
+          )}
 
           <div className="flex items-center justify-between text-xs text-muted-foreground">
             <span data-testid="add-issues-selected-count">
@@ -156,7 +180,7 @@ export function AddIssuesDialog({
             )}
           </div>
 
-          <div className="max-h-80 overflow-y-auto rounded-md border border-border">
+          <div className="min-h-0 flex-1 overflow-y-auto rounded-md border border-border">
             {issuesQ.isPending && (
               <div className="flex items-center gap-2 px-3 py-4 text-sm text-muted-foreground">
                 <Spinner /> Loading issues…

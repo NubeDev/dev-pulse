@@ -76,6 +76,17 @@ pub trait OrgProjectsPickerBackend: Send + Sync + 'static {
         &self,
         org_login: &str,
     ) -> Result<OrgProjectPickerDto, OrgProjectsPickerError>;
+
+    /// Create a `Date`-typed field on a Projects v2 board. Used
+    /// by the §6.4 dialog's "Create date fields" affordance so
+    /// operators don't have to leave dev-pulse to prep a board
+    /// before linking. Returns the new field's GraphQL node id
+    /// so the dialog can preselect it as the Start / Due target.
+    async fn create_date_field(
+        &self,
+        project_node_id: &str,
+        name: &str,
+    ) -> Result<String, OrgProjectsPickerError>;
 }
 
 /// Errors a [`OrgProjectsPickerBackend`] may surface. The dp-rest
@@ -106,6 +117,13 @@ impl OrgProjectsPickerBackend for UnconfiguredOrgProjectsPicker {
         &self,
         _: &str,
     ) -> Result<OrgProjectPickerDto, OrgProjectsPickerError> {
+        Err(OrgProjectsPickerError::Unconfigured)
+    }
+    async fn create_date_field(
+        &self,
+        _: &str,
+        _: &str,
+    ) -> Result<String, OrgProjectsPickerError> {
         Err(OrgProjectsPickerError::Unconfigured)
     }
 }
@@ -152,6 +170,21 @@ impl OrgProjectsPickerBackend for OctocrabOrgProjectsPicker {
                 G::Upstream(m) => OrgProjectsPickerError::Transport(m),
             })?;
         Ok(normalize_picker_envelope(&raw))
+    }
+
+    async fn create_date_field(
+        &self,
+        project_node_id: &str,
+        name: &str,
+    ) -> Result<String, OrgProjectsPickerError> {
+        use dp_fetcher::client::GhWriteError as G;
+        self.client
+            .gh_create_projectv2_date_field(project_node_id, name)
+            .await
+            .map_err(|e| match e {
+                G::Validation(m) => OrgProjectsPickerError::GraphQl(m),
+                G::Upstream(m) => OrgProjectsPickerError::Transport(m),
+            })
     }
 }
 
@@ -629,6 +662,97 @@ pub async fn delete_board_link(
 // Router
 // ---------------------------------------------------------------------------
 
+/// `POST /orgs/{org_id}/projects-v2/date-fields` request body.
+/// `project_node_id` is the GraphQL `PVT_…` id the picker
+/// returned for the selected board; `name` is the new field's
+/// label (e.g. `Start date`, `Due date`).
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CreateDateFieldRequest {
+    /// GraphQL node id of the Projects v2 board.
+    pub project_node_id: String,
+    /// Field name to display on the board.
+    pub name: String,
+}
+
+/// `POST /orgs/{org_id}/projects-v2/date-fields` response. The
+/// new field's GraphQL node id, suitable to drop straight into a
+/// `start_field_node_id` / `due_field_node_id` on the link row.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct CreateDateFieldResponse {
+    /// GraphQL node id of the newly-created date field.
+    pub node_id: String,
+    /// Echoed name, for the dialog's success toast.
+    pub name: String,
+}
+
+/// `POST /orgs/{org_id}/projects-v2/date-fields` — create a Date
+/// field on a Projects v2 board so the §6.4 link dialog has a
+/// target to mirror Start / Due into. The `org_id` exists for
+/// permission scoping; the GitHub mutation itself is keyed on
+/// `project_node_id` (which is globally unique).
+#[utoipa::path(
+    post,
+    path = "/orgs/{org_id}/projects-v2/date-fields",
+    params(("org_id" = Uuid, Path, description = "Org id")),
+    request_body = CreateDateFieldRequest,
+    responses(
+        (status = 200, description = "Field created", body = CreateDateFieldResponse),
+        (status = 400, description = "Validation failure or upstream unavailable"),
+        (status = 404, description = "No such org"),
+    ),
+    tag = "projects",
+)]
+pub async fn create_org_projectv2_date_field(
+    State(state): State<AppState>,
+    Path(org_id): Path<Uuid>,
+    Json(body): Json<CreateDateFieldRequest>,
+) -> Result<Json<CreateDateFieldResponse>, ApiError> {
+    let _org = state
+        .store
+        .get_org(org_id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound {
+            code: "org_not_found",
+            message: format!("no org with id {org_id}"),
+        })?;
+    let project_node_id = body.project_node_id.trim();
+    let name = body.name.trim();
+    if project_node_id.is_empty() {
+        return Err(ApiError::BadRequest {
+            code: "invalid_project_node_id",
+            message: "project_node_id must be non-empty".into(),
+        });
+    }
+    if name.is_empty() {
+        return Err(ApiError::BadRequest {
+            code: "invalid_field_name",
+            message: "name must be non-empty".into(),
+        });
+    }
+    match state
+        .org_projects_picker
+        .create_date_field(project_node_id, name)
+        .await
+    {
+        Ok(node_id) => Ok(Json(CreateDateFieldResponse {
+            node_id,
+            name: name.to_string(),
+        })),
+        Err(OrgProjectsPickerError::Unconfigured) => Err(ApiError::BadRequest {
+            code: "upstream_unavailable",
+            message: "org projects picker backend not configured".into(),
+        }),
+        Err(OrgProjectsPickerError::GraphQl(msg)) => Err(ApiError::BadRequest {
+            code: "github_validation_failed",
+            message: msg,
+        }),
+        Err(OrgProjectsPickerError::Transport(msg)) => Err(ApiError::BadRequest {
+            code: "upstream_unavailable",
+            message: msg,
+        }),
+    }
+}
+
 /// Build the board-links router fragment. Gated on `(projects,
 /// read)` for the picker + list and `(projects, write)` for
 /// create / delete — same lanes as the §7.1 CRUD spine. The §9.2
@@ -651,6 +775,10 @@ pub fn board_links_router(state: Arc<AppState>) -> Router {
                 .route(
                     "/projects/{id}/board-links/{link_id}",
                     delete(delete_board_link),
+                )
+                .route(
+                    "/orgs/{org_id}/projects-v2/date-fields",
+                    post(create_org_projectv2_date_field),
                 ),
             "projects",
             "write",

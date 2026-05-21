@@ -33,6 +33,7 @@ import {
   type PatchProjectRequest,
   type ProjectDto,
   type ProjectListResponse,
+  type ProjectRepoDto,
   type ProjectStatusDto,
 } from "../api/client.js";
 
@@ -51,6 +52,8 @@ export const projectsKeys = {
     ["projects", "issues", projectId, q] as const,
   forIssue: (issueId: string) =>
     ["projects", "for-issue", issueId] as const,
+  repos: (projectId: string) =>
+    ["projects", "repos", projectId] as const,
 };
 
 /** Query shape for [`useProjectIssues`]. Mirrors the wire params. */
@@ -152,6 +155,23 @@ export function useCreateBoardLink(projectId: string) {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: projectsKeys.boardLinks(projectId) });
       qc.invalidateQueries({ queryKey: projectsKeys.detail(projectId) });
+    },
+  });
+}
+
+/** `POST /orgs/{org_id}/projects-v2/date-fields` — create a Date
+ *  field on a Projects v2 board. Invalidates the org picker so
+ *  the new field appears in the dialog dropdowns immediately. */
+export function useCreateOrgProjectV2DateField(orgId: string) {
+  const qc = useQueryClient();
+  return useMutation<
+    { node_id: string; name: string },
+    Error,
+    { project_node_id: string; name: string }
+  >({
+    mutationFn: (body) => api.createOrgProjectV2DateField(orgId, body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: projectsKeys.orgPicker(orgId) });
     },
   });
 }
@@ -289,5 +309,43 @@ export function useProjectForIssue(issueId: string | null) {
       issueId ? api.getProjectForIssue(issueId) : Promise.resolve(null),
     enabled: !!issueId,
     staleTime: 30_000,
+  });
+}
+
+/** `GET /projects/{id}/repos` — list the repos associated with a
+ *  project (soft scoping for the §6.3 issue picker). */
+export function useProjectRepos(projectId: string | null) {
+  return useQuery<ProjectRepoDto[]>({
+    queryKey: projectId
+      ? projectsKeys.repos(projectId)
+      : ["projects", "repos", "(none)"],
+    queryFn: () =>
+      projectId ? api.listProjectRepos(projectId) : Promise.resolve([]),
+    enabled: !!projectId,
+    staleTime: 30_000,
+  });
+}
+
+/** `PUT /projects/{id}/repos/{repo_id}` — idempotently associate
+ *  a repo with the project. */
+export function useAddProjectRepo(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation<ProjectRepoDto, Error, string>({
+    mutationFn: (repoId) => api.addProjectRepo(projectId, repoId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: projectsKeys.repos(projectId) });
+    },
+  });
+}
+
+/** `DELETE /projects/{id}/repos/{repo_id}` — remove the
+ *  association. Idempotent. */
+export function useRemoveProjectRepo(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation<void, Error, string>({
+    mutationFn: (repoId) => api.removeProjectRepo(projectId, repoId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: projectsKeys.repos(projectId) });
+    },
   });
 }

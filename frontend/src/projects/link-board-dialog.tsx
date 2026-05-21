@@ -55,7 +55,11 @@ import {
   isDpRestError,
   type BoardPickerDto,
 } from "../api/client.js";
-import { useCreateBoardLink, useOrgBoardPicker } from "./use-projects-data.js";
+import {
+  useCreateBoardLink,
+  useCreateOrgProjectV2DateField,
+  useOrgBoardPicker,
+} from "./use-projects-data.js";
 
 const NO_FIELD = "__none__";
 
@@ -81,6 +85,7 @@ export function LinkBoardDialog({
   // every render of the detail page.
   const picker = useOrgBoardPicker(projectOrgId, open);
   const create = useCreateBoardLink(projectId);
+  const createDateField = useCreateOrgProjectV2DateField(projectOrgId);
 
   const [boardNodeId, setBoardNodeId] = useState<string>("");
   const [startFieldId, setStartFieldId] = useState<string>("");
@@ -242,6 +247,72 @@ export function LinkBoardDialog({
                   onChange={setDueFieldId}
                   testId="link-board-due-field"
                 />
+              </div>
+            )}
+
+            {selectedBoard && (
+              <div
+                className="flex flex-col gap-2 rounded-md border border-dashed border-border p-3 text-xs text-muted-foreground"
+                data-testid="link-board-create-fields"
+              >
+                <div>
+                  Need date fields? dev-pulse can create them on this
+                  board so you don't have to leave the app.
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={createDateField.isPending}
+                    onClick={async () => {
+                      // Create whichever lane is unset; preselect both.
+                      const ensureField = async (
+                        existingId: string,
+                        name: string,
+                      ): Promise<string> => {
+                        if (existingId) return existingId;
+                        const existing = dateFields.find(
+                          (f) =>
+                            f.name.trim().toLowerCase() ===
+                            name.trim().toLowerCase(),
+                        );
+                        if (existing) return existing.node_id;
+                        const r = await createDateField.mutateAsync({
+                          project_node_id: selectedBoard.node_id,
+                          name,
+                        });
+                        return r.node_id;
+                      };
+                      try {
+                        const startId = await ensureField(
+                          startFieldId,
+                          "Start date",
+                        );
+                        const dueId = await ensureField(
+                          dueFieldId,
+                          "Due date",
+                        );
+                        setStartFieldId(startId);
+                        setDueFieldId(dueId);
+                      } catch {
+                        /* surfaced via createDateField.error below */
+                      }
+                    }}
+                    data-testid="link-board-create-fields-button"
+                  >
+                    {createDateField.isPending
+                      ? "Creating…"
+                      : "Create ‘Start date’ & ‘Due date’ fields"}
+                  </Button>
+                  {createDateField.error && (
+                    <span
+                      className="text-destructive"
+                      data-testid="link-board-create-fields-error"
+                    >
+                      {createDateField.error.message}
+                    </span>
+                  )}
+                </div>
               </div>
             )}
           </div>

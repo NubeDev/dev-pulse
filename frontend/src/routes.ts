@@ -83,9 +83,19 @@ export function projectDetailIdOf(route: string): string | null {
   return id;
 }
 
-/** Build a `#/projects/{id}` URL. */
-export function projectDetailRoute(id: string): string {
+/** Build a `#/projects/{id}` URL, optionally with `?issue=<uuid>`. */
+export function projectDetailRoute(id: string, issueId?: string | null): string {
+  if (issueId) return `#/projects/${id}?issue=${issueId}`;
   return `#/projects/${id}`;
+}
+
+/** Parse `?issue=<uuid>` from a `#/projects/{id}?issue=…` route. */
+export function projectSelectedIssue(route: string): string | null {
+  const q = route.indexOf("?");
+  if (q < 0) return null;
+  const params = new URLSearchParams(route.slice(q + 1));
+  const id = params.get("issue");
+  return id && id.length > 0 ? id : null;
 }
 
 /** Sub-route under the account section

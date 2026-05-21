@@ -43,8 +43,8 @@ use dp_domain::board_link::{
 };
 use dp_domain::issue_dates::{IssueDates, ProjectV2MirrorTask, ProjectV2MirrorTaskKind};
 use dp_domain::project::{
-    Project, ProjectIssueAddOutcome, ProjectIssueAddSkip, ProjectListFilter, ProjectStatus,
-    ProjectUpsert,
+    Project, ProjectIssueAddOutcome, ProjectIssueAddSkip, ProjectListFilter, ProjectRepo,
+    ProjectStatus, ProjectUpsert,
 };
 use dp_domain::store::{
     EventActorRow, IssueDatesMirrorOutcome, IssueListFilter, IssueMetric, IssueMetricGroupBy,
@@ -3755,6 +3755,98 @@ impl Store for PgStore {
         rows.iter()
             .map(|r| r.try_get::<Uuid, _>("issue_id").map_err(map_sqlx))
             .collect()
+    }
+
+    // ---- project ↔ repo associations -----------------------------
+
+    async fn list_project_repos(
+        &self,
+        project_id: Uuid,
+    ) -> Result<Vec<ProjectRepo>, StoreError> {
+        let rows = sqlx::query(
+            r#"SELECT project_id, repo_id, added_by, added_at
+                 FROM dp_project_repos
+                WHERE project_id = $1
+             ORDER BY added_at ASC, repo_id ASC"#,
+        )
+        .bind(project_id)
+        .fetch_all(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        rows.into_iter()
+            .map(|r| {
+                Ok(ProjectRepo {
+                    project_id: r.try_get("project_id").map_err(map_sqlx)?,
+                    repo_id: r.try_get("repo_id").map_err(map_sqlx)?,
+                    added_by: r.try_get("added_by").map_err(map_sqlx)?,
+                    added_at: r.try_get("added_at").map_err(map_sqlx)?,
+                })
+            })
+            .collect()
+    }
+
+    async fn add_project_repo(
+        &self,
+        project_id: Uuid,
+        repo_id: Uuid,
+        actor: Option<Uuid>,
+    ) -> Result<ProjectRepo, StoreError> {
+        // ON CONFLICT DO NOTHING + RETURNING returns no row for an
+        // existing PK; fall back to a SELECT so callers see the
+        // pre-existing row.
+        let row_opt = sqlx::query(
+            r#"INSERT INTO dp_project_repos (project_id, repo_id, added_by)
+               VALUES ($1, $2, $3)
+               ON CONFLICT (project_id, repo_id) DO NOTHING
+               RETURNING project_id, repo_id, added_by, added_at"#,
+        )
+        .bind(project_id)
+        .bind(repo_id)
+        .bind(actor)
+        .fetch_optional(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        if let Some(r) = row_opt {
+            return Ok(ProjectRepo {
+                project_id: r.try_get("project_id").map_err(map_sqlx)?,
+                repo_id: r.try_get("repo_id").map_err(map_sqlx)?,
+                added_by: r.try_get("added_by").map_err(map_sqlx)?,
+                added_at: r.try_get("added_at").map_err(map_sqlx)?,
+            });
+        }
+        let r = sqlx::query(
+            r#"SELECT project_id, repo_id, added_by, added_at
+                 FROM dp_project_repos
+                WHERE project_id = $1 AND repo_id = $2"#,
+        )
+        .bind(project_id)
+        .bind(repo_id)
+        .fetch_one(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        Ok(ProjectRepo {
+            project_id: r.try_get("project_id").map_err(map_sqlx)?,
+            repo_id: r.try_get("repo_id").map_err(map_sqlx)?,
+            added_by: r.try_get("added_by").map_err(map_sqlx)?,
+            added_at: r.try_get("added_at").map_err(map_sqlx)?,
+        })
+    }
+
+    async fn remove_project_repo(
+        &self,
+        project_id: Uuid,
+        repo_id: Uuid,
+    ) -> Result<(), StoreError> {
+        sqlx::query(
+            r#"DELETE FROM dp_project_repos
+                WHERE project_id = $1 AND repo_id = $2"#,
+        )
+        .bind(project_id)
+        .bind(repo_id)
+        .execute(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        Ok(())
     }
 
     // ---- project ↔ board mirror (linear-projects-v2.md slice B) --

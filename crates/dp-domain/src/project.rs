@@ -198,6 +198,22 @@ pub struct ProjectListFilter {
     pub offset: i64,
 }
 
+/// One row from `dp_project_repos` — a soft association between a
+/// project and a repo. Used by the §6.3 "Add issues" dialog to
+/// narrow the issue picker to repos the operator has explicitly
+/// associated with the project. Does **not** gate membership.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectRepo {
+    /// The project this row associates the repo with.
+    pub project_id: Uuid,
+    /// The repo associated with the project.
+    pub repo_id: Uuid,
+    /// User who created the association, if known.
+    pub added_by: Option<Uuid>,
+    /// When the association was created.
+    pub added_at: DateTime<Utc>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

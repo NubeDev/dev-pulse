@@ -107,6 +107,10 @@ async fn webhook_github_stub() {}
         crate::project_issues::bulk_add_issues,
         crate::project_issues::remove_project_issue,
         crate::project_issues::get_project_for_issue,
+        // Project ↔ repo soft scoping.
+        crate::project_repos::list_project_repos,
+        crate::project_repos::add_project_repo,
+        crate::project_repos::remove_project_repo,
         // Project ↔ GitHub board mirror picker + link CRUD
         // (linear-projects-v2.md §7.3).
         crate::board_links::list_org_projects_v2,
@@ -195,6 +199,8 @@ async fn webhook_github_stub() {}
         crate::project_issues::BulkAddIssuesRequest,
         crate::project_issues::BulkAddResult,
         crate::project_issues::BulkAddSkipDto,
+        // Project ↔ repo soft scoping.
+        crate::project_repos::ProjectRepoDto,
         // Project ↔ board mirror picker + link CRUD
         // (linear-projects-v2.md §7.3).
         crate::board_links::OrgProjectPickerDto,
