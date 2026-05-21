@@ -1,19 +1,14 @@
 /**
- * `<MilestonesStrip>` — PROJECT-VIEW.md §5.5 (Slice 1) horizontal
- * strip of milestone cards rendered above the workbench on the
+ * `<MilestonesStrip>` — PROJECT-VIEW.md §5.5 horizontal-roadmap
+ * strip of milestone nodes rendered above the workbench on the
  * project detail page.
  *
- * One card per active milestone (`state = "open"`) on any of the
- * project's linked repos, sorted by due date soonest first. Each
- * card shows:
+ * Renders as a connected timeline: closed milestones first
+ * (COMPLETED, solid track segment behind them), then open ones
+ * by due-date soonest first. The first open milestone is the
+ * IN-PROGRESS node — pulsing dot + `Today` ticker below.
  *
- *   * title (plus repo disambiguation when ambiguous — TODO Slice 1.x;
- *     v1 ships the title alone since the server already sorted them);
- *   * due-relative (`due in 6d`, `overdue 3d`, `no due date`);
- *   * `closed / total` progress bar.
- *
- * Slice 1 is **read-only** for the cards themselves; mutation
- * actions live in the overflow `⋯` menu:
+ * Mutations live in the overflow `⋯` menu on each node:
  *
  *   * `Adopt as primary` / `Clear primary` (Slice 5 wiring) when
  *     `onAdoptPrimary` is provided.
@@ -21,11 +16,20 @@
  *     `onFilterToMilestone` is provided — appends a
  *     `milestone:<id>` chip to the workbench filter, replacing any
  *     existing milestone chip (one milestone filter max).
+ *   * `Edit`, `Close` / `Reopen`, `Delete` (Slice 1 GitHub
+ *     writes).
  *
- * The strip hides itself when there are no active milestones so the
- * detail page stays compact for projects without milestone planning.
+ * The `+ New milestone` ghost button sits outside the track
+ * (below it, separated by `mt-3`) so it reads as a separate
+ * action rather than another step on the roadmap.
+ *
+ * A persistent "Milestones" toggle button (collapse / expand)
+ * sits in the section header; the pref is stored in
+ * `localStorage` under `dp:projects:milestones-collapsed`.
  */
-import { Card } from "@/components/ui/card";
+import { useState } from "react";
+import { ChevronDown, ChevronRight } from "lucide-react";
+
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -37,45 +41,37 @@ import { HelpHint } from "@/components/help-hint";
 
 import type { MilestoneDto } from "../api/client.js";
 
+const COLLAPSE_KEY = "dp:projects:milestones-collapsed";
+
+function readCollapsedPref(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem(COLLAPSE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeCollapsedPref(value: boolean): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(COLLAPSE_KEY, value ? "1" : "0");
+  } catch {
+    /* quota / disabled — pref stays in-memory this session */
+  }
+}
+
 export interface MilestonesStripProps {
   milestones: MilestoneDto[];
-  /** Currently adopted primary milestone id (from
-   *  `ProjectDto.primary_milestone_id`). Used to render the
-   *  `★ primary` chip. `null` when no primary is set. */
   primaryMilestoneId?: string | null;
-  /** Optional adopt-handler (PROJECT-VIEW.md §9.5). When omitted
-   *  the overflow `⋯` menu still renders if any other action is
-   *  available. Passing `null` clears the pointer. */
   onAdoptPrimary?: (milestoneId: string | null) => void;
-  /** Optional "Filter to milestone" handler. Receives the
-   *  milestone id; caller is responsible for appending /
-   *  replacing the `milestone:<id>` chip on the workbench URL
-   *  filter. When omitted the menu item is hidden. */
   onFilterToMilestone?: (milestoneId: string) => void;
-  /** Disable the overflow item while an adopt request is in
-   *  flight to prevent overlapping mutations. */
   adoptBusy?: boolean;
-  /** Show a single-line skeleton while the first fetch is in
-   *  flight so the strip's vertical real estate doesn't pop in. */
   isPending?: boolean;
-  /** Optional "+ New milestone" affordance. When provided, a
-   *  ghost card renders at the end of the strip (and the strip
-   *  itself stays visible even when `milestones` is empty so
-   *  there's always somewhere to click). Caller owns the dialog
-   *  / mutation. */
   onCreateMilestone?: () => void;
-  /** Optional edit handler. When provided, the overflow menu
-   *  surfaces an "Edit" entry that hands the milestone back to
-   *  the caller (which typically opens an edit dialog). */
   onEditMilestone?: (milestone: MilestoneDto) => void;
-  /** Optional close/reopen toggle. Verb is picked by the caller
-   *  from `milestone.state`. */
   onToggleMilestoneState?: (milestone: MilestoneDto) => void;
-  /** Optional delete handler. The caller is expected to confirm
-   *  via `AlertDialog` (the strip itself stays free of
-   *  destructive prompts). */
   onDeleteMilestone?: (milestone: MilestoneDto) => void;
-  /** Mirrors `adoptBusy` for the edit/close/delete flow. */
   writeBusy?: boolean;
 }
 
@@ -92,6 +88,14 @@ export function MilestonesStrip({
   onDeleteMilestone,
   writeBusy,
 }: MilestonesStripProps): JSX.Element | null {
+  const [collapsed, setCollapsedState] = useState<boolean>(() =>
+    readCollapsedPref(),
+  );
+  const setCollapsed = (next: boolean): void => {
+    setCollapsedState(next);
+    writeCollapsedPref(next);
+  };
+
   if (isPending) {
     return (
       <div
@@ -102,32 +106,173 @@ export function MilestonesStrip({
       </div>
     );
   }
-  // Hide entirely only when there are no milestones AND no way
-  // to create one — otherwise we'd strand the user without an
-  // entry point on a fresh project.
   if (milestones.length === 0 && !onCreateMilestone) return null;
+
+  const closed = milestones.filter((m) => m.state === "closed");
+  const open = milestones.filter((m) => m.state === "open");
+  const ordered = [...closed, ...open];
+  const inProgressIndex = closed.length;
+  const total = milestones.length;
+
   return (
     <div
       className="flex flex-col gap-2"
       data-testid="project-milestones-strip"
     >
       <div className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-        <span>Milestones</span>
+        <button
+          type="button"
+          onClick={() => setCollapsed(!collapsed)}
+          className="-mx-1 flex items-center gap-1 rounded px-1 py-0.5 transition-colors hover:bg-muted hover:text-foreground"
+          aria-expanded={!collapsed}
+          aria-controls="project-milestones-body"
+          data-testid="project-milestones-toggle"
+          title={collapsed ? "Show milestones" : "Hide milestones"}
+        >
+          {collapsed ? (
+            <ChevronRight className="h-3.5 w-3.5" />
+          ) : (
+            <ChevronDown className="h-3.5 w-3.5" />
+          )}
+          <span>Milestones</span>
+          {total > 0 && (
+            <span
+              className="ml-1 rounded bg-muted px-1.5 py-0.5 text-[10px] normal-case tracking-normal text-muted-foreground"
+              data-testid="project-milestones-count"
+            >
+              {closed.length}/{total} closed
+            </span>
+          )}
+        </button>
         <HelpHint
           title="Milestones"
           body={[
-            "Each card is a GitHub milestone on one of this project's linked repos. Cards are sorted by due-date, soonest first.",
+            "Each node on the timeline is a GitHub milestone on one of this project's linked repos. Closed milestones come first, then open ones sorted by due-date.",
             "+ New milestone creates one on GitHub and mirrors it back to dev-pulse instantly. Pick the repo (auto-selected when only one is linked), set a title, and optionally a description and due date.",
-            "Use the ⋯ menu on any card to Adopt as primary (★ chip + headline KPI), Filter to milestone (scopes the issue list), Edit, Close / Reopen, or Delete. Edit and Delete write through to GitHub.",
-            "Closed milestones are hidden by default — they're still available behind GitHub's milestones tab.",
+            "Use the ⋯ menu on any node to Adopt as primary (★ chip + headline KPI), Filter to milestone (scopes the issue list), Edit, Close / Reopen, or Delete. Edit and Delete write through to GitHub.",
+            "Click Milestones to collapse / expand the strip — the choice persists across projects.",
           ]}
         />
       </div>
-      <div className="flex flex-wrap gap-2">
-        {milestones.map((m) => (
-          <MilestoneCard
+      {!collapsed && (
+        <div id="project-milestones-body">
+          <MilestoneTimeline
+            ordered={ordered}
+            inProgressIndex={inProgressIndex}
+            primaryMilestoneId={primaryMilestoneId ?? null}
+            onAdoptPrimary={onAdoptPrimary}
+            onFilterToMilestone={onFilterToMilestone}
+            onEditMilestone={onEditMilestone}
+            onToggleMilestoneState={onToggleMilestoneState}
+            onDeleteMilestone={onDeleteMilestone}
+            adoptBusy={adoptBusy}
+            writeBusy={writeBusy}
+          />
+          {onCreateMilestone && (
+            <div className="mt-3 flex">
+              <button
+                type="button"
+                onClick={onCreateMilestone}
+                className="flex min-w-[160px] items-center justify-center rounded-md border border-dashed border-muted-foreground/40 px-3 py-2 text-sm text-muted-foreground transition-colors hover:border-foreground hover:text-foreground"
+                data-testid="project-milestone-create"
+              >
+                + New milestone
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+type TimelineStatus = "completed" | "in-progress" | "upcoming";
+
+interface MilestoneTimelineProps {
+  ordered: MilestoneDto[];
+  inProgressIndex: number;
+  primaryMilestoneId: string | null;
+  onAdoptPrimary?: (milestoneId: string | null) => void;
+  onFilterToMilestone?: (milestoneId: string) => void;
+  onEditMilestone?: (milestone: MilestoneDto) => void;
+  onToggleMilestoneState?: (milestone: MilestoneDto) => void;
+  onDeleteMilestone?: (milestone: MilestoneDto) => void;
+  adoptBusy?: boolean;
+  writeBusy?: boolean;
+}
+
+/** Horizontal roadmap. Track line runs across the row of dots:
+ *  primary-colored & solid up to (and including) the in-progress
+ *  node, dashed muted-border after it. When there's only one
+ *  milestone the track collapses to a tiny stub on either side
+ *  of the lone dot so it still reads as a "point on a line"
+ *  rather than a floating bullet. */
+function MilestoneTimeline({
+  ordered,
+  inProgressIndex,
+  primaryMilestoneId,
+  onAdoptPrimary,
+  onFilterToMilestone,
+  onEditMilestone,
+  onToggleMilestoneState,
+  onDeleteMilestone,
+  adoptBusy,
+  writeBusy,
+}: MilestoneTimelineProps): JSX.Element {
+  const nodeCount = ordered.length;
+  // Solid track fraction. With 1 node it's "before/after" so we
+  // show 50% solid when in-progress, full when completed.
+  const solidFraction =
+    nodeCount === 0
+      ? 0
+      : nodeCount === 1
+        ? inProgressIndex >= 1
+          ? 1
+          : ordered[0]!.state === "closed"
+            ? 1
+            : 0.5
+        : inProgressIndex >= nodeCount
+          ? 1
+          : Math.min(1, inProgressIndex / (nodeCount - 1));
+
+  return (
+    <div className="relative w-full overflow-x-auto">
+      <div
+        className="relative grid items-stretch gap-6 px-4 py-6"
+        style={{
+          gridTemplateColumns: `repeat(${Math.max(nodeCount, 1)}, minmax(140px, 1fr))`,
+          minWidth: `${Math.max(nodeCount * 160, 320)}px`,
+        }}
+      >
+        {/* Background track — sits at the vertical centre of the row. */}
+        <div
+          className="pointer-events-none absolute top-1/2 left-4 right-4 flex h-[2px] -translate-y-1/2"
+          aria-hidden="true"
+        >
+          <div
+            className="h-full bg-primary"
+            style={{ width: `${solidFraction * 100}%` }}
+          />
+          <div
+            className="h-full flex-1"
+            style={{
+              backgroundImage:
+                "repeating-linear-gradient(to right, hsl(var(--border)) 0 4px, transparent 4px 8px)",
+            }}
+          />
+        </div>
+
+        {ordered.map((m, i) => (
+          <MilestoneTimelineNode
             key={m.id}
             milestone={m}
+            status={
+              m.state === "closed"
+                ? "completed"
+                : i === inProgressIndex
+                  ? "in-progress"
+                  : "upcoming"
+            }
             isPrimary={primaryMilestoneId === m.id}
             onAdoptPrimary={onAdoptPrimary}
             onFilterToMilestone={onFilterToMilestone}
@@ -138,23 +283,14 @@ export function MilestonesStrip({
             writeBusy={writeBusy}
           />
         ))}
-        {onCreateMilestone && (
-          <button
-            type="button"
-            onClick={onCreateMilestone}
-            className="flex min-w-40 items-center justify-center rounded-md border border-dashed border-muted-foreground/40 px-3 py-3 text-sm text-muted-foreground transition-colors hover:border-foreground hover:text-foreground"
-            data-testid="project-milestone-create"
-          >
-            + New milestone
-          </button>
-        )}
       </div>
     </div>
   );
 }
 
-interface MilestoneCardProps {
+interface MilestoneTimelineNodeProps {
   milestone: MilestoneDto;
+  status: TimelineStatus;
   isPrimary: boolean;
   onAdoptPrimary?: (milestoneId: string | null) => void;
   onFilterToMilestone?: (milestoneId: string) => void;
@@ -165,8 +301,9 @@ interface MilestoneCardProps {
   writeBusy?: boolean;
 }
 
-function MilestoneCard({
+function MilestoneTimelineNode({
   milestone,
+  status,
   isPrimary,
   onAdoptPrimary,
   onFilterToMilestone,
@@ -175,42 +312,71 @@ function MilestoneCard({
   onDeleteMilestone,
   adoptBusy,
   writeBusy,
-}: MilestoneCardProps): JSX.Element {
+}: MilestoneTimelineNodeProps): JSX.Element {
+  const due = relativeDueLabel(milestone.due_on);
   const total = milestone.open_issues + milestone.closed_issues;
   const pct = total === 0 ? 0 : (milestone.closed_issues / total) * 100;
-  const due = relativeDueLabel(milestone.due_on);
+  const hasMenu =
+    !!onAdoptPrimary ||
+    !!onFilterToMilestone ||
+    !!onEditMilestone ||
+    !!onToggleMilestoneState ||
+    !!onDeleteMilestone;
+
+  const chip =
+    status === "completed"
+      ? {
+          label: "COMPLETED",
+          className: "bg-primary/15 text-primary border border-primary/20",
+        }
+      : status === "in-progress"
+        ? {
+            label: "IN PROGRESS",
+            className:
+              "bg-amber-100 text-amber-900 border border-amber-300 dark:bg-amber-900/40 dark:text-amber-100 dark:border-amber-700",
+          }
+        : {
+            label: "UPCOMING",
+            className: "bg-muted text-muted-foreground border border-border",
+          };
+
+  const dot =
+    status === "completed"
+      ? "h-4 w-4 rounded-full bg-primary border-[3px] border-background shadow"
+      : status === "in-progress"
+        ? "h-5 w-5 rounded-full bg-amber-500 border-[3px] border-background shadow ring-4 ring-amber-500/20 animate-pulse"
+        : "h-4 w-4 rounded-full bg-background border-2 border-muted-foreground/40";
+
+  const opacity =
+    status === "upcoming" ? "opacity-70 hover:opacity-100" : "";
+
   return (
-    <Card
-      className="flex min-w-56 flex-col gap-1 p-3"
+    <div
+      className={`group relative z-10 flex min-w-0 flex-col items-center text-center transition-opacity ${opacity}`}
       data-testid={`project-milestone-card-${milestone.id}`}
     >
-      <div className="flex items-center justify-between gap-1">
-        <div
-          className="truncate text-sm font-medium"
-          title={milestone.title}
-        >
-          {milestone.title}
-        </div>
-        <div className="flex items-center gap-1">
+      <div className="mb-3 flex w-full flex-col items-center gap-1 px-1">
+        <div className="flex w-full items-center justify-center gap-1">
+          <span
+            className={`inline-block rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${chip.className}`}
+          >
+            {chip.label}
+          </span>
           {isPrimary && (
             <span
-              className="rounded bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-900 dark:bg-amber-900/40 dark:text-amber-100"
+              className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-900 dark:bg-amber-900/40 dark:text-amber-100"
               data-testid={`project-milestone-primary-${milestone.id}`}
               title="Project's primary milestone (PROJECT-VIEW.md §5.5)"
             >
-              ★ primary
+              ★
             </span>
           )}
-          {(onAdoptPrimary ||
-            onFilterToMilestone ||
-            onEditMilestone ||
-            onToggleMilestoneState ||
-            onDeleteMilestone) && (
+          {hasMenu && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <button
                   type="button"
-                  className="text-muted-foreground hover:text-foreground"
+                  className="ml-0.5 text-muted-foreground hover:text-foreground"
                   aria-label={`Actions for milestone ${milestone.title}`}
                   data-testid={`project-milestone-menu-${milestone.id}`}
                 >
@@ -276,22 +442,43 @@ function MilestoneCard({
             </DropdownMenu>
           )}
         </div>
+        <div
+          className="truncate text-sm font-semibold text-foreground"
+          title={milestone.title}
+        >
+          {milestone.title}
+        </div>
+        <div
+          className={
+            due.overdue
+              ? "text-[11px] font-medium text-destructive"
+              : status === "in-progress"
+                ? "text-[11px] font-medium text-amber-700 dark:text-amber-300"
+                : "text-[11px] text-muted-foreground"
+          }
+          data-testid={`project-milestone-due-${milestone.id}`}
+        >
+          {due.label}
+        </div>
       </div>
-      <div
-        className={
-          due.overdue
-            ? "text-xs text-destructive"
-            : "text-xs text-muted-foreground"
-        }
-        data-testid={`project-milestone-due-${milestone.id}`}
-      >
-        {due.label}
+
+      <div className={dot} />
+
+      <div className="mt-3 flex w-full flex-col items-center gap-1 px-2">
+        <Progress value={pct} className="h-1 w-full" />
+        <div className="text-[10px] text-muted-foreground">
+          {milestone.closed_issues} / {total} closed
+        </div>
+        {status === "in-progress" && (
+          <div className="mt-1 flex flex-col items-center">
+            <div className="h-3 w-px bg-amber-500/60" />
+            <span className="text-[9px] font-semibold uppercase tracking-widest text-amber-700 dark:text-amber-300">
+              Today
+            </span>
+          </div>
+        )}
       </div>
-      <Progress value={pct} className="h-1.5" />
-      <div className="text-xs text-muted-foreground">
-        {milestone.closed_issues} / {total} closed
-      </div>
-    </Card>
+    </div>
   );
 }
 
@@ -302,17 +489,12 @@ interface RelativeDueLabel {
 
 /** Render the `due_on` field as a human-readable relative phrase.
  *  Days are computed off the *date* (no timestamps) to match the
- *  tz-agnostic `DATE` column on the server. We compare against the
- *  caller's local date so the strip reads "due today" on the user's
- *  calendar rather than UTC's. */
+ *  tz-agnostic `DATE` column on the server. */
 export function relativeDueLabel(
   dueOn: string | null,
   now: Date = new Date(),
 ): RelativeDueLabel {
   if (!dueOn) return { label: "no due date", overdue: false };
-  // Compare on calendar dates only — strip the time-of-day so a
-  // morning render of a "due today" milestone doesn't trip into
-  // "overdue 1d" before midnight.
   const due = new Date(`${dueOn}T00:00:00`);
   const today = new Date(
     now.getFullYear(),
