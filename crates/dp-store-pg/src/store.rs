@@ -38,9 +38,10 @@ use dp_domain::repo::Repo;
 use dp_domain::issue::{Issue, IssueState, IssueUpsert, IssueUpsertOutcome, RepoSummary};
 use dp_domain::issue_mutation::{IssueMutation, IssueMutationOp, IssueMutationResult};
 use dp_domain::event::EventKind;
-use dp_domain::issue_dates::{
-    IssueDates, ProjectV2MirrorTask, ProjectV2MirrorTaskKind, RepoProjectLink,
+use dp_domain::board_link::{
+    BoardItem, BoardItemMirrorOutcome, BoardLink, BoardLinkUpsert,
 };
+use dp_domain::issue_dates::{IssueDates, ProjectV2MirrorTask, ProjectV2MirrorTaskKind};
 use dp_domain::project::{
     Project, ProjectIssueAddOutcome, ProjectIssueAddSkip, ProjectListFilter, ProjectStatus,
     ProjectUpsert,
@@ -2778,73 +2779,16 @@ impl Store for PgStore {
         Ok(())
     }
 
-    async fn get_repo_project_link(
-        &self,
-        repo_id: Uuid,
-    ) -> Result<Option<RepoProjectLink>, StoreError> {
-        let row = sqlx::query(
-            r#"SELECT repo_id, project_node_id, start_field_node_id, due_field_node_id
-                 FROM dp_repo_project_link WHERE repo_id = $1"#,
-        )
-        .bind(repo_id)
-        .fetch_optional(self.pool.sqlx())
-        .await
-        .map_err(map_sqlx)?;
-        Ok(row.map(|r| {
-            Ok::<_, StoreError>(RepoProjectLink {
-                repo_id: r.try_get("repo_id").map_err(map_sqlx)?,
-                project_node_id: r.try_get("project_node_id").map_err(map_sqlx)?,
-                start_field_node_id: r
-                    .try_get("start_field_node_id")
-                    .map_err(map_sqlx)?,
-                due_field_node_id: r.try_get("due_field_node_id").map_err(map_sqlx)?,
-            })
-        })
-        .transpose()?)
-    }
-
-    async fn upsert_repo_project_link(
-        &self,
-        link: &RepoProjectLink,
-    ) -> Result<RepoProjectLink, StoreError> {
-        let row = sqlx::query(
-            r#"INSERT INTO dp_repo_project_link
-                   (repo_id, project_node_id, start_field_node_id, due_field_node_id,
-                    created_at, updated_at)
-               VALUES ($1, $2, $3, $4, now(), now())
-               ON CONFLICT (repo_id) DO UPDATE SET
-                   project_node_id      = EXCLUDED.project_node_id,
-                   start_field_node_id  = EXCLUDED.start_field_node_id,
-                   due_field_node_id    = EXCLUDED.due_field_node_id,
-                   updated_at           = now()
-               RETURNING repo_id, project_node_id, start_field_node_id, due_field_node_id"#,
-        )
-        .bind(link.repo_id)
-        .bind(&link.project_node_id)
-        .bind(link.start_field_node_id.as_deref())
-        .bind(link.due_field_node_id.as_deref())
-        .fetch_one(self.pool.sqlx())
-        .await
-        .map_err(map_sqlx)?;
-        Ok(RepoProjectLink {
-            repo_id: row.try_get("repo_id").map_err(map_sqlx)?,
-            project_node_id: row.try_get("project_node_id").map_err(map_sqlx)?,
-            start_field_node_id: row.try_get("start_field_node_id").map_err(map_sqlx)?,
-            due_field_node_id: row.try_get("due_field_node_id").map_err(map_sqlx)?,
-        })
-    }
-
-    async fn delete_repo_project_link(
-        &self,
-        repo_id: Uuid,
-    ) -> Result<(), StoreError> {
-        sqlx::query(r#"DELETE FROM dp_repo_project_link WHERE repo_id = $1"#)
-            .bind(repo_id)
-            .execute(self.pool.sqlx())
-            .await
-            .map_err(map_sqlx)?;
-        Ok(())
-    }
+    // Note: `get_repo_project_link` / `upsert_repo_project_link` /
+    // `delete_repo_project_link` are intentionally NOT overridden on
+    // [`PgStore`]. Migration 0024 (`0024_drop_repo_project_link.sql`)
+    // dropped the backing `dp_repo_project_link` table when the
+    // project-scoped `dp_project_board_links` replacement landed in
+    // 0023. The trait defaults (None / Invalid / Ok-no-op) keep the
+    // §3.10 admin-pane REST handler compiling while it is wound
+    // down in a follow-up stage of this slice; surface code that
+    // needs board state must reach for `list_board_links` /
+    // `get_board_item` instead.
 
     async fn set_issue_github_node_id(
         &self,
@@ -3330,6 +3274,271 @@ impl Store for PgStore {
             .map(|r| r.try_get::<Uuid, _>("issue_id").map_err(map_sqlx))
             .collect()
     }
+
+    // ---- project ↔ board mirror (linear-projects-v2.md slice B) --
+
+    async fn list_board_links(
+        &self,
+        project_id: Uuid,
+    ) -> Result<Vec<BoardLink>, StoreError> {
+        let rows = sqlx::query(
+            r#"SELECT id, project_id, github_board_node_id,
+                      github_board_title, github_board_url,
+                      github_board_cached_at, start_field_node_id,
+                      due_field_node_id, status_field_node_id,
+                      last_mirror_at, last_mirror_error,
+                      created_by, created_at, updated_at
+                 FROM dp_project_board_links
+                WHERE project_id = $1
+             ORDER BY created_at ASC, id ASC"#,
+        )
+        .bind(project_id)
+        .fetch_all(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        rows.iter().map(row_to_board_link).collect()
+    }
+
+    async fn get_board_link(&self, id: Uuid) -> Result<Option<BoardLink>, StoreError> {
+        let row = sqlx::query(
+            r#"SELECT id, project_id, github_board_node_id,
+                      github_board_title, github_board_url,
+                      github_board_cached_at, start_field_node_id,
+                      due_field_node_id, status_field_node_id,
+                      last_mirror_at, last_mirror_error,
+                      created_by, created_at, updated_at
+                 FROM dp_project_board_links WHERE id = $1"#,
+        )
+        .bind(id)
+        .fetch_optional(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        row.map(|r| row_to_board_link(&r)).transpose()
+    }
+
+    async fn create_board_link(
+        &self,
+        upsert: &BoardLinkUpsert,
+    ) -> Result<BoardLink, StoreError> {
+        // `github_board_cached_at` is stamped to `now()` iff the
+        // caller supplied a title or url — i.e. the picker actually
+        // resolved fresh display data — so the nightly refresh job
+        // knows whether a row needs a backfill or is already fresh.
+        let cached_now = upsert.github_board_title.is_some()
+            || upsert.github_board_url.is_some();
+        let row = sqlx::query(
+            r#"INSERT INTO dp_project_board_links
+                   (id, project_id, github_board_node_id,
+                    github_board_title, github_board_url,
+                    github_board_cached_at,
+                    start_field_node_id, due_field_node_id,
+                    status_field_node_id, created_by,
+                    created_at, updated_at)
+               VALUES (gen_random_uuid(), $1, $2, $3, $4,
+                       CASE WHEN $5 THEN now() ELSE NULL END,
+                       $6, $7, $8, $9, now(), now())
+               RETURNING id, project_id, github_board_node_id,
+                         github_board_title, github_board_url,
+                         github_board_cached_at, start_field_node_id,
+                         due_field_node_id, status_field_node_id,
+                         last_mirror_at, last_mirror_error,
+                         created_by, created_at, updated_at"#,
+        )
+        .bind(upsert.project_id)
+        .bind(&upsert.github_board_node_id)
+        .bind(upsert.github_board_title.as_deref())
+        .bind(upsert.github_board_url.as_deref())
+        .bind(cached_now)
+        .bind(upsert.start_field_node_id.as_deref())
+        .bind(upsert.due_field_node_id.as_deref())
+        .bind(upsert.status_field_node_id.as_deref())
+        .bind(upsert.created_by)
+        .fetch_one(self.pool.sqlx())
+        .await
+        .map_err(|e| match &e {
+            // The natural-key UNIQUE collision is the "already
+            // linked" case the §7.3 POST handler surfaces as 409.
+            sqlx::Error::Database(db)
+                if db.constraint().is_some()
+                    && db.message().contains("dp_project_board_links")
+                    && db.message().contains("github_board_node_id") =>
+            {
+                StoreError::Conflict(format!(
+                    "board already linked to project {}",
+                    upsert.project_id
+                ))
+            }
+            _ => map_sqlx(e),
+        })?;
+        row_to_board_link(&row)
+    }
+
+    async fn delete_board_link(&self, id: Uuid) -> Result<(), StoreError> {
+        let res = sqlx::query("DELETE FROM dp_project_board_links WHERE id = $1")
+            .bind(id)
+            .execute(self.pool.sqlx())
+            .await
+            .map_err(map_sqlx)?;
+        if res.rows_affected() == 0 {
+            return Err(not_found("board_link", id));
+        }
+        Ok(())
+    }
+
+    async fn refresh_board_link_cache(
+        &self,
+        id: Uuid,
+        title: Option<&str>,
+        url: Option<&str>,
+    ) -> Result<(), StoreError> {
+        // COALESCE so a partial refresh (e.g. the picker only
+        // resolves the title) does not clobber a previously cached
+        // url. Stamping `github_board_cached_at` unconditionally
+        // (so long as at least one field was supplied) lets the
+        // nightly job tell stale rows apart from rows that have
+        // simply never been refreshed.
+        if title.is_none() && url.is_none() {
+            return Ok(());
+        }
+        sqlx::query(
+            r#"UPDATE dp_project_board_links
+                  SET github_board_title     = COALESCE($2, github_board_title),
+                      github_board_url       = COALESCE($3, github_board_url),
+                      github_board_cached_at = now(),
+                      updated_at             = now()
+                WHERE id = $1"#,
+        )
+        .bind(id)
+        .bind(title)
+        .bind(url)
+        .execute(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        Ok(())
+    }
+
+    async fn list_board_items_for_issue(
+        &self,
+        issue_id: Uuid,
+    ) -> Result<Vec<BoardItem>, StoreError> {
+        let rows = sqlx::query(
+            r#"SELECT link_id, issue_id, item_node_id,
+                      last_synced_at, last_error,
+                      created_at, updated_at
+                 FROM dp_project_board_items
+                WHERE issue_id = $1
+             ORDER BY created_at ASC, link_id ASC"#,
+        )
+        .bind(issue_id)
+        .fetch_all(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        rows.iter().map(row_to_board_item).collect()
+    }
+
+    async fn get_board_item(
+        &self,
+        link_id: Uuid,
+        issue_id: Uuid,
+    ) -> Result<Option<BoardItem>, StoreError> {
+        let row = sqlx::query(
+            r#"SELECT link_id, issue_id, item_node_id,
+                      last_synced_at, last_error,
+                      created_at, updated_at
+                 FROM dp_project_board_items
+                WHERE link_id = $1 AND issue_id = $2"#,
+        )
+        .bind(link_id)
+        .bind(issue_id)
+        .fetch_optional(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        row.map(|r| row_to_board_item(&r)).transpose()
+    }
+
+    async fn record_board_item_result(
+        &self,
+        link_id: Uuid,
+        issue_id: Uuid,
+        outcome: BoardItemMirrorOutcome<'_>,
+    ) -> Result<(), StoreError> {
+        // Per-item upsert + aggregate roll-up in one transaction so
+        // the §6.5 `SyncStatus` view can never observe a row whose
+        // item state and aggregate state disagree.
+        let mut tx = self.pool.sqlx().begin().await.map_err(map_sqlx)?;
+        match outcome {
+            BoardItemMirrorOutcome::Success { item_node_id } => {
+                sqlx::query(
+                    r#"INSERT INTO dp_project_board_items
+                           (link_id, issue_id, item_node_id,
+                            last_synced_at, last_error,
+                            created_at, updated_at)
+                       VALUES ($1, $2, $3, now(), NULL, now(), now())
+                       ON CONFLICT (link_id, issue_id) DO UPDATE SET
+                           item_node_id   = EXCLUDED.item_node_id,
+                           last_synced_at = now(),
+                           last_error     = NULL,
+                           updated_at     = now()"#,
+                )
+                .bind(link_id)
+                .bind(issue_id)
+                .bind(item_node_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(map_sqlx)?;
+                sqlx::query(
+                    r#"UPDATE dp_project_board_links
+                          SET last_mirror_at    = now(),
+                              last_mirror_error = NULL,
+                              updated_at        = now()
+                        WHERE id = $1"#,
+                )
+                .bind(link_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(map_sqlx)?;
+            }
+            BoardItemMirrorOutcome::Failure { error } => {
+                // A failure-before-success leaves `item_node_id`
+                // empty, which would violate the NOT NULL column.
+                // Insert a sentinel placeholder so the per-item
+                // failure has somewhere to land; the next
+                // success-path UPSERT overwrites it with the real
+                // node id. The placeholder is not a stable id —
+                // `last_synced_at IS NULL` is the signal that no
+                // successful mirror has run yet.
+                sqlx::query(
+                    r#"INSERT INTO dp_project_board_items
+                           (link_id, issue_id, item_node_id,
+                            last_synced_at, last_error,
+                            created_at, updated_at)
+                       VALUES ($1, $2, '', NULL, $3, now(), now())
+                       ON CONFLICT (link_id, issue_id) DO UPDATE SET
+                           last_error = EXCLUDED.last_error,
+                           updated_at = now()"#,
+                )
+                .bind(link_id)
+                .bind(issue_id)
+                .bind(error)
+                .execute(&mut *tx)
+                .await
+                .map_err(map_sqlx)?;
+                sqlx::query(
+                    r#"UPDATE dp_project_board_links
+                          SET last_mirror_error = $2,
+                              updated_at        = now()
+                        WHERE id = $1"#,
+                )
+                .bind(link_id)
+                .bind(error)
+                .execute(&mut *tx)
+                .await
+                .map_err(map_sqlx)?;
+            }
+        }
+        tx.commit().await.map_err(map_sqlx)?;
+        Ok(())
+    }
 }
 
 /// Resolve whether an `UPDATE dp_projects ... WHERE id = ? AND
@@ -3374,6 +3583,37 @@ fn row_to_project(r: &sqlx::postgres::PgRow) -> Result<Project, StoreError> {
         created_at: r.try_get("created_at").map_err(map_sqlx)?,
         updated_at: r.try_get("updated_at").map_err(map_sqlx)?,
         version: r.try_get("version").map_err(map_sqlx)?,
+    })
+}
+
+fn row_to_board_link(r: &sqlx::postgres::PgRow) -> Result<BoardLink, StoreError> {
+    Ok(BoardLink {
+        id: r.try_get("id").map_err(map_sqlx)?,
+        project_id: r.try_get("project_id").map_err(map_sqlx)?,
+        github_board_node_id: r.try_get("github_board_node_id").map_err(map_sqlx)?,
+        github_board_title: r.try_get("github_board_title").map_err(map_sqlx)?,
+        github_board_url: r.try_get("github_board_url").map_err(map_sqlx)?,
+        github_board_cached_at: r.try_get("github_board_cached_at").map_err(map_sqlx)?,
+        start_field_node_id: r.try_get("start_field_node_id").map_err(map_sqlx)?,
+        due_field_node_id: r.try_get("due_field_node_id").map_err(map_sqlx)?,
+        status_field_node_id: r.try_get("status_field_node_id").map_err(map_sqlx)?,
+        last_mirror_at: r.try_get("last_mirror_at").map_err(map_sqlx)?,
+        last_mirror_error: r.try_get("last_mirror_error").map_err(map_sqlx)?,
+        created_by: r.try_get("created_by").map_err(map_sqlx)?,
+        created_at: r.try_get("created_at").map_err(map_sqlx)?,
+        updated_at: r.try_get("updated_at").map_err(map_sqlx)?,
+    })
+}
+
+fn row_to_board_item(r: &sqlx::postgres::PgRow) -> Result<BoardItem, StoreError> {
+    Ok(BoardItem {
+        link_id: r.try_get("link_id").map_err(map_sqlx)?,
+        issue_id: r.try_get("issue_id").map_err(map_sqlx)?,
+        item_node_id: r.try_get("item_node_id").map_err(map_sqlx)?,
+        last_synced_at: r.try_get("last_synced_at").map_err(map_sqlx)?,
+        last_error: r.try_get("last_error").map_err(map_sqlx)?,
+        created_at: r.try_get("created_at").map_err(map_sqlx)?,
+        updated_at: r.try_get("updated_at").map_err(map_sqlx)?,
     })
 }
 

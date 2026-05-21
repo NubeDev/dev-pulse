@@ -63,6 +63,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use dp_domain::event::{ActivityEvent, ActorRole, EventActor, EventKind};
 use dp_domain::issue::{IssueState, IssueUpsert};
+use dp_domain::board_link::{BoardItemMirrorOutcome, BoardLinkUpsert};
 use dp_domain::project::{ProjectListFilter, ProjectStatus, ProjectUpsert};
 use dp_domain::fetch::{FetchCursor, FetchRunKind, ResourceKind};
 use dp_domain::membership::{Membership, MembershipRole};
@@ -1365,4 +1366,190 @@ async fn project_issue_membership_outcomes() {
         .await
         .unwrap_err();
     assert!(matches!(miss, StoreError::NotFound { .. }));
+}
+
+// ---------- board links + items (linear-projects-v2.md slice B) ----
+
+/// Round-trips the §7.3 board-link CRUD plus the §6.5 per-(link,
+/// issue) mirror state. Covers: create with cached picker fields,
+/// natural-key conflict on re-link, list ordering, item upsert on
+/// success / failure, aggregate roll-up to the link row,
+/// `refresh_board_link_cache` not clobbering set fields, cascade
+/// delete cleaning up items, and the not-found delete path.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Docker or DP_TEST_DATABASE_URL"]
+async fn board_link_crud_and_item_outcomes() {
+    let f = fixture().await;
+    let s = f.store();
+
+    let org = seed_org(s, 7200, "bl-org").await;
+    let repo = seed_repo(s, &org, 9200, "bl-repo").await;
+    let actor = seed_user(s, 7201, "bl-actor").await;
+    let issue_a = seed_issue(s, &org, &repo, 1, 1).await;
+    let issue_b = seed_issue(s, &org, &repo, 2, 2).await;
+
+    let project = s
+        .create_project(&ProjectUpsert {
+            org_id: org.id,
+            name: "bl-proj".into(),
+            description: None,
+            lead_user_id: None,
+            status: ProjectStatus::Active,
+            start_at: None,
+            due_at: None,
+            created_by: Some(actor.id),
+        })
+        .await
+        .unwrap();
+
+    // Create with picker-cached fields → cached_at stamped.
+    let link = s
+        .create_board_link(&BoardLinkUpsert {
+            project_id: project.id,
+            github_board_node_id: "PVT_kw_roadmap".into(),
+            github_board_title: Some("Rubix Roadmap".into()),
+            github_board_url: Some("https://github.com/orgs/NubeIO/projects/12".into()),
+            start_field_node_id: Some("PVF_start".into()),
+            due_field_node_id: Some("PVF_due".into()),
+            status_field_node_id: None,
+            created_by: Some(actor.id),
+        })
+        .await
+        .unwrap();
+    assert_eq!(link.project_id, project.id);
+    assert_eq!(link.github_board_title.as_deref(), Some("Rubix Roadmap"));
+    assert!(link.github_board_cached_at.is_some());
+    assert!(link.last_mirror_at.is_none());
+    assert!(link.last_mirror_error.is_none());
+
+    // Re-link the same board → 409 Conflict via the natural-key
+    // UNIQUE constraint.
+    let dup = s
+        .create_board_link(&BoardLinkUpsert {
+            project_id: project.id,
+            github_board_node_id: "PVT_kw_roadmap".into(),
+            github_board_title: None,
+            github_board_url: None,
+            start_field_node_id: None,
+            due_field_node_id: None,
+            status_field_node_id: None,
+            created_by: Some(actor.id),
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(dup, StoreError::Conflict(_)));
+
+    // Second link to a different board on the same project — the
+    // §6.4 fan-out shape: a project may carry many links.
+    let link2 = s
+        .create_board_link(&BoardLinkUpsert {
+            project_id: project.id,
+            github_board_node_id: "PVT_kw_sprint".into(),
+            github_board_title: Some("Eng Sprint".into()),
+            github_board_url: None,
+            start_field_node_id: None,
+            due_field_node_id: Some("PVF_due_b".into()),
+            status_field_node_id: None,
+            created_by: Some(actor.id),
+        })
+        .await
+        .unwrap();
+
+    // list_board_links returns both, in created_at ASC order.
+    let links = s.list_board_links(project.id).await.unwrap();
+    assert_eq!(links.len(), 2);
+    assert_eq!(links[0].id, link.id);
+    assert_eq!(links[1].id, link2.id);
+
+    // Record a success against (link, issue_a) — item row stamped,
+    // aggregate rolled up.
+    s.record_board_item_result(
+        link.id,
+        issue_a,
+        BoardItemMirrorOutcome::Success {
+            item_node_id: "PVTI_card_a",
+        },
+    )
+    .await
+    .unwrap();
+    let item = s.get_board_item(link.id, issue_a).await.unwrap().unwrap();
+    assert_eq!(item.item_node_id, "PVTI_card_a");
+    assert!(item.last_synced_at.is_some());
+    assert!(item.last_error.is_none());
+    let link_after = s.get_board_link(link.id).await.unwrap().unwrap();
+    assert!(link_after.last_mirror_at.is_some());
+    assert!(link_after.last_mirror_error.is_none());
+
+    // Record a failure against (link, issue_b) — item row carries
+    // the error, aggregate now reports the error.
+    s.record_board_item_result(
+        link.id,
+        issue_b,
+        BoardItemMirrorOutcome::Failure {
+            error: "field not found",
+        },
+    )
+    .await
+    .unwrap();
+    let fail_item = s.get_board_item(link.id, issue_b).await.unwrap().unwrap();
+    assert_eq!(fail_item.last_error.as_deref(), Some("field not found"));
+    assert!(fail_item.last_synced_at.is_none());
+    let link_err = s.get_board_link(link.id).await.unwrap().unwrap();
+    assert_eq!(
+        link_err.last_mirror_error.as_deref(),
+        Some("field not found")
+    );
+
+    // A subsequent success against issue_b clears its error,
+    // overwrites the placeholder item_node_id, and clears the
+    // aggregate error.
+    s.record_board_item_result(
+        link.id,
+        issue_b,
+        BoardItemMirrorOutcome::Success {
+            item_node_id: "PVTI_card_b",
+        },
+    )
+    .await
+    .unwrap();
+    let ok_item = s.get_board_item(link.id, issue_b).await.unwrap().unwrap();
+    assert_eq!(ok_item.item_node_id, "PVTI_card_b");
+    assert!(ok_item.last_error.is_none());
+    let link_clear = s.get_board_link(link.id).await.unwrap().unwrap();
+    assert!(link_clear.last_mirror_error.is_none());
+
+    // list_board_items_for_issue returns one row per (link, issue).
+    let items_a = s.list_board_items_for_issue(issue_a).await.unwrap();
+    assert_eq!(items_a.len(), 1);
+    assert_eq!(items_a[0].link_id, link.id);
+
+    // refresh_board_link_cache: a title-only refresh does not
+    // clobber a previously cached url.
+    s.refresh_board_link_cache(link.id, Some("Rubix Roadmap v2"), None)
+        .await
+        .unwrap();
+    let refreshed = s.get_board_link(link.id).await.unwrap().unwrap();
+    assert_eq!(
+        refreshed.github_board_title.as_deref(),
+        Some("Rubix Roadmap v2")
+    );
+    assert_eq!(
+        refreshed.github_board_url.as_deref(),
+        Some("https://github.com/orgs/NubeIO/projects/12")
+    );
+
+    // Delete cascades to items.
+    s.delete_board_link(link.id).await.unwrap();
+    assert!(s.get_board_link(link.id).await.unwrap().is_none());
+    assert!(s.get_board_item(link.id, issue_a).await.unwrap().is_none());
+    assert!(s.list_board_items_for_issue(issue_a).await.unwrap().is_empty());
+
+    // Re-delete → NotFound.
+    let miss = s.delete_board_link(link.id).await.unwrap_err();
+    assert!(matches!(miss, StoreError::NotFound { .. }));
+
+    // The other link survives.
+    let leftover = s.list_board_links(project.id).await.unwrap();
+    assert_eq!(leftover.len(), 1);
+    assert_eq!(leftover[0].id, link2.id);
 }
