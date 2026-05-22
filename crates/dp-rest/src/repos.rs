@@ -905,9 +905,10 @@ pub async fn request_repo_sync(
 
 /// Request body for `POST /repos/sync` — operator-triggered
 /// per-repo reconciler tick keyed by `(org_login, name)` rather
-/// than the internal repo `id`. Useful for callers that already
-/// know the GitHub slug (CLI, webhooks, ad-hoc curl) and don't
-/// want a round-trip through `GET /repos` to resolve the UUID.
+/// than the internal repo `id`. If the repo (or its owning org)
+/// is not yet tracked locally, the handler discovers it via
+/// GitHub's `GET /repos/{owner}/{name}` and upserts the rows
+/// before queueing the sync — same flow as `POST /admin/repos`.
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct RepoSyncByNameRequest {
     /// GitHub org login (e.g. `acme-corp`). Case-insensitive.
@@ -917,46 +918,55 @@ pub struct RepoSyncByNameRequest {
     pub name: String,
 }
 
-/// `POST /repos/sync` — operator-triggered per-repo reconciler
-/// tick keyed by `(org, name)` instead of the internal repo
-/// `id`. Same coalescing / audit behaviour as
-/// [`request_repo_sync`]; the response carries the resolved
-/// `repo_id` so the caller can follow up on `GET
-/// /repos/{id}/sync-status`. Authorisation: `("repos", "sync")`.
-#[utoipa::path(
-    post,
-    path = "/repos/sync",
-    request_body = RepoSyncByNameRequest,
-    responses(
-        (status = 202, description = "Sync queued", body = RepoSyncQueuedByNameDto),
-        (status = 404, description = "No such org or repo"),
-        (status = 503, description = "Reconciler scheduler not configured in this deployment"),
-    ),
-    tag = "repos",
-)]
-pub async fn request_repo_sync_by_name(
-    State(state): State<AppState>,
-    Extension(principal): Extension<Principal>,
-    Json(body): Json<RepoSyncByNameRequest>,
-) -> Result<(axum::http::StatusCode, Json<RepoSyncQueuedByNameDto>), ApiError> {
-    let org_login = body.org.trim();
-    let repo_name = body.name.trim();
-    if org_login.is_empty() || repo_name.is_empty() {
-        return Err(ApiError::BadRequest {
-            code: "invalid_repo_slug",
-            message: "both `org` and `name` are required".to_string(),
-        });
-    }
-    let org = state
+/// Wire envelope for `POST /repos/sync`. Carries the resolved
+/// `repo_id` and an `imported` flag indicating whether the row
+/// was newly created during this call (vs already tracked).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct RepoSyncQueuedByNameDto {
+    /// Sentinel — always `true`.
+    pub queued: bool,
+    /// Internal repo id resolved (or freshly created) from
+    /// `(org, name)`.
+    pub repo_id: Uuid,
+    /// `true` if the repo row did not previously exist in
+    /// `dp_repos` and was registered as part of this call.
+    pub imported: bool,
+}
+
+/// Minimal projection of `GET /repos/{owner}/{name}` — mirrors
+/// the `GhImportRepo` shape in [`crate::admin::import_repo`].
+#[derive(Debug, serde::Deserialize)]
+struct GhSyncRepo {
+    id: i64,
+    name: String,
+    owner: GhSyncOwner,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct GhSyncOwner {
+    id: i64,
+    login: String,
+    #[serde(default)]
+    name: Option<String>,
+}
+
+/// Look up `(org_login, repo_name)` in the local store. Returns
+/// `Ok(None)` if either the org or the repo row is missing — the
+/// caller decides whether to import or 404.
+async fn lookup_repo_by_slug(
+    state: &AppState,
+    org_login: &str,
+    repo_name: &str,
+) -> Result<Option<(Uuid, Uuid)>, ApiError> {
+    let Some(org) = state
         .store
         .list_orgs()
         .await?
         .into_iter()
         .find(|o| o.login.eq_ignore_ascii_case(org_login))
-        .ok_or_else(|| ApiError::NotFound {
-            code: "org_not_found",
-            message: format!("no org with login '{org_login}'"),
-        })?;
+    else {
+        return Ok(None);
+    };
     let filter = RepoListFilter {
         org_id: Some(org.id),
         q: Some(repo_name.to_string()),
@@ -968,19 +978,107 @@ pub async fn request_repo_sync_by_name(
         .list_repos(&filter)
         .await?
         .into_iter()
-        .find(|r| r.name.eq_ignore_ascii_case(repo_name))
-        .ok_or_else(|| ApiError::NotFound {
-            code: "repo_not_found",
-            message: format!("no repo '{org_login}/{repo_name}'"),
-        })?;
+        .find(|r| r.name.eq_ignore_ascii_case(repo_name));
+    Ok(repo.map(|r| (r.org_id, r.id)))
+}
+
+/// `POST /repos/sync` — operator-triggered per-repo reconciler
+/// tick keyed by `(org, name)`. If the repo isn't tracked yet,
+/// it's resolved against GitHub and upserted into `dp_orgs` /
+/// `dp_repos` before the sync is queued. Same coalescing /
+/// audit behaviour as [`request_repo_sync`]; the response
+/// carries the resolved `repo_id` plus an `imported` flag so
+/// the caller can tell whether the row was new.
+/// Authorisation: `("repos", "sync")`.
+#[utoipa::path(
+    post,
+    path = "/repos/sync",
+    request_body = RepoSyncByNameRequest,
+    responses(
+        (status = 202, description = "Sync queued (repo registered if it wasn't already)", body = RepoSyncQueuedByNameDto),
+        (status = 404, description = "GitHub has no such repo"),
+        (status = 503, description = "Reconciler scheduler not configured in this deployment"),
+    ),
+    tag = "repos",
+)]
+pub async fn request_repo_sync_by_name(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    Json(body): Json<RepoSyncByNameRequest>,
+) -> Result<(axum::http::StatusCode, Json<RepoSyncQueuedByNameDto>), ApiError> {
+    let org_login = body.org.trim().to_string();
+    let repo_name = body.name.trim().to_string();
+    if org_login.is_empty() || repo_name.is_empty() {
+        return Err(ApiError::BadRequest {
+            code: "invalid_repo_slug",
+            message: "both `org` and `name` are required".to_string(),
+        });
+    }
+
+    // Scheduler is required either way — bail before we touch
+    // GitHub so a misconfigured deployment doesn't churn the
+    // remote on calls that would just 503 at the end.
     let Some(scheduler) = state.scheduler.clone() else {
         return Err(ApiError::BadRequest {
             code: "reconciler_unavailable",
             message: "reconciler scheduler not configured".to_string(),
         });
     };
-    let org_id = repo.org_id;
-    let repo_id = repo.id;
+
+    // Fast path: repo already tracked.
+    let (org_id, repo_id, imported) =
+        match lookup_repo_by_slug(&state, &org_login, &repo_name).await? {
+            Some((org_id, repo_id)) => (org_id, repo_id, false),
+            None => {
+                // Slow path: resolve via GitHub + upsert. Same flow as
+                // `POST /admin/repos` — see [`crate::admin::import_repo`].
+                let path = format!("/repos/{org_login}/{repo_name}");
+                let client = scheduler.reconciler().client();
+                let fetched = client.get_conditional::<GhSyncRepo>(&path, None).await;
+                let gh = match fetched {
+                    Ok(dp_fetcher::client::Fetched::Ok { body, .. }) => body,
+                    Ok(dp_fetcher::client::Fetched::NotModified { .. }) => {
+                        return Err(ApiError::BadRequest {
+                            code: "github_unexpected_304",
+                            message: "GitHub returned 304 to an unconditional GET".to_string(),
+                        });
+                    }
+                    Err(dp_fetcher::client::ClientError::Client { status: 404, .. }) => {
+                        return Err(ApiError::NotFound {
+                            code: "github_repo_not_found",
+                            message: format!("GitHub has no repo {org_login}/{repo_name}"),
+                        });
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, %org_login, %repo_name, "github repo lookup failed");
+                        return Err(ApiError::BadRequest {
+                            code: "github_lookup_failed",
+                            message: format!("GitHub lookup failed: {e}"),
+                        });
+                    }
+                };
+                let saved_org = state
+                    .store
+                    .upsert_org(&dp_domain::Org {
+                        id: Uuid::new_v4(),
+                        github_id: gh.owner.id,
+                        login: gh.owner.login.clone(),
+                        name: gh.owner.name.clone(),
+                    })
+                    .await?;
+                let saved_repo = state
+                    .store
+                    .upsert_repo(&dp_domain::Repo {
+                        id: Uuid::new_v4(),
+                        org_id: saved_org.id,
+                        github_id: gh.id,
+                        name: gh.name.clone(),
+                    })
+                    .await?;
+                (saved_org.id, saved_repo.id, true)
+            }
+        };
+
     tokio::spawn(async move {
         let scope = dp_fetcher::reconciler::Scope::Repo { org_id, repo_id };
         if let Err(e) = scheduler.try_trigger_now(scope).await {
@@ -1000,20 +1098,9 @@ pub async fn request_repo_sync_by_name(
         Json(RepoSyncQueuedByNameDto {
             queued: true,
             repo_id,
+            imported,
         }),
     ))
-}
-
-/// Wire envelope for `POST /repos/sync`. Carries the resolved
-/// `repo_id` alongside the `queued` sentinel so the caller can
-/// follow up on `GET /repos/{id}/sync-status` without a second
-/// lookup.
-#[derive(Debug, Clone, Serialize, ToSchema)]
-pub struct RepoSyncQueuedByNameDto {
-    /// Sentinel — always `true`.
-    pub queued: bool,
-    /// Internal repo id resolved from `(org, name)`.
-    pub repo_id: Uuid,
 }
 
 /// Build the repos router fragment. Same wrapping pattern as
