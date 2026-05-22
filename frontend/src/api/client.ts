@@ -195,6 +195,21 @@ export const RefreshResponseSchema = z.discriminatedUnion("ran", [
 ]);
 export type RefreshResponse = z.infer<typeof RefreshResponseSchema>;
 
+/** `POST /admin/repos` request body. */
+export const ImportRepoRequestSchema = z.object({
+  owner: z.string().min(1),
+  name: z.string().min(1),
+});
+export type ImportRepoRequest = z.infer<typeof ImportRepoRequestSchema>;
+
+/** `POST /admin/repos` response body. */
+export const ImportRepoResponseSchema = z.object({
+  org_id: uuid,
+  repo_id: uuid,
+  created: z.boolean(),
+});
+export type ImportRepoResponse = z.infer<typeof ImportRepoResponseSchema>;
+
 export const SetHomeOrgRequestSchema = z.object({
   user_id: uuid,
   org_id: uuid,
@@ -1614,6 +1629,19 @@ export class DevPulseApi {
       undefined,
       RefreshResponseSchema,
     );
+  }
+
+  /**
+   * `POST /admin/repos` — register a new GitHub repo with dev-pulse.
+   *
+   * Mirrors the CLI `dev-pulse add-repo` flow: dp-rest resolves the
+   * repo via GitHub's `GET /repos/{owner}/{name}`, upserts the
+   * owning org + repo rows, and returns whether `dp_repos` had to
+   * mint a fresh row (`created: true`) or already had one
+   * (`created: false`).
+   */
+  async adminImportRepo(req: ImportRepoRequest): Promise<ImportRepoResponse> {
+    return this.postJson("/admin/repos", req, ImportRepoResponseSchema);
   }
 
   /** `GET /admin/runs?limit=&offset=` — paginated run log. */

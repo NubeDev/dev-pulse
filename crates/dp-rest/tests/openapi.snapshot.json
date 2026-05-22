@@ -57,6 +57,44 @@
         }
       }
     },
+    "/admin/repos": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "`POST /admin/repos` — operator-triggered repo registration.",
+        "description": "Mirrors the CLI `dev-pulse add-repo` flow: resolve the repo via\nGitHub's `GET /repos/{owner}/{name}`, upsert one `dp_orgs` row\nfor the owner, then one `dp_repos` row. Returns whether the\nrepo row was newly created.\n\nAudit: writes [`audit::ADMIN_REPO_IMPORT`] with target\n`\"repo:<owner>/<name>\"`.",
+        "operationId": "import_repo",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportRepoRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Repo registered (or already present)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportRepoResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed"
+          },
+          "404": {
+            "description": "GitHub repo not found"
+          }
+        }
+      }
+    },
     "/admin/runs": {
       "get": {
         "tags": [
@@ -4449,6 +4487,10 @@
             "format": "int64",
             "description": "CAS token — the project's observed `version`. Required\nwhen `project_id` is set and `view_id` is unset (project-\nlevel attach mutates the project row); ignored otherwise."
           },
+          "local": {
+            "type": "boolean",
+            "description": "**Local-only mode** (SCOPE.md §4.1 amendment). When `true`\nthe handler skips the GitHub call entirely and creates the\nrow directly in `dp_issues` with `is_local = TRUE` and a\nsynthetic negative `number` / `github_id`. The\n`issues_write` install-permission check is bypassed (no\nGitHub-side write happens); the row is still scoped to the\nchosen `repo_id` (for project-membership / org-scope\nfilters) but is invisible on github.com. Default `false`\npreserves the historical \"create on GitHub\" behaviour."
+          },
           "project_id": {
             "type": [
               "string",
@@ -4923,6 +4965,49 @@
           }
         }
       },
+      "ImportRepoRequest": {
+        "type": "object",
+        "description": "Request body for `POST /admin/repos`.",
+        "required": [
+          "owner",
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Repository name (without the owner prefix)."
+          },
+          "owner": {
+            "type": "string",
+            "description": "GitHub owner login (org or user)."
+          }
+        }
+      },
+      "ImportRepoResponse": {
+        "type": "object",
+        "description": "Response body for `POST /admin/repos`.",
+        "required": [
+          "org_id",
+          "repo_id",
+          "created"
+        ],
+        "properties": {
+          "created": {
+            "type": "boolean",
+            "description": "`true` if the repo row did not previously exist in `dp_repos`."
+          },
+          "org_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Local org id (newly minted or pre-existing)."
+          },
+          "repo_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Local repo id (newly minted or pre-existing)."
+          }
+        }
+      },
       "InboxStatusDto": {
         "type": "string",
         "description": "Wire form of [`InboxStatus`]. Lower-case to match the SQL form\ndeclared in migration 0011.",
@@ -5069,6 +5154,10 @@
             "type": "string",
             "format": "uuid",
             "description": "Internal id."
+          },
+          "is_local": {
+            "type": "boolean",
+            "description": "`true` when this issue exists only in dev-pulse and was not\npushed to GitHub (SCOPE.md §4.1 amendment). The frontend\nhides the repo badge for local-only rows and tints them so\nthey read as \"local note\" rather than \"GitHub issue\"."
           },
           "labels": {
             "type": "array",

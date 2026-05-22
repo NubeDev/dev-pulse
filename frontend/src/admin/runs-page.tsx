@@ -25,7 +25,7 @@
  */
 
 import { Fragment, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -36,10 +36,12 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 
 import { api } from "../api/client.js";
-import type { FetchRunDto } from "../api/client.js";
+import type { FetchRunDto, ImportRepoResponse } from "../api/client.js";
 import { PageHeading } from "../components/page-heading.jsx";
 import {
   Table,
@@ -125,9 +127,47 @@ function formatTs(iso: string | null | undefined): string {
 }
 
 export function RunsPage(): JSX.Element {
+  const qc = useQueryClient();
   const [page, setPage] = useState(0);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const offset = page * PAGE_SIZE;
+
+  // -- Import repo form state -----------------------------------------------
+  const [importOwner, setImportOwner] = useState("");
+  const [importName, setImportName] = useState("");
+  const [importResult, setImportResult] = useState<ImportRepoResponse | null>(
+    null,
+  );
+  const [importError, setImportError] = useState<string | null>(null);
+
+  const importRepo = useMutation({
+    mutationFn: (req: { owner: string; name: string }) =>
+      api.adminImportRepo(req),
+    onSuccess: (data) => {
+      setImportResult(data);
+      setImportError(null);
+      // A fresh repo onboarded → the runs log will pick up the next
+      // reconciler tick covering it. Invalidate so the table refetches.
+      void qc.invalidateQueries({ queryKey: ["admin-runs"] });
+    },
+    onError: (err) => {
+      setImportError(err instanceof Error ? err.message : String(err));
+      setImportResult(null);
+    },
+  });
+
+  function submitImport(e: React.FormEvent): void {
+    e.preventDefault();
+    setImportError(null);
+    setImportResult(null);
+    const owner = importOwner.trim();
+    const name = importName.trim();
+    if (!owner || !name) {
+      setImportError("Both owner and name are required.");
+      return;
+    }
+    importRepo.mutate({ owner, name });
+  }
 
   function toggleExpanded(id: string): void {
     setExpanded((prev) => {
@@ -186,6 +226,80 @@ export function RunsPage(): JSX.Element {
           </>
         }
       />
+
+      <Card data-testid="import-repo-card">
+        <CardHeader>
+          <CardTitle className="text-lg font-medium">Import repo</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <form
+            className="grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end"
+            onSubmit={submitImport}
+          >
+            <div className="grid gap-1.5">
+              <Label htmlFor="import-repo-owner">Owner</Label>
+              <Input
+                id="import-repo-owner"
+                data-testid="import-repo-owner"
+                placeholder="NubeIO"
+                value={importOwner}
+                onChange={(e) => setImportOwner(e.target.value)}
+                disabled={importRepo.isPending}
+                autoComplete="off"
+              />
+            </div>
+            <div className="grid gap-1.5">
+              <Label htmlFor="import-repo-name">Repo name</Label>
+              <Input
+                id="import-repo-name"
+                data-testid="import-repo-name"
+                placeholder="zc-daikin"
+                value={importName}
+                onChange={(e) => setImportName(e.target.value)}
+                disabled={importRepo.isPending}
+                autoComplete="off"
+              />
+            </div>
+            <Button
+              type="submit"
+              data-testid="import-repo-submit"
+              disabled={importRepo.isPending}
+            >
+              {importRepo.isPending ? "Importing…" : "Import repo"}
+            </Button>
+          </form>
+
+          {importError ? (
+            <Alert
+              variant="destructive"
+              data-testid="import-repo-error"
+              className="mt-4"
+            >
+              <AlertTitle>Import failed</AlertTitle>
+              <AlertDescription>{importError}</AlertDescription>
+            </Alert>
+          ) : importResult ? (
+            <Alert
+              data-testid="import-repo-result"
+              data-created={importResult.created}
+              className="mt-4"
+              aria-live="polite"
+            >
+              <AlertTitle>
+                {importResult.created
+                  ? "Repo registered."
+                  : "Repo already registered."}
+              </AlertTitle>
+              <AlertDescription>
+                <code className="font-mono text-xs">
+                  org_id={importResult.org_id.slice(0, 8)} · repo_id=
+                  {importResult.repo_id.slice(0, 8)}
+                </code>
+              </AlertDescription>
+            </Alert>
+          ) : null}
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>

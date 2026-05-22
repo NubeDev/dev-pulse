@@ -123,6 +123,11 @@ pub const DATE_SET: &str = "date.set";
 /// `repo.sync_requested` — operator-triggered per-repo reconciler
 /// tick (`POST /repos/{id}/sync`).
 pub const REPO_SYNC_REQUESTED: &str = "repo.sync_requested";
+/// `admin.repo_import` — operator-triggered repo registration via
+/// `POST /admin/repos`. Target carries `repo:<owner>/<name>` so the
+/// audit log can answer "when was this repo onboarded?" with one
+/// query, even before any reconciler tick fires.
+pub const ADMIN_REPO_IMPORT: &str = "admin.repo_import";
 /// `inbox.bulk_seen` — bulk variant of [`POST /me/inbox/seen`]
 /// invoked via the slice-2 `POST /me/inbox/bulk` endpoint with
 /// `op = mark_all_seen`. Audit target carries the result count.

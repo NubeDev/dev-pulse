@@ -90,6 +90,7 @@ async fn webhook_github_stub() {}
         crate::directory::set_home_org,
         // Admin (stage 5).
         crate::admin::refresh,
+        crate::admin::import_repo,
         crate::admin::list_runs,
         crate::admin::anonymise_user,
         crate::admin::export_user,
@@ -204,6 +205,8 @@ async fn webhook_github_stub() {}
         crate::directory::SetHomeOrgRequest,
         // Admin.
         crate::admin::RefreshResponse,
+        crate::admin::ImportRepoRequest,
+        crate::admin::ImportRepoResponse,
         crate::admin::FetchRunDto,
         crate::admin::FetchRunErrorSampleDto,
         crate::admin::UserExport,

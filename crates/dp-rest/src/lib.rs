@@ -58,9 +58,10 @@ pub mod state;
 pub mod tags;
 
 pub use admin::{
-    admin_router, anonymise_user, export_user, list_runs, AdminState, ExportEvent, FetchRunDto, FetchRunErrorSampleDto,
-    MembershipDto, RefreshQuery, RefreshResponse, RunsQuery, UserExport, EXPORT_PAGE_SIZE,
-    RUNS_DEFAULT_LIMIT, RUNS_MAX_LIMIT,
+    admin_router, anonymise_user, export_user, import_repo, list_runs, AdminState, ExportEvent,
+    FetchRunDto, FetchRunErrorSampleDto, ImportRepoRequest, ImportRepoResponse, MembershipDto,
+    RefreshQuery, RefreshResponse, RunsQuery, UserExport, EXPORT_PAGE_SIZE, RUNS_DEFAULT_LIMIT,
+    RUNS_MAX_LIMIT,
 };
 pub use app_permissions::{
     app_manifest_permissions, app_permissions_router, list_app_install_banner,

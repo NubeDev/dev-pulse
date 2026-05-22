@@ -34,7 +34,8 @@ use axum::{
 use bytes::Bytes;
 use dp_domain::event::ActorRole;
 use dp_domain::fetch::{FetchRun, FetchRunErrorSample, FetchRunKind};
-use dp_domain::store::{EventActorRow, Store, StoreError};
+use dp_domain::store::{EventActorRow, RepoListFilter, Store, StoreError};
+use dp_fetcher::client::{ClientError, Fetched};
 use dp_fetcher::reconciler::{Scheduler, Scope};
 use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
@@ -630,6 +631,160 @@ pub async fn export_user(
 }
 
 // ---------------------------------------------------------------------------
+// POST /admin/repos — operator-triggered repo registration
+// ---------------------------------------------------------------------------
+
+/// Request body for `POST /admin/repos`.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ImportRepoRequest {
+    /// GitHub owner login (org or user).
+    pub owner: String,
+    /// Repository name (without the owner prefix).
+    pub name: String,
+}
+
+/// Response body for `POST /admin/repos`.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ImportRepoResponse {
+    /// Local org id (newly minted or pre-existing).
+    pub org_id: Uuid,
+    /// Local repo id (newly minted or pre-existing).
+    pub repo_id: Uuid,
+    /// `true` if the repo row did not previously exist in `dp_repos`.
+    pub created: bool,
+}
+
+/// Minimal projection of the GitHub `GET /repos/{owner}/{name}`
+/// payload — just the fields needed to upsert one row each into
+/// `dp_orgs` and `dp_repos`. Mirrors the `GhRepo` shape the CLI
+/// `add-repo` command in `crates/dev-pulse/src/main.rs` uses.
+#[derive(Debug, Deserialize)]
+struct GhImportRepo {
+    id: i64,
+    name: String,
+    owner: GhImportOwner,
+}
+
+#[derive(Debug, Deserialize)]
+struct GhImportOwner {
+    id: i64,
+    login: String,
+    #[serde(default)]
+    name: Option<String>,
+}
+
+/// `POST /admin/repos` — operator-triggered repo registration.
+///
+/// Mirrors the CLI `dev-pulse add-repo` flow: resolve the repo via
+/// GitHub's `GET /repos/{owner}/{name}`, upsert one `dp_orgs` row
+/// for the owner, then one `dp_repos` row. Returns whether the
+/// repo row was newly created.
+///
+/// Audit: writes [`audit::ADMIN_REPO_IMPORT`] with target
+/// `"repo:<owner>/<name>"`.
+#[utoipa::path(
+    post,
+    path = "/admin/repos",
+    request_body = ImportRepoRequest,
+    responses(
+        (status = 200, description = "Repo registered (or already present)", body = ImportRepoResponse),
+        (status = 400, description = "Validation failed"),
+        (status = 404, description = "GitHub repo not found"),
+    ),
+    tag = "admin",
+)]
+pub async fn import_repo(
+    State(state): State<Arc<AdminState>>,
+    Extension(principal): Extension<Principal>,
+    Json(body): Json<ImportRepoRequest>,
+) -> Result<Json<ImportRepoResponse>, ApiError> {
+    let owner = body.owner.trim();
+    let name = body.name.trim();
+    if owner.is_empty() || name.is_empty() {
+        return Err(ApiError::BadRequest {
+            code: "invalid_repo_spec",
+            message: "owner and name must be non-empty".to_string(),
+        });
+    }
+
+    let path = format!("/repos/{owner}/{name}");
+    let client = state.scheduler.reconciler().client();
+    let fetched = client.get_conditional::<GhImportRepo>(&path, None).await;
+    let repo = match fetched {
+        Ok(Fetched::Ok { body, .. }) => body,
+        Ok(Fetched::NotModified { .. }) => {
+            // Unconditional GET should not produce a 304.
+            return Err(ApiError::BadRequest {
+                code: "github_unexpected_304",
+                message: "GitHub returned 304 to an unconditional GET".to_string(),
+            });
+        }
+        Err(ClientError::Client { status: 404, .. }) => {
+            return Err(ApiError::NotFound {
+                code: "github_repo_not_found",
+                message: format!("GitHub has no repo {owner}/{name}"),
+            });
+        }
+        Err(e) => {
+            tracing::error!(error = %e, %owner, %name, "github repo lookup failed");
+            return Err(ApiError::BadRequest {
+                code: "github_lookup_failed",
+                message: format!("GitHub lookup failed: {e}"),
+            });
+        }
+    };
+
+    // Upsert the owning org first so the FK on dp_repos.org_id holds.
+    let org_row = dp_domain::Org {
+        id: Uuid::new_v4(),
+        github_id: repo.owner.id,
+        login: repo.owner.login.clone(),
+        name: repo.owner.name.clone(),
+    };
+    let saved_org = state.store.upsert_org(&org_row).await?;
+
+    // Detect whether the repo row already existed so the response's
+    // `created` field is meaningful. `list_repos` with a name-search
+    // is a cheap probe — we filter the result to an exact, case-
+    // insensitive name match within the resolved org.
+    let existing = state
+        .store
+        .list_repos(&RepoListFilter {
+            org_id: Some(saved_org.id),
+            q: Some(repo.name.clone()),
+            limit: 50,
+            offset: 0,
+        })
+        .await
+        .unwrap_or_default();
+    let already_present = existing
+        .iter()
+        .any(|r| r.name.eq_ignore_ascii_case(&repo.name));
+
+    let repo_row = dp_domain::Repo {
+        id: Uuid::new_v4(),
+        org_id: saved_org.id,
+        github_id: repo.id,
+        name: repo.name.clone(),
+    };
+    let saved_repo = state.store.upsert_repo(&repo_row).await?;
+
+    audit::record(
+        state.store.as_ref(),
+        principal.actor_user_id,
+        audit::ADMIN_REPO_IMPORT,
+        format!("repo:{owner}/{name}"),
+    )
+    .await?;
+
+    Ok(Json(ImportRepoResponse {
+        org_id: saved_org.id,
+        repo_id: saved_repo.id,
+        created: !already_present,
+    }))
+}
+
+// ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
 
@@ -646,6 +801,14 @@ pub fn admin_router(state: Arc<AdminState>) -> Router {
     Router::new()
         .merge(with_permission(
             Router::new().route("/admin/refresh", post(refresh)),
+            "admin",
+            "refresh",
+        ))
+        .merge(with_permission(
+            // Repo import rides the same `refresh` action — both
+            // are operator-triggered writes that re-shape the
+            // reconciler's target set.
+            Router::new().route("/admin/repos", post(import_repo)),
             "admin",
             "refresh",
         ))
@@ -1558,6 +1721,66 @@ mod tests {
             store.audit.lock().unwrap()[0].action,
             super::audit::USER_EXPORT
         );
+    }
+
+    // -----------------------------------------------------------------
+    // POST /admin/repos
+    // -----------------------------------------------------------------
+
+    #[tokio::test]
+    async fn admin_repos_rejects_empty_owner_or_name() {
+        let store = Arc::new(MemStore::default());
+        let app = build_app(
+            store.clone(),
+            Principal {
+                actor_user_id: Uuid::new_v4(),
+            },
+        );
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/admin/repos")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"owner":"","name":"x"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        // Validation failure must not write an audit row.
+        assert!(store.audit_rows().is_empty());
+    }
+
+    #[tokio::test]
+    async fn admin_repos_returns_bad_request_when_github_unreachable() {
+        // The shared test client points at `http://127.0.0.1:1` so any
+        // real network call fails — we use that to verify the handler
+        // surfaces a `github_lookup_failed` 400 rather than a 500, and
+        // does not write an audit row for a failed lookup.
+        let store = Arc::new(MemStore::default());
+        let app = build_app(
+            store.clone(),
+            Principal {
+                actor_user_id: Uuid::new_v4(),
+            },
+        );
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/admin/repos")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"owner":"NubeIO","name":"zc-daikin"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(resp.into_body(), 1 << 16).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["code"], "github_lookup_failed");
+        assert!(store.audit_rows().is_empty());
     }
 
     #[test]

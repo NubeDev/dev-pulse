@@ -215,6 +215,14 @@ impl Reconciler {
         self
     }
 
+    /// Borrow the wrapped GitHub client so callers (e.g. the
+    /// `POST /admin/repos` import handler in `dp-rest`) can issue
+    /// ad-hoc REST calls that share the same per-process budget /
+    /// auth as the reconciler tick.
+    pub fn client(&self) -> Arc<Client> {
+        self.client.clone()
+    }
+
     /// Run one reconciler tick. Same entrypoint the scheduler, the
     /// `fetch-now` CLI, and `POST /admin/refresh` call — Stage 8's
     /// shared seam.
@@ -673,6 +681,14 @@ impl Scheduler {
             tick_interval,
             current: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Borrow the underlying reconciler. Used by `dp-rest`'s
+    /// `POST /admin/repos` import handler so it can reach the
+    /// shared GitHub client without taking an extra Arc through
+    /// the composition root.
+    pub fn reconciler(&self) -> &Arc<Reconciler> {
+        &self.reconciler
     }
 
     /// Try to trigger a `do_tick(scope)` run now, joining the
