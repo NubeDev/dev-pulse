@@ -66,6 +66,7 @@ import {
   useAddIssuesToProject,
   useCreateIssue,
   useProjectRepos,
+  useProjectViews,
 } from "./use-projects-data.js";
 
 export interface AddIssuesDialogProps {
@@ -91,16 +92,42 @@ export function AddIssuesDialog({
   activeViewName,
 }: AddIssuesDialogProps): JSX.Element {
   const [tab, setTab] = useState<"existing" | "new">("existing");
-  // Reset to the default tab on every reopen so users don't land
-  // on a stale selection from a prior session.
+  // The destination tab the issue(s) will be attached to. `null`
+  // = "All" (project-level membership, CAS-gated on
+  // `project.version`). Any other value = the named saved-view's
+  // membership table only (no project-level mutation). Seeded
+  // from `activeViewId` so opening the dialog from a view tab
+  // pre-selects that tab, and the user can change destination
+  // from the picker without closing.
+  const [destinationViewId, setDestinationViewId] = useState<string | null>(
+    activeViewId ?? null,
+  );
+
+  // Available saved views for the destination picker. Empty list
+  // collapses the picker entirely (nothing to pick between).
+  const viewsQ = useProjectViews(project.id);
+  const views = viewsQ.data ?? [];
+
+  // Reset to the default tab + destination on every reopen so
+  // users don't land on stale selections from a prior session.
   useEffect(() => {
-    if (open) setTab("existing");
-  }, [open]);
+    if (open) {
+      setTab("existing");
+      setDestinationViewId(activeViewId ?? null);
+    }
+  }, [open, activeViewId]);
 
   const close = (): void => onOpenChange(false);
 
-  const destination = activeViewId
-    ? `“${activeViewName ?? "this tab"}”`
+  // Resolve the chosen destination's display name from the live
+  // views list (so renames inside the same session are reflected)
+  // and fall back to `activeViewName` only when the views query
+  // hasn't completed yet.
+  const selectedView = destinationViewId
+    ? views.find((v) => v.id === destinationViewId)
+    : undefined;
+  const destinationLabel = destinationViewId
+    ? `“${selectedView?.name ?? activeViewName ?? "this tab"}”`
     : project.name;
 
   return (
@@ -116,13 +143,46 @@ export function AddIssuesDialog({
         data-testid="add-issue-dialog"
       >
         <DialogHeader>
-          <DialogTitle>Add issue to {destination}</DialogTitle>
+          <DialogTitle>Add issue to {destinationLabel}</DialogTitle>
           <DialogDescription>
-            {activeViewId
+            {destinationViewId
               ? "The issue will appear in this tab only."
               : "The issue will appear in this project."}
           </DialogDescription>
         </DialogHeader>
+
+        {views.length > 0 && (
+          <div className="flex items-center gap-2">
+            <Label
+              htmlFor="add-issue-destination"
+              className="text-xs text-muted-foreground"
+            >
+              Destination
+            </Label>
+            <Select
+              value={destinationViewId ?? "__all__"}
+              onValueChange={(v) =>
+                setDestinationViewId(v === "__all__" ? null : v)
+              }
+            >
+              <SelectTrigger
+                id="add-issue-destination"
+                className="w-full"
+                data-testid="add-issue-destination"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__all__">All (project)</SelectItem>
+                {views.map((v) => (
+                  <SelectItem key={v.id} value={v.id}>
+                    {v.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        )}
 
         <Tabs
           value={tab}
@@ -143,7 +203,7 @@ export function AddIssuesDialog({
           >
             <ExistingPanel
               project={project}
-              activeViewId={activeViewId ?? null}
+              activeViewId={destinationViewId}
               onClose={close}
             />
           </TabsContent>
@@ -153,7 +213,7 @@ export function AddIssuesDialog({
           >
             <NewPanel
               project={project}
-              activeViewId={activeViewId ?? null}
+              activeViewId={destinationViewId}
               onClose={close}
             />
           </TabsContent>
@@ -372,9 +432,19 @@ function AddIssueRow({
       >
         {row.state}
       </Badge>
-      <span className="shrink-0 font-mono text-xs text-muted-foreground tabular-nums">
-        {row.repo_slug ?? "—"}#{row.number}
-      </span>
+      {row.is_local ? (
+        <Badge
+          variant="outline"
+          className="shrink-0 border-amber-500/60 px-1.5 py-0 text-[10px] uppercase text-amber-700 dark:text-amber-300"
+          title="Local-only note (not synced to GitHub)"
+        >
+          local
+        </Badge>
+      ) : (
+        <span className="shrink-0 font-mono text-xs text-muted-foreground tabular-nums">
+          {row.repo_slug ?? "—"}#{row.number}
+        </span>
+      )}
       <span className="flex-1 truncate">{row.title}</span>
     </label>
   );
@@ -415,19 +485,30 @@ function NewPanel({
     repoId.length > 0 &&
     title.trim().length > 0;
 
-  const onSubmit = (e: React.FormEvent): void => {
-    e.preventDefault();
+  // Two-button submit: `local` short-circuits the GitHub POST on
+  // the backend. The repo picker still applies (the issue is
+  // org/repo-scoped for permissions and project membership) but
+  // the row carries `is_local = true` and the table hides the
+  // repo badge for it.
+  const submit = (local: boolean): void => {
     if (!canSubmit) return;
     create.mutate({
       repo_id: repoId,
       title: title.trim(),
       body: body.trim() ? body.trim() : undefined,
       project_id: project.id,
-      // View-only attach when a tab is active; otherwise project-
-      // level attach with CAS via `expected_version`.
       view_id: activeViewId ?? undefined,
       expected_version: activeViewId ? undefined : project.version,
+      local,
     });
+  };
+
+  const onSubmit = (e: React.FormEvent): void => {
+    e.preventDefault();
+    // Default form submit (Enter key in the title field) = local
+    // create. The "Create and sync to GitHub" button is an
+    // explicit opt-in.
+    submit(true);
   };
 
   if (create.isSuccess) {
@@ -537,11 +618,23 @@ function NewPanel({
           Cancel
         </Button>
         <Button
-          type="submit"
-          data-testid="add-issue-new-submit"
+          type="button"
+          variant="secondary"
+          data-testid="add-issue-new-submit-local"
+          onClick={() => submit(true)}
           disabled={!canSubmit}
+          title="Create as a local-only note (not pushed to GitHub)"
         >
-          {create.isPending ? "Creating…" : "Create issue"}
+          {create.isPending ? "Creating…" : "Create"}
+        </Button>
+        <Button
+          type="button"
+          data-testid="add-issue-new-submit"
+          onClick={() => submit(false)}
+          disabled={!canSubmit}
+          title="Create on GitHub and mirror locally"
+        >
+          {create.isPending ? "Creating…" : "Create and sync to GitHub"}
         </Button>
       </DialogFooter>
     </form>

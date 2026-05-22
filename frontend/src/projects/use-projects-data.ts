@@ -356,13 +356,43 @@ export function useDeleteProjectView(projectId: string) {
   });
 }
 
-/** `POST /projects/{id}/views/reorder` — atomic position rewrite. */
+/** `POST /projects/{id}/views/reorder` — atomic position rewrite.
+ *
+ *  Optimistically reorders the cached list so the tab strip snaps
+ *  to its new layout the instant the user drops a tab, instead of
+ *  waiting for the server round-trip + refetch (which felt like
+ *  "nothing happened" → "refresh and it's there"). On error we
+ *  roll back to the previous snapshot. */
 export function useReorderProjectViews(projectId: string) {
   const qc = useQueryClient();
-  return useMutation<ProjectViewDto[], Error, string[]>({
+  return useMutation<
+    ProjectViewDto[],
+    Error,
+    string[],
+    { previous: ProjectViewDto[] | undefined }
+  >({
     mutationFn: (orderedIds) =>
       api.reorderProjectViews(projectId, orderedIds),
-    onSuccess: () => {
+    onMutate: async (orderedIds) => {
+      const key = projectsKeys.views(projectId);
+      await qc.cancelQueries({ queryKey: key });
+      const previous = qc.getQueryData<ProjectViewDto[]>(key);
+      if (previous) {
+        const byId = new Map(previous.map((v) => [v.id, v]));
+        const next = orderedIds
+          .map((id) => byId.get(id))
+          .filter((v): v is ProjectViewDto => v !== undefined)
+          .map((v, idx) => ({ ...v, position: idx }));
+        qc.setQueryData<ProjectViewDto[]>(key, next);
+      }
+      return { previous };
+    },
+    onError: (_err, _orderedIds, ctx) => {
+      if (ctx?.previous) {
+        qc.setQueryData(projectsKeys.views(projectId), ctx.previous);
+      }
+    },
+    onSettled: () => {
       qc.invalidateQueries({ queryKey: projectsKeys.views(projectId) });
     },
   });

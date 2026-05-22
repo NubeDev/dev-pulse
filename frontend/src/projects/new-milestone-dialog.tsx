@@ -58,12 +58,18 @@ export interface NewMilestoneDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   projectId: string;
+  /** Optional CTA wired into the "No linked repos" warning. When
+   *  provided, the alert renders a `Link a repo` button that
+   *  closes this dialog and invokes the callback (typically the
+   *  parent opens its `<ManageReposDialog>`). */
+  onRequestLinkRepo?: () => void;
 }
 
 export function NewMilestoneDialog({
   open,
   onOpenChange,
   projectId,
+  onRequestLinkRepo,
 }: NewMilestoneDialogProps): JSX.Element {
   const repoLinks = useProjectRepos(projectId);
   const create = useCreateProjectMilestone(projectId);
@@ -149,8 +155,26 @@ export function NewMilestoneDialog({
         {noRepos && (
           <Alert variant="destructive">
             <AlertTitle>No linked repos</AlertTitle>
-            <AlertDescription>
-              Link a repo to this project before creating a milestone.
+            <AlertDescription className="flex flex-col items-start gap-2">
+              <span>
+                Link a repo to this project before creating a
+                milestone — milestones are created on GitHub first
+                and mirrored back, so dev-pulse needs to know where
+                to write.
+              </span>
+              {onRequestLinkRepo && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    onOpenChange(false);
+                    onRequestLinkRepo();
+                  }}
+                  data-testid="new-milestone-link-repo"
+                >
+                  Link a repo…
+                </Button>
+              )}
             </AlertDescription>
           </Alert>
         )}

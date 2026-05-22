@@ -505,6 +505,12 @@ export function useUpdateIssue(id: string) {
     },
     onSuccess: (updated) => {
       qc.setQueryData(workflowKeys.issue(updated.id), updated);
+      // The row also appears in the workflow list pane and in
+      // every project / view it's a member of — invalidate both
+      // surfaces so the state / title / version badges refresh
+      // without a manual page reload.
+      void qc.invalidateQueries({ queryKey: ["workflow"] });
+      void qc.invalidateQueries({ queryKey: ["projects", "issues"] });
     },
   });
 }
@@ -547,6 +553,7 @@ export function useToggleIssueState() {
     onSuccess: (updated) => {
       qc.setQueryData(workflowKeys.issue(updated.id), updated);
       void qc.invalidateQueries({ queryKey: ["workflow"] });
+      void qc.invalidateQueries({ queryKey: ["projects", "issues"] });
     },
   });
 }

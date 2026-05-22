@@ -813,8 +813,64 @@ pub trait Store: Send + Sync {
             version: 1,
             github_node_id: upsert.github_node_id.clone(),
             updated_at: upsert.updated_at,
+            is_local: false,
         };
         Ok((issue, IssueUpsertOutcome::Skipped))
+    }
+
+    /// Create a brand-new **local-only** issue (SCOPE.md §4.1
+    /// amendment). Unlike [`Self::upsert_issue_from_github`] this
+    /// path does *not* go through GitHub at all: the row is
+    /// inserted directly with `is_local = TRUE` and synthetic
+    /// negative `github_id` / `number` allocated from the per-repo
+    /// `dp_repos.local_issue_counter`. Returns the materialised
+    /// `Issue` so the caller (REST handler) can echo it back and
+    /// attach it to the project / view in the same request.
+    ///
+    /// Default impl returns
+    /// [`StoreError::Invalid`] so in-memory fakes that don't
+    /// model this surface compile without forcing every test
+    /// fixture to stub it.
+    async fn create_local_issue(
+        &self,
+        _org_id: Uuid,
+        _repo_id: Uuid,
+        _title: &str,
+        _body: Option<&str>,
+    ) -> Result<Issue, StoreError> {
+        Err(StoreError::Invalid(
+            "create_local_issue not implemented by this Store".into(),
+        ))
+    }
+
+    /// SCOPE.md §4.1.1 — direct field update for a local-only
+    /// issue. CAS-gated on `expected_version` (the dp_issues row's
+    /// `version` the UI rendered the form against). Any `Some(_)`
+    /// field on the patch is written; `None` lanes leave the
+    /// existing value untouched. State transitions accept
+    /// `"open"` / `"closed"` strings and stamp `closed_at`
+    /// accordingly. Returns the post-write [`Issue`].
+    ///
+    /// Returns [`StoreError::Conflict`] on stale `expected_version`
+    /// — the REST handler maps this to `409 stale_local_version`
+    /// so the UI's CAS surface stays the same as for GitHub-backed
+    /// rows.
+    ///
+    /// Default impl is the same not-implemented stub as
+    /// [`Self::create_local_issue`] for the same reasons.
+    async fn update_local_issue(
+        &self,
+        _issue_id: Uuid,
+        _expected_version: i64,
+        _title: Option<&str>,
+        _body: Option<Option<&str>>,
+        _state: Option<&str>,
+        _labels: Option<&[String]>,
+        _assignees: Option<&[String]>,
+    ) -> Result<Issue, StoreError> {
+        Err(StoreError::Invalid(
+            "update_local_issue not implemented by this Store".into(),
+        ))
     }
 
     // ---- per-user inbox (triage spine, slice 1) -------------------

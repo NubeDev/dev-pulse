@@ -367,6 +367,17 @@ pub struct CreateIssueRequest {
     /// level attach mutates the project row); ignored otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_version: Option<i64>,
+    /// **Local-only mode** (SCOPE.md §4.1 amendment). When `true`
+    /// the handler skips the GitHub call entirely and creates the
+    /// row directly in `dp_issues` with `is_local = TRUE` and a
+    /// synthetic negative `number` / `github_id`. The
+    /// `issues_write` install-permission check is bypassed (no
+    /// GitHub-side write happens); the row is still scoped to the
+    /// chosen `repo_id` (for project-membership / org-scope
+    /// filters) but is invisible on github.com. Default `false`
+    /// preserves the historical "create on GitHub" behaviour.
+    #[serde(default)]
+    pub local: bool,
 }
 
 /// Acknowledgement body for `POST /issues`. Returns the GitHub-side
@@ -483,7 +494,13 @@ pub async fn create_issue(
     Json(body): Json<CreateIssueRequest>,
 ) -> Result<Json<CreateIssueResponse>, ApiError> {
     let (org, repo) = resolve_repo(&*state.store, body.repo_id).await?;
-    require_issues_write(&*state.store, &state.github_app, &org).await?;
+    // Local-only creates never touch GitHub, so the install
+    // write-permission check is skipped (an org installed read-
+    // only can still hold local issues — they're our row, not
+    // theirs).
+    if !body.local {
+        require_issues_write(&*state.store, &state.github_app, &org).await?;
+    }
 
     // Validate attach inputs up-front so we don't burn a GitHub
     // POST on a request that can't honour its own attach contract.
@@ -505,53 +522,63 @@ pub async fn create_issue(
         });
     }
 
-    let (number, payload) = state
-        .issue_writer
-        .create_issue(&org.login, &repo.name, &body.title, body.body.as_deref())
-        .await
-        .map_err(IssueWriteError::into_api_error)?;
+    // Branch — local-only insert vs. GitHub-backed POST.
+    let (number, local_issue_id): (i64, Option<Uuid>) = if body.local {
+        let issue = state
+            .store
+            .create_local_issue(org.id, repo.id, &body.title, body.body.as_deref())
+            .await?;
+        (issue.number, Some(issue.id))
+    } else {
+        let (number, payload) = state
+            .issue_writer
+            .create_issue(&org.login, &repo.name, &body.title, body.body.as_deref())
+            .await
+            .map_err(IssueWriteError::into_api_error)?;
 
-    // Best-effort local upsert. If the backend didn't surface a
-    // payload (unconfigured stub, fake) or the parse / write
-    // tripped, the audit row + GitHub-side create still happened;
-    // the next sync reconciles. We just lose the in-request attach
-    // step in that case.
-    let local_issue_id: Option<Uuid> = if let Some(value) = payload {
-        match dp_fetcher::worker::handlers::parse_issue_upsert(
-            org.id,
-            repo.id,
-            &value,
-        ) {
-            Ok(upsert) => match state
-                .store
-                .upsert_issue_from_github(&upsert, chrono::Duration::zero())
-                .await
-            {
-                Ok((issue, _outcome)) => Some(issue.id),
+        // Best-effort local upsert. If the backend didn't surface a
+        // payload (unconfigured stub, fake) or the parse / write
+        // tripped, the audit row + GitHub-side create still happened;
+        // the next sync reconciles. We just lose the in-request attach
+        // step in that case.
+        let local_issue_id: Option<Uuid> = if let Some(value) = payload {
+            match dp_fetcher::worker::handlers::parse_issue_upsert(
+                org.id,
+                repo.id,
+                &value,
+            ) {
+                Ok(upsert) => match state
+                    .store
+                    .upsert_issue_from_github(&upsert, chrono::Duration::zero())
+                    .await
+                {
+                    Ok((issue, _outcome)) => Some(issue.id),
+                    Err(e) => {
+                        tracing::warn!(
+                            target: "dp_rest::issues_write",
+                            repo_id = %body.repo_id,
+                            number,
+                            error = %e,
+                            "post-create local upsert failed; row will reconcile on next webhook",
+                        );
+                        None
+                    }
+                },
                 Err(e) => {
                     tracing::warn!(
                         target: "dp_rest::issues_write",
                         repo_id = %body.repo_id,
                         number,
                         error = %e,
-                        "post-create local upsert failed; row will reconcile on next webhook",
+                        "post-create parse of github payload failed; row will reconcile on next webhook",
                     );
                     None
                 }
-            },
-            Err(e) => {
-                tracing::warn!(
-                    target: "dp_rest::issues_write",
-                    repo_id = %body.repo_id,
-                    number,
-                    error = %e,
-                    "post-create parse of github payload failed; row will reconcile on next webhook",
-                );
-                None
             }
-        }
-    } else {
-        None
+        } else {
+            None
+        };
+        (number, local_issue_id)
     };
 
     // Optional attach. Only runs when the local row materialised —
@@ -640,6 +667,58 @@ pub async fn patch_issue(
             message: format!("no issue with id {id}"),
         })?;
     let (org, repo) = resolve_repo(&*state.store, issue.repo_id).await?;
+
+    // SCOPE.md §4.1.1 — local-only issues short-circuit the whole
+    // GitHub round-trip + pending_remote dance. We CAS on
+    // `expected_version` directly inside `update_local_issue` and
+    // record the same audit verb the regular path would.
+    if issue.is_local {
+        let op = patch_op(&body.patch);
+        let fresh = state
+            .store
+            .update_local_issue(
+                issue.id,
+                body.expected_version,
+                body.patch.title.as_deref(),
+                // `IssuePatch.body` cannot distinguish "clear" from
+                // "leave alone" — match the existing GitHub-bound
+                // path and treat `None` as "don't touch".
+                body.patch.body.as_deref().map(Some),
+                body.patch.state.as_deref(),
+                body.patch.labels.as_deref(),
+                body.patch.assignees.as_deref(),
+            )
+            .await
+            .map_err(|e| match e {
+                dp_domain::store::StoreError::Conflict(_) => {
+                    ApiError::StaleLocalVersion {
+                        issue_id: id,
+                        current_version: issue.version,
+                    }
+                }
+                other => other.into(),
+            })?;
+        let verb = match op {
+            IssueMutationOp::Close => audit::ISSUE_CLOSE,
+            IssueMutationOp::Reopen => audit::ISSUE_REOPEN,
+            // `patch_op` only ever emits Update/Close/Reopen;
+            // Create/Comment can't happen on the PATCH surface.
+            IssueMutationOp::Update
+            | IssueMutationOp::Comment
+            | IssueMutationOp::Create => audit::ISSUE_UPDATE,
+        };
+        audit::record(
+            &*state.store,
+            principal.actor_user_id,
+            verb,
+            format!("{}#{}", issue.repo_id, issue.number),
+        )
+        .await?;
+        let mut dto = IssueDto::from(fresh);
+        crate::issues_read::attach_repo_slug_one(&*state.store, &mut dto).await?;
+        return Ok(Json(dto));
+    }
+
     require_issues_write(&*state.store, &state.github_app, &org).await?;
     let op = patch_op(&body.patch);
     let slot = match acquire_issue_mutation_slot(
@@ -776,6 +855,20 @@ pub async fn create_comment(
             message: format!("no issue with id {id}"),
         })?;
     let (org, repo) = resolve_repo(&*state.store, issue.repo_id).await?;
+
+    // SCOPE.md §4.1.1 — local-only issues have no GitHub-side
+    // comment thread, and dev-pulse has no local-comment store
+    // (out of scope for the initial local-issue lane). Reject
+    // with a clear error rather than silently dropping the body
+    // or trying to push to GitHub.
+    if issue.is_local {
+        return Err(ApiError::BadRequest {
+            code: "local_issue_no_comments",
+            message:
+                "comments are not supported on local-only issues".into(),
+        });
+    }
+
     require_issues_write(&*state.store, &state.github_app, &org).await?;
     let slot = match acquire_issue_mutation_slot(
         &*state.store,
@@ -1522,6 +1615,7 @@ mod tests {
             version: 7,
             github_node_id: None,
             updated_at: Utc::now(),
+            is_local: false,
         };
         {
             let mut g = store.inner.lock().unwrap();

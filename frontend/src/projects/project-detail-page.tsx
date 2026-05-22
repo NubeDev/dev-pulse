@@ -79,10 +79,12 @@ import {
   useBoardLinks,
   useDeleteBoardLink,
   useDeleteProjectMilestone,
+  useDeleteProjectView,
   usePatchProject,
   useProject,
   useProjectMilestones,
   useProjectRepos,
+  useProjectViews,
   useRemoveIssueFromProject,
   useUpdateProjectMilestone,
 } from "./use-projects-data.js";
@@ -178,6 +180,9 @@ function ProjectDetailBody({ project }: { project: ProjectDto }): JSX.Element {
   const [archiveConfirmOpen, setArchiveConfirmOpen] = useState(false);
   const [editDatesOpen, setEditDatesOpen] = useState(false);
   const [editDetailsOpen, setEditDetailsOpen] = useState(false);
+  const [deleteAllViewsOpen, setDeleteAllViewsOpen] = useState(false);
+  const [bulkDeleteBusy, setBulkDeleteBusy] = useState(false);
+  const [bulkDeleteError, setBulkDeleteError] = useState<string | null>(null);
   const [newMilestoneOpen, setNewMilestoneOpen] = useState(false);
   const [editMilestone, setEditMilestone] = useState<MilestoneDto | null>(null);
   const [deleteMilestoneTarget, setDeleteMilestoneTarget] =
@@ -185,6 +190,8 @@ function ProjectDetailBody({ project }: { project: ProjectDto }): JSX.Element {
   const links = useBoardLinks(project.id);
   const deleteLink = useDeleteBoardLink(project.id);
   const repoLinks = useProjectRepos(project.id);
+  const projectViews = useProjectViews(project.id);
+  const deleteProjectView = useDeleteProjectView(project.id);
   const milestones = useProjectMilestones(project.id);
   const adoptMilestone = useAdoptProjectMilestone(project.id);
   const updateMilestone = useUpdateProjectMilestone(project.id);
@@ -208,8 +215,48 @@ function ProjectDetailBody({ project }: { project: ProjectDto }): JSX.Element {
     }
   };
 
+  /** Bulk-delete every saved view on this project. The REST API
+   *  has no "delete all" endpoint, so we fan out to the per-view
+   *  DELETE in parallel and surface the first error (if any). The
+   *  underlying mutation is idempotent so a partial failure can
+   *  safely be retried by hitting the menu item again. */
+  const onDeleteAllViewsConfirm = async (): Promise<void> => {
+    const all = projectViews.data ?? [];
+    if (all.length === 0) {
+      setDeleteAllViewsOpen(false);
+      return;
+    }
+    setBulkDeleteBusy(true);
+    setBulkDeleteError(null);
+    try {
+      await Promise.all(
+        all.map((v) => deleteProjectView.mutateAsync(v.id)),
+      );
+      setDeleteAllViewsOpen(false);
+    } catch (err) {
+      setBulkDeleteError(
+        err instanceof Error ? err.message : "Failed to delete views",
+      );
+    } finally {
+      setBulkDeleteBusy(false);
+    }
+  };
+
   const openIssue = (id: string | null): void => {
-    navigate(projectDetailRoute(project.id, id));
+    // Preserve the active view + any group/filter/sort overrides
+    // when opening/closing the issue detail panel. Without this
+    // `projectDetailRoute` strips every query param except `issue`,
+    // which silently kicks the user back to the pinned "All" tab
+    // and loses their toolbar state.
+    navigate(
+      projectDetailRouteWithParams(project.id, {
+        issueId: id,
+        view: projectViewId(route),
+        group: projectGroupBy(route),
+        filter: projectFilter(route),
+        sort: projectSort(route),
+      }),
+    );
   };
 
   const orgsQ = useQuery<OrgDto[]>({
@@ -314,8 +361,14 @@ function ProjectDetailBody({ project }: { project: ProjectDto }): JSX.Element {
           <div className="flex items-center gap-2">
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="outline" size="sm">
-                  <SettingsIcon className="mr-1.5 h-4 w-4" /> Settings
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="size-8"
+                  aria-label="Project settings"
+                  title="Settings"
+                >
+                  <SettingsIcon className="size-4" />
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-56">
@@ -365,6 +418,23 @@ function ProjectDetailBody({ project }: { project: ProjectDto }): JSX.Element {
                   Edit details…
                 </DropdownMenuItem>
                 <DropdownMenuItem
+                  disabled={(projectViews.data?.length ?? 0) === 0}
+                  onSelect={(e) => {
+                    e.preventDefault();
+                    setBulkDeleteError(null);
+                    setDeleteAllViewsOpen(true);
+                  }}
+                  data-testid="project-settings-delete-all-views"
+                  className="text-destructive focus:text-destructive"
+                >
+                  Delete all views…
+                  {projectViews.data && projectViews.data.length > 0 ? (
+                    <span className="ml-auto text-[10px] text-muted-foreground">
+                      {projectViews.data.length}
+                    </span>
+                  ) : null}
+                </DropdownMenuItem>
+                <DropdownMenuItem
                   disabled={archivePending}
                   onSelect={(e) => {
                     e.preventDefault();
@@ -387,6 +457,35 @@ function ProjectDetailBody({ project }: { project: ProjectDto }): JSX.Element {
         repoCount={repoLinks.data?.length ?? 0}
         onEditTimeline={() => setEditDatesOpen(true)}
       />
+
+      {/* Page-level "no linked repos" warning — same intent as the
+       *  in-dialog alert on NewMilestoneDialog, but surfaced up
+       *  front so the user notices the missing prerequisite before
+       *  they try to create a milestone or rely on repo-derived
+       *  data. Hidden once at least one repo is linked. */}
+      {!repoLinks.isPending && (repoLinks.data?.length ?? 0) === 0 && (
+        <Alert
+          variant="destructive"
+          data-testid="project-no-repos-warning"
+        >
+          <AlertTitle>No linked repos</AlertTitle>
+          <AlertDescription className="flex flex-col items-start gap-2">
+            <span>
+              Link a repo to this project so dev-pulse can mirror
+              issues, milestones, and board status from GitHub.
+              Until then milestones and most surfaces stay empty.
+            </span>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setManageReposOpen(true)}
+              data-testid="project-no-repos-link"
+            >
+              Link a repo…
+            </Button>
+          </AlertDescription>
+        </Alert>
+      )}
 
       <MilestonesStrip
         milestones={milestones.data ?? []}
@@ -453,6 +552,7 @@ function ProjectDetailBody({ project }: { project: ProjectDto }): JSX.Element {
         open={newMilestoneOpen}
         onOpenChange={setNewMilestoneOpen}
         projectId={project.id}
+        onRequestLinkRepo={() => setManageReposOpen(true)}
       />
 
       <EditMilestoneDialog
@@ -541,6 +641,47 @@ function ProjectDetailBody({ project }: { project: ProjectDto }): JSX.Element {
           {(archive.error || patch.error) && (
             <p className="text-sm text-destructive" data-testid="project-action-error">
               {(archive.error ?? patch.error)?.message}
+            </p>
+          )}
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={deleteAllViewsOpen}
+        onOpenChange={(open) => {
+          if (bulkDeleteBusy) return;
+          setDeleteAllViewsOpen(open);
+          if (!open) setBulkDeleteError(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Delete all saved views?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {`This will permanently remove ${projectViews.data?.length ?? 0} saved view${
+                (projectViews.data?.length ?? 0) === 1 ? "" : "s"
+              } on "${project.name}". The project's issues and linked surfaces are unaffected. This can't be undone.`}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={bulkDeleteBusy}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault();
+                void onDeleteAllViewsConfirm();
+              }}
+              disabled={bulkDeleteBusy}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              data-testid="project-settings-delete-all-views-confirm"
+            >
+              {bulkDeleteBusy ? "Deleting…" : "Delete all"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+          {bulkDeleteError && (
+            <p className="text-sm text-destructive" data-testid="project-settings-delete-all-views-error">
+              {bulkDeleteError}
             </p>
           )}
         </AlertDialogContent>
@@ -836,12 +977,22 @@ function ProjectIssueRow({
   onRemove: () => void;
   removePending: boolean;
 }): JSX.Element {
+  const isLocal = row.is_local === true;
   return (
     <div
       className={`flex cursor-pointer items-center gap-3 rounded-md border px-3 py-2 text-sm ${
-        selected ? "border-primary bg-accent/40" : "border-border bg-muted/10 hover:bg-accent/20"
+        selected
+          ? "border-primary bg-accent/40"
+          : isLocal
+            // Local-only rows get a warm amber tint and a dashed
+            // border so they read as "note, not a GitHub issue"
+            // at a glance — distinct from the muted bg used for
+            // GitHub-backed rows.
+            ? "border-dashed border-amber-500/50 bg-amber-500/5 hover:bg-amber-500/10"
+            : "border-border bg-muted/10 hover:bg-accent/20"
       }`}
       data-testid="project-issue-row"
+      data-local={isLocal ? "true" : undefined}
       onClick={onSelect}
     >
       <Badge
@@ -850,22 +1001,34 @@ function ProjectIssueRow({
       >
         {row.state}
       </Badge>
-      <span className="shrink-0 font-mono text-xs text-muted-foreground tabular-nums">
-        {row.repo_slug ? (
-          <a
-            href={`https://github.com/${row.repo_slug}/issues/${row.number}`}
-            target="_blank"
-            rel="noreferrer"
-            className="hover:text-foreground hover:underline"
-            onClick={(e) => e.stopPropagation()}
-            title={`Open ${row.repo_slug}#${row.number} on GitHub`}
-          >
-            {row.repo_slug}#{row.number}
-          </a>
-        ) : (
-          <>—#{row.number}</>
-        )}
-      </span>
+      {isLocal ? (
+        // Local-only rows: no repo badge, no GitHub deep-link —
+        // there is no GitHub-side issue to link to.
+        <Badge
+          variant="outline"
+          className="shrink-0 border-amber-500/60 px-1.5 py-0 text-[10px] uppercase text-amber-700 dark:text-amber-300"
+          title="Local-only note (not synced to GitHub)"
+        >
+          local
+        </Badge>
+      ) : (
+        <span className="shrink-0 font-mono text-xs text-muted-foreground tabular-nums">
+          {row.repo_slug ? (
+            <a
+              href={`https://github.com/${row.repo_slug}/issues/${row.number}`}
+              target="_blank"
+              rel="noreferrer"
+              className="hover:text-foreground hover:underline"
+              onClick={(e) => e.stopPropagation()}
+              title={`Open ${row.repo_slug}#${row.number} on GitHub`}
+            >
+              {row.repo_slug}#{row.number}
+            </a>
+          ) : (
+            <>—#{row.number}</>
+          )}
+        </span>
+      )}
       <span className="flex-1 truncate">
         {row.title}
       </span>

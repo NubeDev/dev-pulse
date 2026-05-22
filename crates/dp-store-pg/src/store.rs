@@ -337,6 +337,10 @@ fn row_to_issue(r: &sqlx::postgres::PgRow) -> Result<Issue, StoreError> {
         version: r.try_get("version").map_err(map_sqlx)?,
         github_node_id: r.try_get("github_node_id").map_err(map_sqlx)?,
         updated_at: r.try_get("updated_at").map_err(map_sqlx)?,
+        // Tolerate SELECT lists that pre-date the 0041 migration —
+        // they simply default to non-local, which is correct for
+        // every row created before the feature shipped.
+        is_local: r.try_get("is_local").unwrap_or(false),
     })
 }
 
@@ -1724,7 +1728,7 @@ impl Store for PgStore {
         let rows = sqlx::query(
             "SELECT id, org_id, repo_id, github_id, number, title, body, state,
                     labels, assignees, milestone, version,
-                    github_node_id, updated_at
+                    github_node_id, updated_at, is_local
              FROM dp_issues
              WHERE ($1::uuid IS NULL OR repo_id = $1)
                AND ($2::uuid IS NULL OR org_id  = $2)
@@ -1808,7 +1812,7 @@ impl Store for PgStore {
         let row = sqlx::query(
             "SELECT id, org_id, repo_id, github_id, number, title, body, state,
                     labels, assignees, milestone, version,
-                    github_node_id, updated_at
+                    github_node_id, updated_at, is_local
              FROM dp_issues WHERE id = $1",
         )
         .bind(id)
@@ -1826,7 +1830,7 @@ impl Store for PgStore {
         let row = sqlx::query(
             "SELECT id, org_id, repo_id, github_id, number, title, body, state,
                     labels, assignees, milestone, version,
-                    github_node_id, updated_at
+                    github_node_id, updated_at, is_local
              FROM dp_issues WHERE repo_id = $1 AND number = $2",
         )
         .bind(repo_id)
@@ -1989,6 +1993,164 @@ impl Store for PgStore {
         Ok((issue, outcome))
     }
 
+    /// SCOPE.md §4.1 amendment — direct insert of a local-only
+    /// issue. Allocates a synthetic per-repo negative number /
+    /// `github_id` from `dp_repos.local_issue_counter` (decremented
+    /// in the same transaction) so the existing `UNIQUE (repo_id,
+    /// number)` and `UNIQUE (repo_id, github_id)` invariants hold
+    /// without widening the columns to NULL.
+    async fn create_local_issue(
+        &self,
+        org_id: Uuid,
+        repo_id: Uuid,
+        title: &str,
+        body: Option<&str>,
+    ) -> Result<Issue, StoreError> {
+        let mut tx = self.pool.sqlx().begin().await.map_err(map_sqlx)?;
+
+        // Allocate the next negative slot. The first local issue
+        // in a repo gets number = -1, the second -2, …
+        let (next,): (i64,) = sqlx::query_as(
+            "UPDATE dp_repos
+                SET local_issue_counter = local_issue_counter - 1
+              WHERE id = $1
+            RETURNING local_issue_counter",
+        )
+        .bind(repo_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(map_sqlx)?;
+
+        let new_id = Uuid::new_v4();
+        let now = Utc::now();
+        let row = sqlx::query(
+            "INSERT INTO dp_issues (
+                 id, org_id, repo_id, github_id, number, title, body, state,
+                 labels, assignees, milestone, author, state_reason,
+                 created_at, updated_at, closed_at, version, github_node_id,
+                 is_local
+             ) VALUES (
+                 $1, $2, $3, $4, $4, $5, $6, 'open',
+                 '[]'::jsonb, '[]'::jsonb, NULL, NULL, NULL,
+                 $7, $7, NULL, 1, NULL,
+                 TRUE
+             )
+             RETURNING id, org_id, repo_id, github_id, number, title, body, state,
+                       labels, assignees, milestone, version,
+                       github_node_id, updated_at, is_local",
+        )
+        .bind(new_id)
+        .bind(org_id)
+        .bind(repo_id)
+        .bind(next)
+        .bind(title)
+        .bind(body)
+        .bind(now)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(map_sqlx)?;
+
+        let issue = row_to_issue(&row)?;
+        tx.commit().await.map_err(map_sqlx)?;
+        Ok(issue)
+    }
+
+    /// SCOPE.md §4.1.1 — direct CAS-gated field update for a
+    /// local-only issue (no GitHub round-trip, no pending_remote
+    /// dance). The WHERE clause performs the CAS; COALESCE on
+    /// each lane preserves untouched fields. `is_local = TRUE` is
+    /// in the WHERE clause too so this method cannot accidentally
+    /// be used to bypass the GitHub two-way-sync on a real issue.
+    async fn update_local_issue(
+        &self,
+        issue_id: Uuid,
+        expected_version: i64,
+        title: Option<&str>,
+        body: Option<Option<&str>>,
+        state: Option<&str>,
+        labels: Option<&[String]>,
+        assignees: Option<&[String]>,
+    ) -> Result<Issue, StoreError> {
+        // `body` uses Option<Option<&str>> so an explicit
+        // `Some(None)` lane clears the column; `None` leaves it
+        // alone. Encode the "clear" intent with a sentinel bool
+        // bound separately so the COALESCE chain stays simple.
+        let (body_provided, body_value): (bool, Option<&str>) = match body {
+            None => (false, None),
+            Some(v) => (true, v),
+        };
+        let labels_json = labels
+            .map(|l| serde_json::to_value(l))
+            .transpose()
+            .map_err(|e| StoreError::Invalid(format!("labels not serialisable: {e}")))?;
+        let assignees_json = assignees
+            .map(|a| serde_json::to_value(a))
+            .transpose()
+            .map_err(|e| {
+                StoreError::Invalid(format!("assignees not serialisable: {e}"))
+            })?;
+        // `closed_at` is derived from the state transition: closing
+        // stamps now(); reopening clears it. When state isn't being
+        // touched, leave both `state` and `closed_at` alone.
+        let row = sqlx::query(
+            "UPDATE dp_issues SET
+                 title       = COALESCE($3, title),
+                 body        = CASE WHEN $4::bool THEN $5 ELSE body END,
+                 state       = COALESCE($6, state),
+                 closed_at   = CASE
+                                   WHEN $6 = 'closed' THEN COALESCE(closed_at, now())
+                                   WHEN $6 = 'open'   THEN NULL
+                                   ELSE closed_at
+                               END,
+                 labels      = COALESCE($7, labels),
+                 assignees   = COALESCE($8, assignees),
+                 version     = version + 1,
+                 updated_at  = now()
+              WHERE id = $1
+                AND version = $2
+                AND is_local = TRUE
+              RETURNING id, org_id, repo_id, github_id, number, title, body, state,
+                        labels, assignees, milestone, version,
+                        github_node_id, updated_at, is_local",
+        )
+        .bind(issue_id)
+        .bind(expected_version)
+        .bind(title)
+        .bind(body_provided)
+        .bind(body_value)
+        .bind(state)
+        .bind(labels_json.as_ref())
+        .bind(assignees_json.as_ref())
+        .fetch_optional(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+
+        match row {
+            Some(r) => row_to_issue(&r),
+            None => {
+                // Distinguish "no such local issue" from "stale
+                // CAS" so the REST handler can return a useful
+                // 404 vs 409.
+                let exists: Option<(bool,)> = sqlx::query_as(
+                    "SELECT is_local FROM dp_issues WHERE id = $1",
+                )
+                .bind(issue_id)
+                .fetch_optional(self.pool.sqlx())
+                .await
+                .map_err(map_sqlx)?;
+                match exists {
+                    None => Err(not_found("issue", issue_id)),
+                    Some((false,)) => Err(StoreError::Invalid(format!(
+                        "issue {issue_id} is not a local-only issue"
+                    ))),
+                    Some((true,)) => Err(StoreError::Conflict(format!(
+                        "stale expected_version {expected_version} for local issue {issue_id}"
+                    ))),
+                }
+            }
+        }
+    }
+
     // ---- per-user inbox (triage spine, slice 1) -------------------
 
     async fn list_inbox_issues(
@@ -2008,7 +2170,7 @@ impl Store for PgStore {
         let rows = sqlx::query(
             "SELECT i.id, i.org_id, i.repo_id, i.github_id, i.number, i.title, i.body,
                     i.state, i.labels, i.assignees, i.milestone, i.version,
-                    i.github_node_id, i.updated_at,
+                    i.github_node_id, i.updated_at, i.is_local,
                     COALESCE(s.last_seen_version, 0)            AS last_seen_version,
                     COALESCE(s.status, 'inbox')                 AS inbox_status,
                     s.snoozed_until                             AS snoozed_until

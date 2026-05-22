@@ -25,7 +25,7 @@
  */
 
 import { useMemo, useState } from "react";
-import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
+import { ChevronDownIcon, ChevronRightIcon, PlusIcon } from "lucide-react";
 
 import type { IssueBucket, IssueListItem, ProjectDto } from "../api/client.js";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -45,6 +45,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { HelpHint } from "@/components/help-hint";
 import {
   navigate,
@@ -326,19 +331,28 @@ export function ProjectWorkbench({
   return (
     <Card data-testid="project-issues">
       <CardHeader className="flex flex-row items-center justify-between gap-2">
-        <CardTitle className="text-base">
-          Issues{" "}
-          <span className="ml-2 text-sm font-normal text-muted-foreground">
-            ({project.closed_issue_count}/{project.issue_count} closed)
-          </span>
-        </CardTitle>
-        <Button
-          size="sm"
-          onClick={() => setDialogOpen(true)}
-          data-testid="project-add-issue-button"
-        >
-          + Add issue
-        </Button>
+        <div className="flex items-center gap-2">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                size="icon"
+                onClick={() => setDialogOpen(true)}
+                data-testid="project-add-issue-button"
+                aria-label="Add issue"
+                className="size-8"
+              >
+                <PlusIcon className="size-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Add issue</TooltipContent>
+          </Tooltip>
+          <CardTitle className="text-base">
+            Issues{" "}
+            <span className="ml-2 text-sm font-normal text-muted-foreground">
+              ({project.closed_issue_count}/{project.issue_count} closed)
+            </span>
+          </CardTitle>
+        </div>
       </CardHeader>
 
       <CardContent className="flex flex-col gap-3">

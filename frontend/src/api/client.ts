@@ -502,6 +502,10 @@ export const IssueDtoSchema = z.object({
    *  filtered). Empty / absent on older server builds — clients
    *  must treat `undefined` as `[]`. */
   tags: z.array(IssueTagDtoSchema).optional(),
+  /** `true` when this issue exists only in dev-pulse and was not
+   *  pushed to GitHub. Default `false` on older server
+   *  responses. */
+  is_local: z.boolean().optional(),
 });
 export type IssueDto = z.infer<typeof IssueDtoSchema>;
 
@@ -522,6 +526,11 @@ export const CreateIssueRequestSchema = z.object({
   /** CAS token — project's observed `version`. Required when
    *  `project_id` is set and `view_id` is unset. */
   expected_version: z.number().int().optional(),
+  /** When `true` the backend skips the GitHub POST and inserts a
+   *  local-only row (`is_local = true`, synthetic negative
+   *  `number`). Default `false` preserves the historical
+   *  "create on GitHub" behaviour. */
+  local: z.boolean().optional(),
 });
 export type CreateIssueRequest = z.infer<typeof CreateIssueRequestSchema>;
 
@@ -894,6 +903,11 @@ export const IssueListItemSchema = z.object({
   /** DP tags attached to this issue, viewer-filtered. Absent
    *  on older server builds — treat `undefined` as `[]`. */
   tags: z.array(IssueTagDtoSchema).optional(),
+  /** `true` when this issue was created via the "Create" (local-
+   *  only) button on the Add-issue dialog and was not pushed to
+   *  GitHub. Default `false` on older server responses. The list
+   *  row hides the repo badge and tints itself for these. */
+  is_local: z.boolean().optional(),
 });
 export type IssueListItem = z.infer<typeof IssueListItemSchema>;
 

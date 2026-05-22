@@ -116,3 +116,39 @@ export function iconForName(name: string): LucideIcon {
   }
   return FALLBACK;
 }
+
+// ---------------------------------------------------------------------------
+// Gate metadata — when a view name is the short gate code (`G1` …
+// `G8`), the tab strip shows just the code and uses these to drive
+// the hover tooltip and the icon's accent colour. Returns `null`
+// for non-gate names so the caller can fall back to defaults.
+// ---------------------------------------------------------------------------
+
+interface GateMeta {
+  /** Full gate label, shown as the button's `title` tooltip. */
+  tooltip: string;
+  /** Tailwind class applied to the leading lucide icon so each
+   *  gate gets a distinct accent without dyeing the whole tab. */
+  iconClass: string;
+}
+
+const GATE_META: Record<string, GateMeta> = {
+  g1: { tooltip: "Executive Summary", iconClass: "text-sky-600 dark:text-sky-400" },
+  g2: { tooltip: "Proof of Concept", iconClass: "text-violet-600 dark:text-violet-400" },
+  g3: { tooltip: "MVP Build", iconClass: "text-amber-600 dark:text-amber-400" },
+  g4: { tooltip: "Client Acceptance", iconClass: "text-pink-600 dark:text-pink-400" },
+  g5: { tooltip: "Product Refinement", iconClass: "text-indigo-600 dark:text-indigo-400" },
+  g6: { tooltip: "Production Ready", iconClass: "text-emerald-600 dark:text-emerald-400" },
+  g7: { tooltip: "Go-To-Market", iconClass: "text-orange-600 dark:text-orange-400" },
+  g8: { tooltip: "Scale & Support", iconClass: "text-teal-600 dark:text-teal-400" },
+};
+
+/** Return gate metadata if the view name *is* a gate short-code
+ *  (`G1` … `G8`, case-insensitive, ignoring surrounding whitespace).
+ *  Returns `null` otherwise — callers should treat that as "no
+ *  special gate styling, render the name as-is". */
+export function gateMetaForName(name: string): GateMeta | null {
+  const key = name.trim().toLowerCase();
+  return GATE_META[key] ?? null;
+}
+

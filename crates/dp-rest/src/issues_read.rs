@@ -103,6 +103,12 @@ pub struct IssueDto {
     pub version: i64,
     /// Last update.
     pub updated_at: DateTime<Utc>,
+    /// `true` when this issue exists only in dev-pulse and was not
+    /// pushed to GitHub (SCOPE.md §4.1 amendment). The frontend
+    /// hides the repo badge for local-only rows and tints them so
+    /// they read as "local note" rather than "GitHub issue".
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub is_local: bool,
     /// Short `owner/repo` label rendered in list rows. Populated
     /// by a per-page join through `repo_id -> (org_login, name)`.
     /// Omitted when the join is unavailable (point-lookup detail
@@ -180,6 +186,7 @@ impl From<Issue> for IssueDto {
             milestone: i.milestone,
             version: i.version,
             updated_at: i.updated_at,
+            is_local: i.is_local,
             repo_slug: None,
             unread: false,
             bucket_keys: None,

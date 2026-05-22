@@ -441,7 +441,15 @@ pub async fn patch_issue_dates(
             code: "org_not_found",
             message: format!("no org with id {}", repo.org_id),
         })?;
-    require_issues_write(&*state.store, &state.github_app, &org).await?;
+    // SCOPE.md §4.1.1 — local-only issues have no GitHub-side
+    // card, so the install-write check and the Projects v2 mirror
+    // fan-out below are both skipped. We still upsert into
+    // `dp_issue_dates` so the local timeline / chart surfaces
+    // work uniformly across the two lanes.
+    let is_local_issue = issue.is_local;
+    if !is_local_issue {
+        require_issues_write(&*state.store, &state.github_app, &org).await?;
+    }
 
     // §3.10 step 3 — synchronous local upsert. Schema CHECK
     // violations surface as Invalid (cheap pre-check above usually
@@ -481,7 +489,8 @@ pub async fn patch_issue_dates(
     // upsert has already committed and the response carries the
     // canonical row; mirror failures land in the per-link
     // aggregate, never on the synchronous response.
-    if let Some(project) = state.store.get_project_for_issue(id).await.ok().flatten() {
+    if !is_local_issue {
+        if let Some(project) = state.store.get_project_for_issue(id).await.ok().flatten() {
         let links = state
             .store
             .list_board_links(project.id)
@@ -588,6 +597,7 @@ pub async fn patch_issue_dates(
             });
         }
     }
+    } // end of `if !is_local_issue` mirror block
     Ok(Json(IssueDatesDto::from(dates)))
 }
 
@@ -1177,6 +1187,7 @@ mod tests {
             version: 1,
             github_node_id: Some("I_kwTEST".into()),
             updated_at: Utc::now(),
+            is_local: false,
         };
         {
             let mut g = store.inner.lock().unwrap();

@@ -174,7 +174,7 @@ export function PortfolioCharts({
                   className="flex items-center justify-between gap-2"
                 >
                   <a
-                    href={`#${projectDetailRoute(r.id)}`}
+                    href={projectDetailRoute(r.id)}
                     className="truncate font-medium hover:underline"
                     title={r.name}
                   >

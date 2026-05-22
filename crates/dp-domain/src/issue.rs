@@ -85,6 +85,13 @@ pub struct Issue {
     /// Last time the row changed (GitHub `updated_at`, or local
     /// mutation time for optimistic writes).
     pub updated_at: DateTime<Utc>,
+    /// `true` when this issue exists only in dev-pulse and was not
+    /// pushed to GitHub (SCOPE.md §4.1 amendment). Local issues
+    /// carry synthetic negative `github_id` / `number` allocated
+    /// per-repo from `dp_repos.local_issue_counter`. UI surfaces
+    /// hide the repo badge for these rows.
+    #[serde(default)]
+    pub is_local: bool,
 }
 
 /// Aggregated summary for the `GET /repos` list pane. Carries the

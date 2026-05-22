@@ -24,10 +24,12 @@ import {
   CheckCircle2Icon,
   FlagIcon,
   ListChecksIcon,
+  PencilIcon,
   SparklesIcon,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { DateInput } from "@/components/ui/date-input";
 import {
   Dialog,
@@ -46,7 +48,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
-import { iconForName } from "./icon-for-name.js";
+import { gateMetaForName, iconForName } from "./icon-for-name.js";
 
 import type {
   ProjectViewDto,
@@ -152,9 +154,19 @@ const VIEW_TEMPLATES: ViewTemplate[] = [
     Icon: FlagIcon,
     kind: "batch",
     batch: GATES.map((g) => ({
-      name: `${g.short} · ${g.label}`,
+      // Stored name is just the short code (`G1`, `G2`, …) so the
+      // tab stays compact; the full label is surfaced as the tab's
+      // hover tooltip and the icon's accent colour via
+      // [`gateMetaForName`].
+      //
+      // Auto-filters disabled for now (May 2026): the per-gate
+      // `tag:gate:<key>` clause was creating noisy filter chips
+      // the user couldn't easily clear. Templates seed the tabs
+      // with no filters; users can add their own via the toolbar
+      // and Save changes on the dirty view.
+      name: g.short,
       groupBy: null,
-      filterClauses: [{ dim: "tag", key: "gate", value: g.key }],
+      filterClauses: [],
     })),
   },
   {
@@ -221,6 +233,66 @@ export function ViewsTabStrip({
 }: ViewsTabStripProps): JSX.Element {
   const [dialog, setDialog] = useState<DialogState>({ kind: "closed" });
   const [dragId, setDragId] = useState<string | null>(null);
+  const [dragOverId, setDragOverId] = useState<string | null>(null);
+  // Per-view due-date display mode (machine-local, see helpers
+  // at the bottom of this file). Hydrated lazily from localStorage
+  // for each view id encountered so changes take effect without
+  // a reload and so the tab strip re-renders on toggle.
+  const [dateDisplayByView, setDateDisplayByView] = useState<
+    Record<string, DateDisplayMode>
+  >(() => {
+    const seed: Record<string, DateDisplayMode> = {};
+    for (const v of views) {
+      seed[v.id] = readDateDisplayMode(v.id);
+    }
+    return seed;
+  });
+  // Ensure any newly-arrived views are reflected once they show
+  // up in the list (e.g. just-created tab from the dialog).
+  useEffect(() => {
+    setDateDisplayByView((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const v of views) {
+        if (!(v.id in next)) {
+          next[v.id] = readDateDisplayMode(v.id);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [views]);
+  const setDateDisplayFor = (viewId: string, mode: DateDisplayMode): void => {
+    writeDateDisplayMode(viewId, mode);
+    setDateDisplayByView((prev) => ({ ...prev, [viewId]: mode }));
+  };
+  // Per-view "completed" flag (machine-local, same scope as
+  // dateDisplay). Forces the green-tick badge on the tab and
+  // overrides the open/total derived state.
+  const [completedByView, setCompletedByView] = useState<
+    Record<string, boolean>
+  >(() => {
+    const seed: Record<string, boolean> = {};
+    for (const v of views) seed[v.id] = readCompleted(v.id);
+    return seed;
+  });
+  useEffect(() => {
+    setCompletedByView((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const v of views) {
+        if (!(v.id in next)) {
+          next[v.id] = readCompleted(v.id);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [views]);
+  const setCompletedFor = (viewId: string, completed: boolean): void => {
+    writeCompleted(viewId, completed);
+    setCompletedByView((prev) => ({ ...prev, [viewId]: completed }));
+  };
   const activeView = activeViewId
     ? views.find((v) => v.id === activeViewId) ?? null
     : null;
@@ -247,6 +319,7 @@ export function ViewsTabStrip({
   };
 
   const handleDrop = (targetId: string): void => {
+    setDragOverId(null);
     if (!dragId || dragId === targetId) {
       setDragId(null);
       return;
@@ -267,7 +340,14 @@ export function ViewsTabStrip({
 
   return (
     <div
-      className="flex flex-wrap items-center gap-1 border-b border-border pb-2"
+      // The strip now reads as a classic browser-style tab row:
+      // every tab has visible side borders and a top border, the
+      // active tab "sits on" the strip's baseline (its bottom
+      // border is the same colour as the page background so it
+      // appears to merge with the content below), and inactive
+      // tabs share a subtle muted fill so the boundary between
+      // adjacent tabs is unambiguous.
+      className="flex flex-wrap items-end gap-0.5 border-b border-border pb-0 pt-1"
       data-testid="project-views-tab-strip"
     >
       {/* Pinned "All" tab — ad-hoc / no view selected. */}
@@ -281,21 +361,56 @@ export function ViewsTabStrip({
       {views.map((v) => {
         const active = v.id === activeViewId;
         const dirty = active && isDirty;
+        const isDragging = dragId === v.id;
+        const isDropTarget =
+          dragId !== null && dragOverId === v.id && dragId !== v.id;
+        const ids = views.map((x) => x.id);
+        const dropBefore =
+          isDropTarget && ids.indexOf(dragId!) > ids.indexOf(v.id);
+        const gateMeta = gateMetaForName(v.name);
         return (
           <div
             key={v.id}
-            className="flex items-center"
+            className={[
+              "relative flex items-center rounded-md",
+              "cursor-grab active:cursor-grabbing",
+              isDragging ? "opacity-40" : "",
+              isDropTarget
+                ? dropBefore
+                  ? "shadow-[inset_2px_0_0_0_var(--primary)]"
+                  : "shadow-[inset_-2px_0_0_0_var(--primary)]"
+                : "",
+            ]
+              .filter(Boolean)
+              .join(" ")}
             draggable
-            onDragStart={() => setDragId(v.id)}
+            data-testid={`project-view-tab-drag-${v.id}`}
+            onDragStart={(e) => {
+              setDragId(v.id);
+              // Firefox requires dataTransfer payload to start the drag.
+              e.dataTransfer.setData("text/plain", v.id);
+              e.dataTransfer.effectAllowed = "move";
+            }}
             onDragOver={(e) => {
-              if (dragId) e.preventDefault();
+              if (!dragId) return;
+              e.preventDefault();
+              e.dataTransfer.dropEffect = "move";
+              if (dragOverId !== v.id) setDragOverId(v.id);
+            }}
+            onDragLeave={() => {
+              if (dragOverId === v.id) setDragOverId(null);
             }}
             onDrop={() => handleDrop(v.id)}
-            onDragEnd={() => setDragId(null)}
+            onDragEnd={() => {
+              setDragId(null);
+              setDragOverId(null);
+            }}
           >
             <ViewTabButton
               label={dirty ? `● ${v.name} *` : v.name}
               icon={iconForName(v.name)}
+              iconClass={gateMeta?.iconClass}
+              title={gateMeta?.tooltip}
               active={active}
               onClick={() => onSelectView(v.id)}
               testid={`project-view-tab-${v.id}`}
@@ -308,47 +423,12 @@ export function ViewsTabStrip({
                   : undefined
               }
               dueDate={v.due_date ?? null}
+              dateDisplay={dateDisplayByView[v.id] ?? "week"}
+              completed={completedByView[v.id] ?? false}
+              onEdit={
+                busy ? undefined : () => setDialog({ kind: "edit", view: v })
+              }
             />
-            {active && (
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 px-1 text-muted-foreground"
-                    aria-label={`Actions for view ${v.name}`}
-                    data-testid={`project-view-tab-menu-${v.id}`}
-                  >
-                    ⋯
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  <DropdownMenuItem
-                    disabled={busy}
-                    onSelect={() => setDialog({ kind: "edit", view: v })}
-                    data-testid={`project-view-tab-rename-${v.id}`}
-                  >
-                    Edit view…
-                  </DropdownMenuItem>
-                  <DropdownMenuItem
-                    disabled={busy}
-                    onSelect={() => {
-                      if (
-                        // eslint-disable-next-line no-alert
-                        window.confirm(
-                          `Delete view "${v.name}"? This can't be undone.`,
-                        )
-                      ) {
-                        onDeleteView(v.id);
-                      }
-                    }}
-                    data-testid={`project-view-tab-delete-${v.id}`}
-                  >
-                    Delete view
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            )}
           </div>
         );
       })}
@@ -400,6 +480,26 @@ export function ViewsTabStrip({
         busy={busy}
         onCancel={() => setDialog({ kind: "closed" })}
         onSubmit={handleDialogSubmit}
+        onDelete={(viewId) => {
+          onDeleteView(viewId);
+          setDialog({ kind: "closed" });
+        }}
+        dateDisplay={
+          dialog.kind === "edit"
+            ? dateDisplayByView[dialog.view.id] ?? "week"
+            : undefined
+        }
+        onChangeDateDisplay={(mode) => {
+          if (dialog.kind === "edit") setDateDisplayFor(dialog.view.id, mode);
+        }}
+        completed={
+          dialog.kind === "edit"
+            ? completedByView[dialog.view.id] ?? false
+            : undefined
+        }
+        onChangeCompleted={(done) => {
+          if (dialog.kind === "edit") setCompletedFor(dialog.view.id, done);
+        }}
       />
     </div>
   );
@@ -414,6 +514,14 @@ interface ViewTabButtonProps {
    *  from the view name by [`iconForName`] for saved views;
    *  omitted on the pinned All tab. */
   icon?: React.ComponentType<{ className?: string }>;
+  /** Optional tailwind class applied to the leading lucide icon
+   *  so gate tabs (G1…G8) can each carry a distinct accent
+   *  without dyeing the whole tab chrome. */
+  iconClass?: string;
+  /** Native `title` attribute — used for the gate tabs to show
+   *  the full gate label (e.g. "Executive Summary") on hover
+   *  while the visible label stays the short code. */
+  title?: string;
   /** Optional `open / total` count rendered as a subdued suffix.
    *  Populated for saved-view tabs from
    *  `ProjectViewDto.{open,total}_issue_count`; omitted on the
@@ -422,6 +530,19 @@ interface ViewTabButtonProps {
   /** Optional due date (`YYYY-MM-DD`); rendered next to the count
    *  as a relative "Nth week of <Month>" badge. */
   dueDate?: string | null;
+  /** How to render the due date badge — see [`DateDisplayMode`].
+   *  Defaults to `"week"` when omitted. */
+  dateDisplay?: DateDisplayMode;
+  /** When `true` the tab forces the green-tick badge regardless
+   *  of `count`, signalling the user explicitly marked the view
+   *  as done (e.g. gate completed) without waiting for every
+   *  underlying issue to close. */
+  completed?: boolean;
+  /** When provided, an inline pencil-edit affordance is rendered
+   *  at the trailing edge of the tab (only visible while the tab
+   *  is active). Click is isolated from the tab's own onClick so
+   *  selecting the pencil doesn't also re-trigger view selection. */
+  onEdit?: () => void;
 }
 
 function ViewTabButton({
@@ -430,45 +551,65 @@ function ViewTabButton({
   onClick,
   testid,
   icon: Icon,
+  iconClass,
+  title,
   count,
   dueDate,
+  dateDisplay = "week",
+  completed = false,
+  onEdit,
 }: ViewTabButtonProps): JSX.Element {
-  const dueLabel = dueDate ? weekOfMonthLabel(dueDate) : null;
+  const dueLabel = dueDate ? formatDateDisplay(dueDate, dateDisplay) : null;
   return (
     <button
       type="button"
       onClick={onClick}
+      title={title}
       data-testid={testid}
       data-active={active ? "true" : "false"}
       className={
         active
-          ? "inline-flex h-7 items-center gap-1.5 rounded-md border border-primary/40 bg-primary/10 px-3 text-sm font-semibold text-primary shadow-sm"
-          : "inline-flex h-7 items-center gap-1.5 rounded-md border border-transparent px-3 text-sm font-medium text-foreground/70 hover:bg-muted/40 hover:text-foreground"
+          ? // Active tab: solid background flush with the panel
+            // below, top + sides bordered, bottom edge masked by
+            // a -1px offset so it merges with the strip baseline.
+            "relative -mb-px inline-flex h-8 items-center gap-1.5 rounded-t-md border border-border border-b-background bg-background px-3 text-sm font-semibold text-foreground shadow-[0_-1px_0_0_var(--primary)]"
+          : // Inactive tab: muted fill so each tab is its own
+            // pill; hover lifts it toward the active treatment.
+            "inline-flex h-7 items-center gap-1.5 rounded-t-md border border-border/60 border-b-transparent bg-muted/40 px-3 text-sm font-medium text-foreground/70 hover:bg-muted hover:text-foreground"
       }
     >
       {Icon ? (
         <Icon
           className={
-            active
-              ? "size-3.5 shrink-0 text-primary"
-              : "size-3.5 shrink-0 text-foreground/60"
+            iconClass
+              ? `size-3.5 shrink-0 ${iconClass}`
+              : active
+                ? "size-3.5 shrink-0 text-foreground"
+                : "size-3.5 shrink-0 text-foreground/60"
           }
           data-testid={`${testid}-icon`}
         />
       ) : null}
       <span>{label}</span>
       {count ? (
-        count.total > 0 && count.open === 0 ? (
-          // All issues closed — swap the `N/N` badge for a green
+        completed || (count.total > 0 && count.open === 0) ? (
+          // All issues closed (or the user explicitly marked the
+          // view as completed) — swap the `N/N` badge for a green
           // tick so a glanceable "done" state pops on the strip.
           <span
             className="inline-flex items-center gap-1 rounded bg-emerald-100 px-1.5 text-[11px] tabular-nums text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400"
             data-testid={`${testid}-count`}
             data-complete="true"
-            title={`${count.total}/${count.total} closed`}
+            title={
+              completed
+                ? `Marked completed (${count.open}/${count.total} open)`
+                : `${count.total}/${count.total} closed`
+            }
           >
             <CheckCircle2Icon className="size-3" />
-            {count.total}/{count.total}
+            {completed && count.open > 0
+              ? "Done"
+              : `${count.total}/${count.total}`}
           </span>
         ) : (
           <span
@@ -488,6 +629,34 @@ function ViewTabButton({
           {dueLabel}
         </span>
       ) : null}
+      {active && onEdit ? (
+        // Inline pencil-edit affordance — rendered inside the tab
+        // so it visually belongs to it. Using a `<span role="button">`
+        // (not a nested <button>, which is invalid HTML) and
+        // stopping propagation so the outer tab's onClick doesn't
+        // also re-fire.
+        <span
+          role="button"
+          tabIndex={0}
+          aria-label={`Edit view ${label}`}
+          title="Edit view"
+          data-testid={`${testid}-edit`}
+          onClick={(e) => {
+            e.stopPropagation();
+            onEdit();
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              e.stopPropagation();
+              onEdit();
+            }
+          }}
+          className="ml-1 -mr-1 inline-flex size-5 cursor-pointer items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
+        >
+          <PencilIcon className="size-3" />
+        </span>
+      ) : null}
     </button>
   );
 }
@@ -502,6 +671,21 @@ interface ViewSettingsDialogProps {
   busy?: boolean;
   onCancel: () => void;
   onSubmit: (body: ProjectViewWriteBody) => void;
+  /** Invoked when the user confirms deletion from the edit dialog
+   *  footer. Only wired in edit mode; ignored on create. */
+  onDelete?: (viewId: string) => void;
+  /** Current per-view date-display preference; only meaningful
+   *  in edit mode (the value is read from the parent's local
+   *  cache, not from the view DTO). */
+  dateDisplay?: DateDisplayMode;
+  /** Called when the user changes the display mode. Persistence
+   *  is the parent's concern; this dialog is presentational. */
+  onChangeDateDisplay?: (mode: DateDisplayMode) => void;
+  /** Current completed flag (machine-local). Only meaningful in
+   *  edit mode. */
+  completed?: boolean;
+  /** Called when the user toggles the completed checkbox. */
+  onChangeCompleted?: (completed: boolean) => void;
 }
 
 function ViewSettingsDialog({
@@ -510,6 +694,11 @@ function ViewSettingsDialog({
   busy,
   onCancel,
   onSubmit,
+  onDelete,
+  dateDisplay,
+  onChangeDateDisplay,
+  completed,
+  onChangeCompleted,
 }: ViewSettingsDialogProps): JSX.Element {
   const open = state.kind !== "closed";
   const editing = state.kind === "edit" ? state.view : null;
@@ -749,23 +938,139 @@ function ViewSettingsDialog({
               ) : null}
             </div>
           </div>
+
+          {editing && onChangeCompleted ? (
+            <div className="flex items-start gap-2 rounded-md border border-border bg-muted/30 p-3">
+              <Checkbox
+                id="project-view-completed"
+                checked={completed ?? false}
+                onCheckedChange={(v) => onChangeCompleted(v === true)}
+                data-testid="project-view-completed"
+                className="mt-0.5"
+              />
+              <div className="flex flex-col gap-0.5">
+                <Label
+                  htmlFor="project-view-completed"
+                  className="cursor-pointer text-sm font-medium"
+                >
+                  Mark this view as completed
+                </Label>
+                <p className="text-xs text-muted-foreground">
+                  Forces the green tick on the tab regardless of the
+                  open / total issue count. Useful for gates you
+                  consider done even if a few cleanup tickets remain.
+                </p>
+              </div>
+            </div>
+          ) : null}
+
+          {editing && onChangeDateDisplay ? (
+            <div className="flex flex-col gap-1.5">
+              <Label>
+                Date display
+                <span className="ml-1 text-xs font-normal text-muted-foreground">
+                  (how the due date appears on this tab)
+                </span>
+              </Label>
+              {/* Segmented button group instead of a Select so the
+               *  picker can't pop over the Completed card or the
+               *  Save button — three mutually exclusive options
+               *  fit cleanly inline. */}
+              <div
+                role="radiogroup"
+                aria-label="Date display"
+                className="inline-flex w-fit overflow-hidden rounded-md border border-border"
+                data-testid="project-view-date-display"
+              >
+                {(
+                  [
+                    { value: "hide", label: "Hide" },
+                    { value: "week", label: "Week of month" },
+                    { value: "date", label: "Date (DD:Mon:YY)" },
+                  ] as Array<{ value: DateDisplayMode; label: string }>
+                ).map((opt, i) => {
+                  const selected = (dateDisplay ?? "week") === opt.value;
+                  return (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      role="radio"
+                      aria-checked={selected}
+                      onClick={() => onChangeDateDisplay(opt.value)}
+                      className={[
+                        "px-3 py-1.5 text-xs font-medium transition-colors",
+                        i > 0 ? "border-l border-border" : "",
+                        selected
+                          ? "bg-foreground text-background"
+                          : "bg-background text-foreground/70 hover:bg-muted",
+                      ]
+                        .filter(Boolean)
+                        .join(" ")}
+                      data-testid={`project-view-date-display-${opt.value}`}
+                    >
+                      {opt.label}
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                {dateDisplay === "week" || dateDisplay === undefined
+                  ? "Week of month — e.g. “2nd week of June”. Year is appended when the due date isn’t this year."
+                  : dateDisplay === "date"
+                    ? "DD:Mon:YY — abbreviated month so it doesn’t read like a clock time."
+                    : "Badge hidden on the tab."}
+              </p>
+              {dueDate ? (
+                <p
+                  className="text-xs text-muted-foreground"
+                  data-testid="project-view-date-display-preview"
+                >
+                  Preview:{" "}
+                  <span className="font-medium text-foreground">
+                    {formatDateDisplay(dueDate, dateDisplay ?? "week") ??
+                      "(hidden)"}
+                  </span>
+                </p>
+              ) : null}
+            </div>
+          ) : null}
         </div>
 
-        <DialogFooter>
-          <Button variant="ghost" onClick={onCancel} disabled={busy}>
-            Cancel
-          </Button>
-          <Button
-            onClick={submit}
-            disabled={!canSubmit}
-            data-testid="project-view-settings-submit"
-          >
-            {editing
-              ? "Save"
-              : isBatch
-                ? `Create ${template?.batch?.length ?? 0} tabs`
-                : "Create"}
-          </Button>
+        <DialogFooter className={editing ? "sm:justify-between" : undefined}>
+          {editing && onDelete ? (
+            <Button
+              variant="ghost"
+              onClick={() => {
+                // eslint-disable-next-line no-alert
+                if (window.confirm(`Delete view "${editing.name}"? This can't be undone.`)) {
+                  onDelete(editing.id);
+                }
+              }}
+              disabled={busy}
+              className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+              data-testid={`project-view-settings-delete-${editing.id}`}
+            >
+              Delete view
+            </Button>
+          ) : (
+            <span />
+          )}
+          <div className="flex items-center gap-2">
+            <Button variant="ghost" onClick={onCancel} disabled={busy}>
+              Cancel
+            </Button>
+            <Button
+              onClick={submit}
+              disabled={!canSubmit}
+              data-testid="project-view-settings-submit"
+            >
+              {editing
+                ? "Save"
+                : isBatch
+                  ? `Create ${template?.batch?.length ?? 0} tabs`
+                  : "Create"}
+            </Button>
+          </div>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -793,6 +1098,21 @@ const MONTHS = [
 
 const ORDINALS = ["1st", "2nd", "3rd", "4th", "5th"];
 
+const MONTH_ABBR = [
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+  "Jul",
+  "Aug",
+  "Sep",
+  "Oct",
+  "Nov",
+  "Dec",
+];
+
 /** Map a `YYYY-MM-DD` calendar date to a "Nth week of <Month>" label,
  *  rounded to the closest week within that month. Week boundaries
  *  are 1-7, 8-14, 15-21, 22-28, 29-end (so a 5-week bucket is only
@@ -812,4 +1132,122 @@ function formatAu(iso: string): string {
   const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (!m) return iso;
   return `${m[3]}/${m[2]}/${m[1]}`;
+}
+
+// ---------------------------------------------------------------------------
+// Per-view due-date display preference.
+//
+// Three modes selectable from the edit dialog:
+//   - "hide"  — no badge on the tab.
+//   - "week"  — "Nth week of <Month>" (default). When the due
+//     year differs from the current year the year is appended so
+//     a 2027 due date doesn't read as "next month".
+//   - "date"  — compact `DD:Mon:YY` (abbreviated month, e.g.
+//     `13:Jun:26`) so the badge doesn't get mistaken for a
+//     time-of-day stamp like 13:06:26.
+//
+// Persisted in localStorage keyed by view id so the choice is
+// machine-local but survives reloads, no backend migration needed.
+// ---------------------------------------------------------------------------
+
+export type DateDisplayMode = "hide" | "week" | "date";
+
+const DATE_DISPLAY_DEFAULT: DateDisplayMode = "week";
+const DATE_DISPLAY_LS_PREFIX = "dp.projectView.dateDisplay.";
+
+function isDateDisplayMode(v: unknown): v is DateDisplayMode {
+  return v === "hide" || v === "week" || v === "date";
+}
+
+/** Read a saved display mode for `viewId`. Returns the default
+ *  ("week") on first access / corrupt value / SSR. */
+export function readDateDisplayMode(viewId: string): DateDisplayMode {
+  if (typeof window === "undefined") return DATE_DISPLAY_DEFAULT;
+  try {
+    const raw = window.localStorage.getItem(DATE_DISPLAY_LS_PREFIX + viewId);
+    return isDateDisplayMode(raw) ? raw : DATE_DISPLAY_DEFAULT;
+  } catch {
+    return DATE_DISPLAY_DEFAULT;
+  }
+}
+
+/** Persist `mode` for `viewId`. A no-op (silently) when storage
+ *  is unavailable (private mode quota, SSR). */
+export function writeDateDisplayMode(
+  viewId: string,
+  mode: DateDisplayMode,
+): void {
+  if (typeof window === "undefined") return;
+  try {
+    if (mode === DATE_DISPLAY_DEFAULT) {
+      window.localStorage.removeItem(DATE_DISPLAY_LS_PREFIX + viewId);
+    } else {
+      window.localStorage.setItem(DATE_DISPLAY_LS_PREFIX + viewId, mode);
+    }
+  } catch {
+    // ignore
+  }
+}
+
+/** Format `iso` (`YYYY-MM-DD`) per `mode`. Returns `null` when
+ *  the badge should be hidden. The "week" mode appends the year
+ *  whenever the due year differs from the current calendar year
+ *  so a 2027 date doesn't get confused with this year's June. */
+export function formatDateDisplay(
+  iso: string,
+  mode: DateDisplayMode,
+): string | null {
+  if (mode === "hide") return null;
+  const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return null;
+  if (mode === "date") {
+    // DD:Mon:YY — abbreviated month so the badge doesn't read
+    // like a clock time (e.g. "13:Jun:26" instead of "13:06:26").
+    const monthIdx = Number(m[2]) - 1;
+    const mon =
+      monthIdx >= 0 && monthIdx < 12
+        ? MONTH_ABBR[monthIdx]
+        : m[2];
+    return `${m[3]}:${mon}:${m[1]!.slice(2)}`;
+  }
+  // mode === "week"
+  const base = weekOfMonthLabel(iso);
+  if (!base) return null;
+  const dueYear = Number(m[1]);
+  const thisYear = new Date().getFullYear();
+  return dueYear === thisYear ? base : `${base} ${dueYear}`;
+}
+
+// ---------------------------------------------------------------------------
+// Per-view "completed" flag.
+//
+// Lets the user mark a gate / view as done independently of the
+// open/total issue count. Persisted in localStorage (same scope
+// as the date-display mode) so the choice is machine-local but
+// survives reloads. When set, the tab renders the green-tick
+// badge regardless of the underlying issue counts.
+// ---------------------------------------------------------------------------
+
+const COMPLETED_LS_PREFIX = "dp.projectView.completed.";
+
+export function readCompleted(viewId: string): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem(COMPLETED_LS_PREFIX + viewId) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function writeCompleted(viewId: string, completed: boolean): void {
+  if (typeof window === "undefined") return;
+  try {
+    if (completed) {
+      window.localStorage.setItem(COMPLETED_LS_PREFIX + viewId, "1");
+    } else {
+      window.localStorage.removeItem(COMPLETED_LS_PREFIX + viewId);
+    }
+  } catch {
+    // ignore
+  }
 }

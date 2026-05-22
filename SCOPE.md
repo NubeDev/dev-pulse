@@ -68,6 +68,15 @@ The interaction with the rest of the architecture stays consistent:
 
 Explicitly **not** in §16's v1 cut: PR mutations, discussions, reactions, attachments, and label/milestone administration (we *use* existing labels, we don't manage them). Those remain future-phase.
 
+#### 4.1.1 Local-only issues
+
+The Add-issue → **Create new** dialog on a project exposes two sibling buttons:
+
+- **Create** — inserts a row directly into `dp_issues` with `is_local = TRUE` and a synthetic per-repo negative `number` (allocated from `dp_repos.local_issue_counter`). No GitHub call, no `issues: write` requirement; works on read-only org installations. The row appears in the project's issue list with a `local` chip in place of the repo badge and a dashed amber border so it reads as "note, not GitHub issue" at a glance.
+- **Create and sync to GitHub** — the historical behaviour: backend POSTs to GitHub, mirrors the response into `dp_issues`, attaches to the project.
+
+Local-only rows participate in project / view / tag membership, the inbox, and the audit log identically to GitHub-backed rows. They never appear on github.com. A future "Sync to GitHub" action on the issue detail pane will promote a local row in place (UPDATE `is_local = FALSE` and rewrite `number` / `github_id` / `github_node_id` from the GitHub create response) so every membership / tag / inbox-state row keyed off `dp_issues.id` survives the promotion.
+
 ### 4.2 In scope — pinned favourites & project tags (detailed in [SCOPE-PROJECTS.md](SCOPE-PROJECTS.md))
 
 Users can pin a small set of **favourite repos and tags** that surface as a fast-access list in the UI (sidebar / dashboard) and as the default filter on issue-management views. Pins are **per-user** state, stored in the `dev-pulse` database (not on GitHub), and gated by the §15.11 access policy.

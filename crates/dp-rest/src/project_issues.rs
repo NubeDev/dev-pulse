@@ -1604,6 +1604,7 @@ mod tests {
             version: 1,
             github_node_id: None,
             updated_at: Utc::now(),
+            is_local: false,
         };
         store.issues.lock().unwrap().push(i.clone());
         i

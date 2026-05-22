@@ -28,7 +28,7 @@
  * `localStorage` under `dp:projects:milestones-collapsed`.
  */
 import { useState } from "react";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { ChevronDown, ChevronRight, PlusIcon } from "lucide-react";
 
 import {
   DropdownMenu,
@@ -37,6 +37,11 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Progress } from "@/components/ui/progress";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { HelpHint } from "@/components/help-hint";
 
 import type { MilestoneDto } from "../api/client.js";
@@ -160,6 +165,22 @@ export function MilestonesStrip({
             "Click Milestones to collapse / expand the strip — the choice persists across projects.",
           ]}
         />
+        {onCreateMilestone && !collapsed && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={onCreateMilestone}
+                className="ml-1 flex size-6 items-center justify-center rounded-md border border-dashed border-muted-foreground/40 text-muted-foreground transition-colors hover:border-foreground hover:text-foreground"
+                data-testid="project-milestone-create"
+                aria-label="New milestone"
+              >
+                <PlusIcon className="size-3.5" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>New milestone</TooltipContent>
+          </Tooltip>
+        )}
       </div>
       {!collapsed && (
         <div id="project-milestones-body">
@@ -175,18 +196,6 @@ export function MilestonesStrip({
             adoptBusy={adoptBusy}
             writeBusy={writeBusy}
           />
-          {onCreateMilestone && (
-            <div className="mt-3 flex">
-              <button
-                type="button"
-                onClick={onCreateMilestone}
-                className="flex min-w-[160px] items-center justify-center rounded-md border border-dashed border-muted-foreground/40 px-3 py-2 text-sm text-muted-foreground transition-colors hover:border-foreground hover:text-foreground"
-                data-testid="project-milestone-create"
-              >
-                + New milestone
-              </button>
-            </div>
-          )}
         </div>
       )}
     </div>

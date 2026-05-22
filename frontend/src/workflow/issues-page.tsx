@@ -832,7 +832,9 @@ function IssueEditForm({
         </Badge>
       </CardHeader>
       <CardContent>
-        <WritesGate orgLogin={orgLogin}>
+        <WritesGate
+          orgLogin={issue.is_local ? undefined : orgLogin}
+        >
           <IssueFormBody
             key={`${issue.id}:${issue.version}:${formKey}`}
             issue={issue}
@@ -1015,23 +1017,28 @@ function IssueFormBody({
       <IssueProjectChip issueId={issue.id} />
       <IssueTagsEditor issue={issue} />
       <IssueDatesEditor issueId={issue.id} />
-      <form className="flex flex-col gap-3 border-t border-border pt-4" onSubmit={onComment}>
-        <Label>Add comment</Label>
-        <Textarea
-          value={comment}
-          onChange={(e) => setComment(e.target.value)}
-          rows={3}
-          placeholder="Write a comment…"
-        />
-        <div>
-          <Button
-            type="submit"
-            disabled={addComment.isPending || !comment.trim()}
-          >
-            {addComment.isPending ? "Posting…" : "Comment"}
-          </Button>
-        </div>
-      </form>
+      {/* Local-only issues don't exist on GitHub, so there's no
+          comment thread to post into. Hide the affordance entirely
+          rather than render a button that can only return 400. */}
+      {!issue.is_local && (
+        <form className="flex flex-col gap-3 border-t border-border pt-4" onSubmit={onComment}>
+          <Label>Add comment</Label>
+          <Textarea
+            value={comment}
+            onChange={(e) => setComment(e.target.value)}
+            rows={3}
+            placeholder="Write a comment…"
+          />
+          <div>
+            <Button
+              type="submit"
+              disabled={addComment.isPending || !comment.trim()}
+            >
+              {addComment.isPending ? "Posting…" : "Comment"}
+            </Button>
+          </div>
+        </form>
+      )}
     </div>
   );
 }

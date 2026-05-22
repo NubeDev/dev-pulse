@@ -12,7 +12,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import {
@@ -31,7 +30,7 @@ import {
   useArchiveProject,
   usePatchProject,
 } from "../../projects/use-projects-data.js";
-import { DUE_TONE_CLASSES, SORT_PAIRS, STATUS_TONE } from "./portfolio-constants.js";
+import { SORT_PAIRS, STATUS_TONE } from "./portfolio-constants.js";
 import { buildRoute, currentParams } from "./portfolio-url.js";
 import { relativeDue } from "./portfolio-kpis.js";
 
@@ -101,6 +100,7 @@ export function PortfolioTable({
           <TableHead>Org</TableHead>
           <TableHead>Status</TableHead>
           <SortableHead label="Due" axis="due" current={sort} route={route} />
+          <TableHead>Gate</TableHead>
           <SortableHead
             label="Progress"
             axis="progress"
@@ -117,7 +117,6 @@ export function PortfolioTable({
       </TableHeader>
       <TableBody>
         {rows.map((row) => {
-          const due = relativeDue(row.due_at, nowMs);
           const open = row.issue_count - row.closed_issue_count;
           return (
             <TableRow
@@ -133,7 +132,7 @@ export function PortfolioTable({
                   <ProjectAvatar id={row.id} name={row.name} />
                   <div className="min-w-0">
                     <a
-                      href={`#${projectDetailRoute(row.id)}`}
+                      href={projectDetailRoute(row.id)}
                       className="block truncate hover:underline"
                       onClick={(e) => e.stopPropagation()}
                     >
@@ -161,16 +160,10 @@ export function PortfolioTable({
                 </span>
               </TableCell>
               <TableCell>
-                {due ? (
-                  <Badge
-                    variant="outline"
-                    className={DUE_TONE_CLASSES[due.tone]}
-                  >
-                    {due.label}
-                  </Badge>
-                ) : (
-                  <span className="text-muted-foreground">—</span>
-                )}
+                <DueCell due={row.due_at} nowMs={nowMs} />
+              </TableCell>
+              <TableCell>
+                <CurrentGateCell projectId={row.id} />
               </TableCell>
               <TableCell className="text-right">
                 <div className="flex items-center justify-end gap-2">
@@ -261,6 +254,116 @@ function PortfolioRowArchive({
         </Button>
       </TooltipTrigger>
       <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+/**
+ * Due-date cell. Shows the formatted calendar date (UK
+ * dd/mm/yyyy) so the column reads as a deadline rather than a
+ * countdown; the tooltip carries the relative phrasing
+ * ("due in 173d" / "5d overdue") so users still get the at-a-
+ * glance urgency on hover. Colour comes from the same tone
+ * scale as the old badge, but we render it as plain text now
+ * (a date doesn't need to look like a pill).
+ */
+function DueCell({
+  due,
+  nowMs,
+}: {
+  due: string | null | undefined;
+  nowMs: number;
+}): JSX.Element {
+  if (!due) return <span className="text-muted-foreground">—</span>;
+  const target = new Date(due);
+  if (Number.isNaN(target.getTime())) {
+    return <span className="text-muted-foreground">—</span>;
+  }
+  const rel = relativeDue(due, nowMs);
+  const dd = String(target.getDate()).padStart(2, "0");
+  const mm = String(target.getMonth() + 1).padStart(2, "0");
+  const yyyy = target.getFullYear();
+  const formatted = `${dd}/${mm}/${yyyy}`;
+  const toneClass: Record<"ok" | "soon" | "overdue", string> = {
+    ok: "text-foreground",
+    soon: "text-amber-600 dark:text-amber-400",
+    overdue: "text-red-600 dark:text-red-400",
+  };
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span
+          className={cn(
+            "text-sm tabular-nums",
+            rel ? toneClass[rel.tone] : "text-foreground",
+          )}
+        >
+          {formatted}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent>{rel ? rel.label : formatted}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+/**
+ * "Current gate" cell — shows the next project view that still
+ * has open issues, by view `position`. Treats a view as
+ * complete when `open_issue_count === 0` (and at least one
+ * issue is tracked). If every view is complete we render a
+ * green ✓ "All gates done"; if no views have issues yet we
+ * render an em-dash. Reuses the same react-query key as the
+ * "Tasks/Issues done" cell so we only fetch once per project.
+ */
+function CurrentGateCell({ projectId }: { projectId: string }): JSX.Element {
+  const q = useQuery({
+    queryKey: ["project-views-count", projectId],
+    queryFn: () => api.listProjectViews(projectId),
+    staleTime: 30_000,
+  });
+  if (q.isLoading) {
+    return <span className="text-xs text-muted-foreground">…</span>;
+  }
+  if (q.isError || !q.data || q.data.length === 0) {
+    return <span className="text-xs text-muted-foreground">—</span>;
+  }
+  const ordered = [...q.data].sort((a, b) => a.position - b.position);
+  const withIssues = ordered.filter((v) => (v.total_issue_count ?? 0) > 0);
+  if (withIssues.length === 0) {
+    return <span className="text-xs text-muted-foreground">—</span>;
+  }
+  const current = withIssues.find((v) => (v.open_issue_count ?? 0) > 0);
+  if (!current) {
+    return (
+      <span
+        className="inline-flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400"
+        data-testid={`portfolio-current-gate-${projectId}`}
+        data-complete="true"
+      >
+        <CheckCircle2Icon className="size-3.5" />
+        All gates done
+      </span>
+    );
+  }
+  const open = current.open_issue_count ?? 0;
+  const total = current.total_issue_count ?? 0;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span
+          className="inline-flex max-w-[12rem] items-center gap-1 truncate rounded-md bg-muted px-1.5 py-0.5 text-xs text-foreground ring-1 ring-inset ring-border"
+          data-testid={`portfolio-current-gate-${projectId}`}
+          data-complete="false"
+        >
+          <span className="truncate">{current.name}</span>
+          <span className="tabular-nums opacity-70">
+            {total - open}/{total}
+          </span>
+        </span>
+      </TooltipTrigger>
+      <TooltipContent>
+        Current gate: {current.name} — {total - open}/{total} issues closed
+      </TooltipContent>
     </Tooltip>
   );
 }
