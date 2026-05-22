@@ -10,7 +10,7 @@
 //! validates the inbound JSON against this enum before handing it to
 //! the store, so the JSONB column never carries an unknown dim.
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -45,6 +45,13 @@ pub struct ProjectView {
     pub position: i32,
     /// Visibility. v1 always `Private`; `Project` is reserved.
     pub visibility: ProjectViewVisibility,
+    /// Optional start date for the view's timeline. Independent of
+    /// the parent project's `start_at`. Stored as a tz-agnostic
+    /// DATE; rendered in AU `dd/mm/yyyy` by the workbench.
+    pub start_date: Option<NaiveDate>,
+    /// Optional due date for the view's timeline. Same shape and
+    /// rendering as [`Self::start_date`].
+    pub due_date: Option<NaiveDate>,
     /// First write.
     pub created_at: DateTime<Utc>,
     /// Most recent mutation to any field.
@@ -141,4 +148,8 @@ pub struct ProjectViewUpsert {
     pub sort: String,
     /// Visibility. v1 callers always pass `Private`.
     pub visibility: ProjectViewVisibility,
+    /// Optional start date for the view's timeline.
+    pub start_date: Option<NaiveDate>,
+    /// Optional due date for the view's timeline.
+    pub due_date: Option<NaiveDate>,
 }

@@ -249,7 +249,12 @@ export function useLinkTagTargets(id: string) {
       }
       return api.linkTagTargets(id, req);
     },
-    onSuccess: () => qc.invalidateQueries({ queryKey: workflowKeys.tag(id) }),
+    // Broad invalidation: link changes affect tag detail, the
+    // global tag list (link counts), and any cached IssueDto /
+    // issue list whose embedded `tags` array now needs to refresh
+    // (see tagging.md §7.4 — the `attach_issue_tags` join lands
+    // back on the next GET).
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["workflow"] }),
   });
 }
 
@@ -260,7 +265,7 @@ export function useUnlinkTagTargets(id: string) {
       if (USE_MOCK) return;
       await api.unlinkTagTargets(id, req);
     },
-    onSuccess: () => qc.invalidateQueries({ queryKey: workflowKeys.tag(id) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["workflow"] }),
   });
 }
 

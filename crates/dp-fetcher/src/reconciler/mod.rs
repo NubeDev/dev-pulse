@@ -219,6 +219,15 @@ impl Reconciler {
     /// `fetch-now` CLI, and `POST /admin/refresh` call — Stage 8's
     /// shared seam.
     pub async fn do_tick(&self, scope: Scope) -> Result<TickStats, ReconcilerError> {
+        // The local request budget on the shared `Client` is a
+        // *per-tick* fuse, not a per-process one — without this reset
+        // the counter accumulates across every scheduled tick and
+        // every subsequent tick fails every `(target, kind)` pair with
+        // `BudgetExhausted` before issuing a single HTTP call. The
+        // `Client::reset_budget` doc-comment already promises this is
+        // done here; the scheduled / `/admin/refresh` paths were
+        // relying on it.
+        self.client.reset_budget();
         let run_id = self.store.start_fetch_run(FetchRunKind::Reconciler).await?;
         let all_targets = self.targets.list_targets().await?;
         let targets: Vec<RepoTarget> = all_targets

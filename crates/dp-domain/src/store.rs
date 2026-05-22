@@ -1325,6 +1325,20 @@ pub trait Store: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// Reverse lookup: every link of `kind` whose `target_*_id`
+    /// matches one of `target_ids`. Used by the issue detail and
+    /// list handlers to embed `tags` on each `IssueDto` in one
+    /// round-trip instead of N per-tag scans. Viewer-visibility
+    /// filtering of the *tags* the links point at is the caller's
+    /// job — this method returns every link in the table.
+    async fn list_tag_links_for_targets(
+        &self,
+        _kind: TagLinkKind,
+        _target_ids: &[Uuid],
+    ) -> Result<Vec<TagLink>, StoreError> {
+        Ok(Vec::new())
+    }
+
     /// Attach a batch of links to a tag, **transactionally
     /// all-or-nothing** (§7.5). If any link fails validation
     /// (duplicate, target not visible, wrong kind, missing target

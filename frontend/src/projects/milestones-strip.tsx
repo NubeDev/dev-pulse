@@ -108,8 +108,15 @@ export function MilestonesStrip({
   }
   if (milestones.length === 0 && !onCreateMilestone) return null;
 
-  const closed = milestones.filter((m) => m.state === "closed");
-  const open = milestones.filter((m) => m.state === "open");
+  // "Completed" for the purposes of timeline layout = GitHub closed,
+  // OR every attached issue is closed (open_issues === 0 with at
+  // least one closed). Both kinds sort to the left so the
+  // in-progress dot lands on the first node that's still actually
+  // accruing work.
+  const isCompleted = (m: MilestoneDto): boolean =>
+    m.state === "closed" || (m.open_issues === 0 && m.closed_issues > 0);
+  const closed = milestones.filter(isCompleted);
+  const open = milestones.filter((m) => !isCompleted(m));
   const ordered = [...closed, ...open];
   const inProgressIndex = closed.length;
   const total = milestones.length;
@@ -262,27 +269,31 @@ function MilestoneTimeline({
           />
         </div>
 
-        {ordered.map((m, i) => (
-          <MilestoneTimelineNode
-            key={m.id}
-            milestone={m}
-            status={
-              m.state === "closed"
-                ? "completed"
-                : i === inProgressIndex
-                  ? "in-progress"
-                  : "upcoming"
-            }
-            isPrimary={primaryMilestoneId === m.id}
-            onAdoptPrimary={onAdoptPrimary}
-            onFilterToMilestone={onFilterToMilestone}
-            onEditMilestone={onEditMilestone}
-            onToggleMilestoneState={onToggleMilestoneState}
-            onDeleteMilestone={onDeleteMilestone}
-            adoptBusy={adoptBusy}
-            writeBusy={writeBusy}
-          />
-        ))}
+        {ordered.map((m, i) => {
+          const completed =
+            m.state === "closed" ||
+            (m.open_issues === 0 && m.closed_issues > 0);
+          const status: TimelineStatus = completed
+            ? "completed"
+            : i === inProgressIndex
+              ? "in-progress"
+              : "upcoming";
+          return (
+            <MilestoneTimelineNode
+              key={m.id}
+              milestone={m}
+              status={status}
+              isPrimary={primaryMilestoneId === m.id}
+              onAdoptPrimary={onAdoptPrimary}
+              onFilterToMilestone={onFilterToMilestone}
+              onEditMilestone={onEditMilestone}
+              onToggleMilestoneState={onToggleMilestoneState}
+              onDeleteMilestone={onDeleteMilestone}
+              adoptBusy={adoptBusy}
+              writeBusy={writeBusy}
+            />
+          );
+        })}
       </div>
     </div>
   );

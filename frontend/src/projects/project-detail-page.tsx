@@ -45,6 +45,7 @@ import {
 import { DateInput } from "@/components/ui/date-input";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import {
   DropdownMenu,
@@ -59,7 +60,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { useQuery } from "@tanstack/react-query";
 
 import { api } from "../api/client.js";
-import type { IssueListItem, MilestoneDto, OrgDto, ProjectDto } from "../api/client.js";
+import type { IssueListItem, MilestoneDto, OrgDto, PatchProjectRequest, ProjectDto } from "../api/client.js";
 import { PageHeading } from "../components/page-heading.jsx";
 import { HelpHint } from "@/components/help-hint";
 import { navigate, projectDetailRoute, projectDetailRouteWithParams, projectFilter, projectGroupBy, projectSelectedIssue, projectSort, projectViewId, useRoute } from "../routes.js";
@@ -176,6 +177,7 @@ function ProjectDetailBody({ project }: { project: ProjectDto }): JSX.Element {
   const [manageReposOpen, setManageReposOpen] = useState(false);
   const [archiveConfirmOpen, setArchiveConfirmOpen] = useState(false);
   const [editDatesOpen, setEditDatesOpen] = useState(false);
+  const [editDetailsOpen, setEditDetailsOpen] = useState(false);
   const [newMilestoneOpen, setNewMilestoneOpen] = useState(false);
   const [editMilestone, setEditMilestone] = useState<MilestoneDto | null>(null);
   const [deleteMilestoneTarget, setDeleteMilestoneTarget] =
@@ -235,6 +237,16 @@ function ProjectDetailBody({ project }: { project: ProjectDto }): JSX.Element {
               </a>
             ) : null}
             <span data-testid="project-detail-name">{project.name}</span>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-6 text-muted-foreground hover:text-foreground"
+              title="Edit project name and description"
+              data-testid="project-detail-edit-details"
+              onClick={() => setEditDetailsOpen(true)}
+            >
+              <PencilIcon className="size-3.5" />
+            </Button>
             <HelpHint
               title="Project page"
               body={[
@@ -287,7 +299,15 @@ function ProjectDetailBody({ project }: { project: ProjectDto }): JSX.Element {
                 ))}
               </span>
             ) : null}
-            {project.description ? <span>{project.description}</span> : null}
+            {project.description ? (
+              <span
+                className="line-clamp-2 max-w-3xl break-words text-sm text-muted-foreground"
+                title={project.description}
+                data-testid="project-detail-description"
+              >
+                {project.description}
+              </span>
+            ) : null}
           </span>
         }
         trailing={
@@ -335,6 +355,15 @@ function ProjectDetailBody({ project }: { project: ProjectDto }): JSX.Element {
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuLabel>Actions</DropdownMenuLabel>
+                <DropdownMenuItem
+                  onSelect={(e) => {
+                    e.preventDefault();
+                    setEditDetailsOpen(true);
+                  }}
+                  data-testid="project-settings-edit-details"
+                >
+                  Edit details…
+                </DropdownMenuItem>
                 <DropdownMenuItem
                   disabled={archivePending}
                   onSelect={(e) => {
@@ -482,6 +511,12 @@ function ProjectDetailBody({ project }: { project: ProjectDto }): JSX.Element {
       <EditDatesDialog
         open={editDatesOpen}
         onOpenChange={setEditDatesOpen}
+        project={project}
+      />
+
+      <EditDetailsDialog
+        open={editDetailsOpen}
+        onOpenChange={setEditDetailsOpen}
         project={project}
       />
 
@@ -960,6 +995,154 @@ function EditDatesDialog({
               type="submit"
               data-testid="edit-dates-submit"
               disabled={patch.isPending || rangeError !== null}
+            >
+              {patch.isPending ? "Saving…" : "Save"}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/**
+ * Edit the project's name and description. Sends `PATCH
+ * /projects/{id}` under §8.2 CAS — only fields the user actually
+ * changed go on the wire so an unrelated concurrent edit to the
+ * lead / dates / status won't be clobbered. A 409 stale-version
+ * surfaces as the standard mutation error here; the user can
+ * close and reopen the dialog to pick up the new row.
+ */
+function EditDetailsDialog({
+  open,
+  onOpenChange,
+  project,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  project: ProjectDto;
+}): JSX.Element {
+  const patch = usePatchProject(project.id);
+  const [name, setName] = useState(project.name);
+  const [description, setDescription] = useState(project.description ?? "");
+
+  useEffect(() => {
+    if (!open) {
+      patch.reset();
+      return;
+    }
+    setName(project.name);
+    setDescription(project.description ?? "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, project.name, project.description]);
+
+  const trimmedName = name.trim();
+  const nameError = trimmedName.length === 0 ? "Name is required." : null;
+
+  const onSubmit = (e: React.FormEvent): void => {
+    e.preventDefault();
+    if (nameError) return;
+    const body: PatchProjectRequest = { expected_version: project.version };
+    if (trimmedName !== project.name) body.name = trimmedName;
+    const trimmedDesc = description.trim();
+    const currentDesc = project.description ?? "";
+    if (trimmedDesc !== currentDesc) {
+      // `null` clears the column; empty string would round-trip
+      // an empty description (server treats both as "no value"
+      // but `null` is the documented clear-form).
+      body.description = trimmedDesc.length === 0 ? null : trimmedDesc;
+    }
+    // Nothing changed — just close.
+    if (body.name === undefined && body.description === undefined) {
+      onOpenChange(false);
+      return;
+    }
+    patch.mutate(body, { onSuccess: () => onOpenChange(false) });
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent
+        // Hard-cap via inline style so a runaway grid child (long
+        // textarea token) cannot push the dialog wider than its
+        // `sm:max-w-lg` cap. `overflow-hidden` + `min-w-0` is the
+        // belt-and-braces for the grid layout the upstream
+        // `DialogContent` uses.
+        style={{ maxWidth: "32rem" }}
+        className="sm:max-w-lg min-w-0 overflow-hidden"
+        data-testid="edit-details-dialog"
+      >
+        <DialogHeader>
+          <DialogTitle>Edit project details</DialogTitle>
+          <DialogDescription>
+            Update the project's name and description. Changes save
+            through the §8.2 CAS path — a concurrent edit elsewhere
+            surfaces as a stale-version error you can retry.
+          </DialogDescription>
+        </DialogHeader>
+
+        <form className="flex min-w-0 flex-col gap-4" onSubmit={onSubmit}>
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="edit-details-name">Name</Label>
+            <Input
+              id="edit-details-name"
+              data-testid="edit-details-name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              autoFocus
+              maxLength={200}
+            />
+            {nameError && (
+              <p className="text-xs text-destructive">{nameError}</p>
+            )}
+          </div>
+
+          <div className="flex min-w-0 flex-col gap-2">
+            <Label htmlFor="edit-details-description">Description</Label>
+            <Textarea
+              id="edit-details-description"
+              data-testid="edit-details-description"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              rows={5}
+              placeholder="What is this project for?"
+              // The shadcn `Textarea` ships `field-sizing-content`
+              // (auto-grows to fit content) + lives inside the
+              // `grid`-laid `DialogContent`, whose grid items
+              // default to `min-width: auto`. A single long
+              // unbreakable token would push the form past the
+              // dialog's `sm:max-w-lg` cap. Inline style wins over
+              // the upstream utility class regardless of tailwind-
+              // merge ordering; `wrap-anywhere` + `w-full` ensures
+              // the textarea itself cannot exceed its parent.
+              style={{ fieldSizing: "fixed" } as React.CSSProperties}
+              className="block w-full max-w-full resize-y overflow-auto break-all [overflow-wrap:anywhere]"
+            />
+            <p className="text-xs text-muted-foreground">
+              Plain text. Leave blank to clear.
+            </p>
+          </div>
+
+          {patch.isError && (
+            <Alert variant="destructive" data-testid="edit-details-error">
+              <AlertTitle>Save failed</AlertTitle>
+              <AlertDescription>{patch.error.message}</AlertDescription>
+            </Alert>
+          )}
+
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => onOpenChange(false)}
+              disabled={patch.isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              data-testid="edit-details-submit"
+              disabled={patch.isPending || nameError !== null}
             >
               {patch.isPending ? "Saving…" : "Save"}
             </Button>

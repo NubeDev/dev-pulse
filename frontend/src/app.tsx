@@ -37,7 +37,6 @@ import { UserReportPage } from "./reports/user-report-page.jsx";
 import { IssuesPage } from "./workflow/issues-page.jsx";
 import { ReposPage } from "./workflow/repos-page.jsx";
 import { TriagePage } from "./workflow/triage-page.jsx";
-import { ProjectsPage } from "./projects/projects-page.jsx";
 import { ProjectDetailPage } from "./projects/project-detail-page.jsx";
 import {
   accountTabOf,
@@ -126,8 +125,12 @@ function SectionPane({
     case "workflow":
       return <WorkflowPane tab={workflowTabOf(route)} />;
     case "projects": {
+      // `#/projects` now lands on the Portfolio report — the
+      // standalone `ProjectsPage` list was retired (see
+      // `linear-projects-v2.md` §6.1; the four sidebar sub-items
+      // already drive `?status=` filters against the same page).
       const id = projectDetailIdOf(route);
-      return id ? <ProjectDetailPage projectId={id} /> : <ProjectsPage />;
+      return id ? <ProjectDetailPage projectId={id} /> : <ProjectPortfolioPage />;
     }
     case "account":
       return <AccountPane tab={accountTabOf(route)} />;

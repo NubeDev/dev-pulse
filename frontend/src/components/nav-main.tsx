@@ -19,6 +19,11 @@ import {
   SidebarMenuSubButton,
   SidebarMenuSubItem,
 } from "@/components/ui/sidebar"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 
 export interface NavMainSubItem {
   title: string
@@ -28,6 +33,10 @@ export interface NavMainSubItem {
    *  Used to surface live counts (e.g. the inbox unread / queue size
    *  on `#/workflow/issues` — `linear-projects-idea.md` §3.8). */
   badge?: React.ReactNode
+  /** One-line plain-English explanation surfaced as a hover tooltip.
+   *  The sub-titles are necessarily terse (sidebar real estate); the
+   *  description is the "what does this page actually do" hint. */
+  description?: string
 }
 
 export interface NavMainItem {
@@ -79,27 +88,43 @@ export function NavMain({
                   <SidebarMenuSub data-testid={item.subTestId}>
                     {item.items.map((sub) => {
                       const isSubActive = activeUrl === sub.url
+                      const button = (
+                        <SidebarMenuSubButton asChild isActive={isSubActive}>
+                          <a
+                            href={sub.url}
+                            aria-current={isSubActive ? "page" : undefined}
+                            style={item.accent ? ({ "--nav-accent": item.accent } as React.CSSProperties) : undefined}
+                          >
+                            {sub.icon && (
+                              <sub.icon
+                                className={item.accent ? "text-(--nav-accent) opacity-80" : "text-muted-foreground"}
+                              />
+                            )}
+                            <span>{sub.title}</span>
+                            {sub.badge != null && (
+                              <span className="ml-auto" data-testid="nav-sub-badge">
+                                {sub.badge}
+                              </span>
+                            )}
+                          </a>
+                        </SidebarMenuSubButton>
+                      )
                       return (
                         <SidebarMenuSubItem key={sub.title}>
-                          <SidebarMenuSubButton asChild isActive={isSubActive}>
-                            <a
-                              href={sub.url}
-                              aria-current={isSubActive ? "page" : undefined}
-                              style={item.accent ? ({ "--nav-accent": item.accent } as React.CSSProperties) : undefined}
-                            >
-                              {sub.icon && (
-                                <sub.icon
-                                  className={item.accent ? "text-(--nav-accent) opacity-80" : "text-muted-foreground"}
-                                />
-                              )}
-                              <span>{sub.title}</span>
-                              {sub.badge != null && (
-                                <span className="ml-auto" data-testid="nav-sub-badge">
-                                  {sub.badge}
-                                </span>
-                              )}
-                            </a>
-                          </SidebarMenuSubButton>
+                          {sub.description ? (
+                            <Tooltip>
+                              <TooltipTrigger asChild>{button}</TooltipTrigger>
+                              <TooltipContent
+                                side="right"
+                                align="center"
+                                className="max-w-xs"
+                              >
+                                {sub.description}
+                              </TooltipContent>
+                            </Tooltip>
+                          ) : (
+                            button
+                          )}
                         </SidebarMenuSubItem>
                       )
                     })}

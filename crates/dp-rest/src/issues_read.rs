@@ -33,11 +33,13 @@ use uuid::Uuid;
 
 use dp_domain::issue::{Issue, IssueState};
 use dp_domain::store::IssueListFilter;
+use dp_domain::tag_link::TagLinkKind;
 
 use crate::audit::Principal;
 use crate::error::ApiError;
 use crate::repos::{clamp_limit, clamp_offset};
 use crate::state::AppState;
+use crate::tags::ViewerVisibility;
 
 // ---------------------------------------------------------------------------
 // Wire DTOs
@@ -127,6 +129,33 @@ pub struct IssueDto {
     /// active.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bucket_keys: Option<Vec<Option<String>>>,
+    /// DP tags currently attached to this issue, filtered to the
+    /// viewer-visible subset per tagging.md §7.4. Populated by the
+    /// list and detail handlers; absent (treated as empty by
+    /// clients) on responses built before that join lands. Each
+    /// entry is the slim chip-render projection (`id`, `name`,
+    /// `color`, `scope_kind`) — enough for the issue-detail
+    /// picker and the row chips, no per-link metadata.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<IssueTagDto>,
+}
+
+/// Slim per-issue tag chip projection embedded in [`IssueDto::tags`].
+/// Tracks just what the workflow UI needs to render a chip and let
+/// the user remove it (`tag_id` keys the `DELETE /tags/{id}/links`
+/// call). Visibility is the *tag*'s — issue visibility is enforced
+/// by the parent handler.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct IssueTagDto {
+    /// Tag id (the picker uses this for link/unlink).
+    pub id: Uuid,
+    /// Display name (single token or `key:value`).
+    pub name: String,
+    /// Hex colour token used by the chip renderer.
+    pub color: String,
+    /// `user` / `team` / `org`. Lets the UI surface "your tag" vs
+    /// "team tag" without a second round-trip.
+    pub scope_kind: crate::tags::TagScopeKindDto,
 }
 
 /// Helper for the `skip_serializing_if` on [`IssueDto::unread`].
@@ -154,6 +183,7 @@ impl From<Issue> for IssueDto {
             repo_slug: None,
             unread: false,
             bucket_keys: None,
+            tags: Vec::new(),
         }
     }
 }
@@ -203,6 +233,70 @@ pub(crate) async fn attach_repo_slug_one(
     let Some(repo) = store.get_repo(dto.repo_id).await? else { return Ok(()) };
     let Some(org) = store.get_org(repo.org_id).await? else { return Ok(()) };
     dto.repo_slug = Some(format!("{}/{}", org.login, repo.name));
+    Ok(())
+}
+
+/// Embed `tags: Vec<IssueTagDto>` on every dto.
+///
+/// Single store round-trip for the link list, single round-trip
+/// for the visible-tag catalogue, then an in-memory join. Tags
+/// outside the viewer's visibility (per tagging.md §7.4) are
+/// dropped so the chip set matches what the picker would offer.
+///
+/// Failures inside this helper are *non-fatal* to the parent
+/// response: we surface them as empty `tags` rather than 500'ing
+/// the whole issue list, matching the §14.3 "decorative join"
+/// pattern already used by `attach_repo_slugs`.
+pub(crate) async fn attach_issue_tags(
+    store: &dyn dp_domain::store::Store,
+    viewer_user_id: Uuid,
+    dtos: &mut [IssueDto],
+) -> Result<(), ApiError> {
+    if dtos.is_empty() {
+        return Ok(());
+    }
+    let issue_ids: Vec<Uuid> = dtos.iter().map(|d| d.id).collect();
+    let links = store
+        .list_tag_links_for_targets(TagLinkKind::Issue, &issue_ids)
+        .await?;
+    if links.is_empty() {
+        return Ok(());
+    }
+
+    let visibility = ViewerVisibility::load(store, viewer_user_id).await?;
+    let team_ids = visibility.visible_team_ids(store).await?;
+    let orgs: Vec<Uuid> = visibility.visible_org_ids.iter().copied().collect();
+    let teams: Vec<Uuid> = team_ids.iter().copied().collect();
+    let tags = store
+        .list_tags_visible_to(viewer_user_id, &teams, &orgs, false)
+        .await?;
+    let mut by_id: HashMap<Uuid, IssueTagDto> = HashMap::with_capacity(tags.len());
+    for tag in tags {
+        if !visibility.can_see(&tag, &team_ids) {
+            continue;
+        }
+        by_id.insert(
+            tag.id,
+            IssueTagDto {
+                id: tag.id,
+                name: tag.name.clone(),
+                color: tag.color.clone(),
+                scope_kind: tag.scope_kind.into(),
+            },
+        );
+    }
+
+    let mut per_issue: HashMap<Uuid, Vec<IssueTagDto>> = HashMap::new();
+    for link in links {
+        let Some(issue_id) = link.target_issue_id else { continue };
+        let Some(chip) = by_id.get(&link.tag_id) else { continue };
+        per_issue.entry(issue_id).or_default().push(chip.clone());
+    }
+    for d in dtos.iter_mut() {
+        if let Some(v) = per_issue.remove(&d.id) {
+            d.tags = v;
+        }
+    }
     Ok(())
 }
 
@@ -416,7 +510,7 @@ where
 )]
 pub async fn list_issues(
     State(state): State<AppState>,
-    Extension(_principal): Extension<Principal>,
+    Extension(principal): Extension<Principal>,
     Query(q): Query<ListIssuesQuery>,
 ) -> Result<Json<IssueListResponse>, ApiError> {
     let filter = filter_from_query(&q);
@@ -424,6 +518,7 @@ pub async fn list_issues(
     let total = state.store.count_issues(&filter).await?;
     let mut dtos: Vec<IssueDto> = rows.into_iter().map(IssueDto::from).collect();
     attach_repo_slugs(&*state.store, &mut dtos).await?;
+    attach_issue_tags(&*state.store, principal.actor_user_id, &mut dtos).await?;
     Ok(Json(IssueListResponse {
         rows: dtos,
         total,
@@ -528,6 +623,7 @@ pub async fn me_queue(
         .await?;
     let mut dtos: Vec<IssueDto> = rows.into_iter().map(IssueDto::from).collect();
     attach_repo_slugs(&*state.store, &mut dtos).await?;
+    attach_issue_tags(&*state.store, principal.actor_user_id, &mut dtos).await?;
     Ok(Json(IssueListResponse {
         rows: dtos,
         total,
@@ -550,7 +646,7 @@ pub async fn me_queue(
 )]
 pub async fn get_issue_by_id(
     State(state): State<AppState>,
-    Extension(_principal): Extension<Principal>,
+    Extension(principal): Extension<Principal>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<IssueDto>, ApiError> {
     let issue = state.store.get_issue(id).await?;
@@ -558,6 +654,9 @@ pub async fn get_issue_by_id(
         Some(i) => {
             let mut dto = IssueDto::from(i);
             attach_repo_slug_one(&*state.store, &mut dto).await?;
+            let mut slice = [dto];
+            attach_issue_tags(&*state.store, principal.actor_user_id, &mut slice).await?;
+            let [dto] = slice;
             Ok(Json(dto))
         }
         None => Err(ApiError::NotFound {
@@ -584,7 +683,7 @@ pub async fn get_issue_by_id(
 )]
 pub async fn get_issue_by_number(
     State(state): State<AppState>,
-    Extension(_principal): Extension<Principal>,
+    Extension(principal): Extension<Principal>,
     Path((repo_id, number)): Path<(Uuid, i64)>,
 ) -> Result<Json<IssueDto>, ApiError> {
     let issue = state
@@ -595,6 +694,9 @@ pub async fn get_issue_by_number(
         Some(i) => {
             let mut dto = IssueDto::from(i);
             attach_repo_slug_one(&*state.store, &mut dto).await?;
+            let mut slice = [dto];
+            attach_issue_tags(&*state.store, principal.actor_user_id, &mut slice).await?;
+            let [dto] = slice;
             Ok(Json(dto))
         }
         None => Err(ApiError::NotFound {

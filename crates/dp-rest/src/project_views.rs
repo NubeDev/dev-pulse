@@ -31,7 +31,7 @@ use axum::{
     routing::{get, patch, post},
     Router,
 };
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -72,6 +72,12 @@ pub struct ProjectViewDto {
     pub position: i32,
     /// `"private"` (v1) or `"project"` (reserved).
     pub visibility: String,
+    /// Optional start date for the view's timeline.
+    /// Serialised as `YYYY-MM-DD` (or omitted/null when unset).
+    pub start_date: Option<NaiveDate>,
+    /// Optional due date for the view's timeline. Same shape as
+    /// [`Self::start_date`].
+    pub due_date: Option<NaiveDate>,
     /// First write timestamp.
     pub created_at: DateTime<Utc>,
     /// Most recent mutation.
@@ -105,6 +111,8 @@ impl From<ProjectView> for ProjectViewDto {
             sort: v.sort,
             position: v.position,
             visibility: v.visibility.as_str().to_string(),
+            start_date: v.start_date,
+            due_date: v.due_date,
             created_at: v.created_at,
             updated_at: v.updated_at,
             open_issue_count: None,
@@ -131,6 +139,14 @@ pub struct ProjectViewCreateBody {
     /// `"updated_desc"` to mean "default".
     #[serde(default = "default_sort")]
     pub sort: String,
+    /// Optional start date for the view's timeline (AU
+    /// `dd/mm/yyyy` in the picker, `YYYY-MM-DD` on the wire).
+    #[serde(default)]
+    pub start_date: Option<NaiveDate>,
+    /// Optional due date for the view's timeline. Same shape as
+    /// [`Self::start_date`].
+    #[serde(default)]
+    pub due_date: Option<NaiveDate>,
 }
 
 fn default_sort() -> String {
@@ -305,6 +321,8 @@ fn body_to_upsert(body: ProjectViewCreateBody) -> Result<ProjectViewUpsert, ApiE
         // v1 — private only. Reserved enum slot makes the future
         // shared-view slice a body field change, not a migration.
         visibility: ProjectViewVisibility::Private,
+        start_date: body.start_date,
+        due_date: body.due_date,
     })
 }
 
@@ -773,6 +791,8 @@ mod tests {
                 },
                 position,
                 visibility: upsert.visibility,
+                start_date: upsert.start_date,
+                due_date: upsert.due_date,
                 created_at: now,
                 updated_at: now,
             };
@@ -805,6 +825,8 @@ mod tests {
             v.filter_clauses = upsert.filter_clauses.clone();
             v.sort = upsert.sort.clone();
             v.visibility = upsert.visibility;
+            v.start_date = upsert.start_date;
+            v.due_date = upsert.due_date;
             v.updated_at = Utc::now();
             Ok(v.clone())
         }

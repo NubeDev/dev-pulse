@@ -70,13 +70,55 @@ const NAV_MAIN: NavMainItem[] = [
     accent: "var(--accent-reports)",
     subTestId: "reports-subnav",
     items: [
-      { title: "User", url: "#/reports/user", icon: IconUser },
-      { title: "Team", url: "#/reports/team", icon: IconUsers },
-      { title: "Org", url: "#/reports/org", icon: IconBuilding },
-      { title: "Leaderboard", url: "#/reports/leaderboard", icon: IconTrophy },
-      { title: "Repo activity", url: "#/reports/repo-activity", icon: IconBuilding },
-      { title: "Home-org split", url: "#/reports/home-org-split", icon: IconColumns },
-      { title: "Freshness", url: "#/reports/freshness", icon: IconClockHour4 },
+      {
+        title: "User",
+        url: "#/reports/user",
+        icon: IconUser,
+        description:
+          "One person's activity over a window — PRs opened, reviews given, comments, commits.",
+      },
+      {
+        title: "Team",
+        url: "#/reports/team",
+        icon: IconUsers,
+        description:
+          "Roll-up of a team's activity over a window. Same metrics as User, summed across members.",
+      },
+      {
+        title: "Org",
+        url: "#/reports/org",
+        icon: IconBuilding,
+        description:
+          "Whole-org activity over a window. Use for monthly or quarterly stakeholder snapshots.",
+      },
+      {
+        title: "Leaderboard",
+        url: "#/reports/leaderboard",
+        icon: IconTrophy,
+        description:
+          "Ranked list of contributors by activity volume in a window. Filter by org or team.",
+      },
+      {
+        title: "Repo activity",
+        url: "#/reports/repo-activity",
+        icon: IconBuilding,
+        description:
+          "Per-repo heatmap, review velocity, contributor diversity, and focus score for a window.",
+      },
+      {
+        title: "Home-org split",
+        url: "#/reports/home-org-split",
+        icon: IconColumns,
+        description:
+          "How much work each user did inside vs. outside their home org. Surfaces cross-org collaboration.",
+      },
+      {
+        title: "Freshness",
+        url: "#/reports/freshness",
+        icon: IconClockHour4,
+        description:
+          "When was each repo / user / org last refreshed from GitHub? Find stale data before reporting on it.",
+      },
     ],
   },
   {
@@ -86,9 +128,27 @@ const NAV_MAIN: NavMainItem[] = [
     accent: "var(--accent-reports)",
     subTestId: "workflow-subnav",
     items: [
-      { title: "Triage", url: "#/workflow/triage", icon: IconInbox },
-      { title: "Repos", url: "#/workflow/repos", icon: IconBuilding },
-      { title: "Issues", url: "#/workflow/issues", icon: IconBriefcase },
+      {
+        title: "Triage",
+        url: "#/workflow/triage",
+        icon: IconInbox,
+        description:
+          "Your inbox of issues / PRs needing your attention: review requests, mentions, assigned work.",
+      },
+      {
+        title: "Repos",
+        url: "#/workflow/repos",
+        icon: IconBuilding,
+        description:
+          "Pick which repos dev-pulse tracks. Toggle visibility and refresh schedule per repo.",
+      },
+      {
+        title: "Issues",
+        url: "#/workflow/issues",
+        icon: IconBriefcase,
+        description:
+          "Cross-repo issue search. Filter by state, labels, assignee, and date — independent of projects.",
+      },
     ],
   },
   {
@@ -104,11 +164,41 @@ const NAV_MAIN: NavMainItem[] = [
     accent: "var(--accent-reports)",
     subTestId: "projects-subnav",
     items: [
-      { title: "Portfolio", url: "#/reports/projects", icon: IconChartBar },
-      { title: "Active", url: "#/projects?status=active", icon: IconCircleDashed },
-      { title: "Backlog", url: "#/projects?status=backlog", icon: IconClipboardList },
-      { title: "Done", url: "#/projects?status=done", icon: IconCircleCheck },
-      { title: "Archived", url: "#/projects?status=archived", icon: IconArchive },
+      {
+        title: "Portfolio",
+        url: "#/reports/projects",
+        icon: IconChartBar,
+        description:
+          "Cross-org portfolio report: which projects are on track, slipping, or done. Table + Gantt.",
+      },
+      {
+        title: "Active",
+        url: "#/reports/projects?status=active",
+        icon: IconCircleDashed,
+        description:
+          "Portfolio filtered to projects currently being worked on.",
+      },
+      {
+        title: "Backlog",
+        url: "#/reports/projects?status=backlog",
+        icon: IconClipboardList,
+        description:
+          "Portfolio filtered to planned projects not yet started.",
+      },
+      {
+        title: "Done",
+        url: "#/reports/projects?status=done",
+        icon: IconCircleCheck,
+        description:
+          "Portfolio filtered to completed projects.",
+      },
+      {
+        title: "Archived",
+        url: "#/reports/projects?status=archived",
+        icon: IconArchive,
+        description:
+          "Portfolio filtered to archived projects (hidden by default; data preserved).",
+      },
     ],
   },
   {
@@ -118,10 +208,34 @@ const NAV_MAIN: NavMainItem[] = [
     accent: "var(--accent-directory)",
     subTestId: "directory-subnav",
     items: [
-      { title: "Users", url: "#/directory/users", icon: IconUser },
-      { title: "Orgs", url: "#/directory/orgs", icon: IconBuildingSkyscraper },
-      { title: "Teams", url: "#/directory/teams", icon: IconUsers },
-      { title: "Home-org", url: "#/directory/home-org", icon: IconHome },
+      {
+        title: "Users",
+        url: "#/directory/users",
+        icon: IconUser,
+        description:
+          "Every GitHub user dev-pulse has seen. Search, view profile, jump to their User report.",
+      },
+      {
+        title: "Orgs",
+        url: "#/directory/orgs",
+        icon: IconBuildingSkyscraper,
+        description:
+          "All tracked GitHub orgs. Visibility, member counts, and links into per-org reports.",
+      },
+      {
+        title: "Teams",
+        url: "#/directory/teams",
+        icon: IconUsers,
+        description:
+          "Teams within tracked orgs. Manage membership and run team-scoped reports.",
+      },
+      {
+        title: "Home-org",
+        url: "#/directory/home-org",
+        icon: IconHome,
+        description:
+          "Assign each user a primary 'home' org. Drives the Home-org split report and identity coalescing.",
+      },
     ],
   },
   {
@@ -131,9 +245,27 @@ const NAV_MAIN: NavMainItem[] = [
     accent: "var(--accent-admin)",
     subTestId: "admin-subnav",
     items: [
-      { title: "Runs", url: "#/admin/runs", icon: IconHistory },
-      { title: "Refresh", url: "#/admin/refresh", icon: IconRefresh },
-      { title: "Users", url: "#/admin/users", icon: IconUserCog },
+      {
+        title: "Runs",
+        url: "#/admin/runs",
+        icon: IconHistory,
+        description:
+          "History of fetch + report runs. Inspect logs, retry failed runs, see cost and duration.",
+      },
+      {
+        title: "Refresh",
+        url: "#/admin/refresh",
+        icon: IconRefresh,
+        description:
+          "Trigger an immediate GitHub refresh for a repo, org, or user. Bypasses the scheduled cadence.",
+      },
+      {
+        title: "Users",
+        url: "#/admin/users",
+        icon: IconUserCog,
+        description:
+          "User administration: roles, GDPR export / delete, and identity merge.",
+      },
     ],
   },
   {
@@ -147,9 +279,27 @@ const NAV_MAIN: NavMainItem[] = [
     accent: "var(--accent-admin)",
     subTestId: "account-subnav",
     items: [
-      { title: "Identities", url: "#/account/identities", icon: IconUser },
-      { title: "Tags", url: "#/account/tags", icon: IconTags },
-      { title: "Settings", url: "#/account/settings", icon: IconSettings },
+      {
+        title: "Identities",
+        url: "#/account/identities",
+        icon: IconUser,
+        description:
+          "Link multiple GitHub accounts to one dev-pulse identity so your activity rolls up correctly.",
+      },
+      {
+        title: "Tags",
+        url: "#/account/tags",
+        icon: IconTags,
+        description:
+          "Personal tags you can attach to issues, PRs, or projects for your own filtering.",
+      },
+      {
+        title: "Settings",
+        url: "#/account/settings",
+        icon: IconSettings,
+        description:
+          "Notification preferences, default window, theme, and other per-account options.",
+      },
     ],
   },
 ]
@@ -206,7 +356,10 @@ const ADMIN_TITLE: Record<string, string> = {
  *  Projects is the one section whose sub-items are query-string-
  *  scoped (`#/projects?status=active`) rather than path-scoped, so
  *  we preserve the `status` filter here — otherwise every Projects
- *  sub-item would always read "Active" as the active one. */
+ *  sub-item would always read "Active" as the active one.
+ *
+ *  The portfolio report (`#/reports/projects?status=…`) is also
+ *  query-string-scoped — same reason, same fix. */
 function activeUrlFor(route: string): string {
   const q = route.indexOf("?")
   const pathPart = q < 0 ? route : route.slice(0, q)
@@ -217,6 +370,17 @@ function activeUrlFor(route: string): string {
   if (section === "projects") {
     const status = projectsStatusOf(route)
     return status ? `#/projects?status=${status}` : "#/projects"
+  }
+  if (section === "reports" && tab === "projects") {
+    // Portfolio: preserve the `?status=` so the matching sub-item
+    // (Active / Backlog / Done / Archived) lights up; plain
+    // `#/reports/projects` (no filter) highlights "Portfolio".
+    const params = new URLSearchParams(q >= 0 ? route.slice(q + 1) : "")
+    const status = params.get("status")
+    const valid = new Set(["active", "backlog", "done", "archived"])
+    return status && valid.has(status)
+      ? `#/reports/projects?status=${status}`
+      : "#/reports/projects"
   }
   if (!tab) return `#/${section}`
   return `#/${section}/${tab}`
@@ -322,15 +486,15 @@ export function AppShell({ children }: AppShellProps): JSX.Element {
           // Map status -> live count. Archived stays uncounted per
           // §6.1 — the eye should not be drawn to the archive bin.
           const counts: Record<string, { value: number; testId: string }> = {
-            "#/projects?status=active": {
+            "#/reports/projects?status=active": {
               value: activeProjects.count,
               testId: "projects-count-active",
             },
-            "#/projects?status=backlog": {
+            "#/reports/projects?status=backlog": {
               value: backlogProjects.count,
               testId: "projects-count-backlog",
             },
-            "#/projects?status=done": {
+            "#/reports/projects?status=done": {
               value: doneProjects.count,
               testId: "projects-count-done",
             },

@@ -371,17 +371,17 @@ pub const LINKS_PAGE_SIZE: u32 = 100;
 /// What the viewer can see, computed once per request from
 /// [`Store::list_memberships_for_user`].
 #[derive(Debug, Clone, Default)]
-struct ViewerVisibility {
-    viewer_user_id: Uuid,
+pub(crate) struct ViewerVisibility {
+    pub(crate) viewer_user_id: Uuid,
     /// Orgs the caller has a membership row in. Defines visibility
     /// for `org`-scope tags AND (v1 simplification) the
     /// allow-list for `team`-scope tags whose `scope_team_id`
     /// belongs to one of these orgs.
-    visible_org_ids: HashSet<Uuid>,
+    pub(crate) visible_org_ids: HashSet<Uuid>,
 }
 
 impl ViewerVisibility {
-    async fn load(store: &dyn Store, viewer_user_id: Uuid) -> Result<Self, StoreError> {
+    pub(crate) async fn load(store: &dyn Store, viewer_user_id: Uuid) -> Result<Self, StoreError> {
         let memberships = store.list_memberships_for_user(viewer_user_id).await?;
         Ok(Self {
             viewer_user_id,
@@ -390,7 +390,7 @@ impl ViewerVisibility {
     }
 
     /// True iff the viewer can *see* this tag per §7.4.
-    fn can_see(&self, tag: &Tag, visible_team_ids: &HashSet<Uuid>) -> bool {
+    pub(crate) fn can_see(&self, tag: &Tag, visible_team_ids: &HashSet<Uuid>) -> bool {
         match tag.scope_kind {
             TagScopeKind::User => tag.scope_user_id == Some(self.viewer_user_id),
             TagScopeKind::Team => tag
@@ -416,7 +416,7 @@ impl ViewerVisibility {
     /// True iff the viewer can see a *team* by id. v1 derives
     /// this from "the team's org is in the viewer's org allow-list."
     /// Refined when team membership lands (§12).
-    async fn visible_team_ids(&self, store: &dyn Store) -> Result<HashSet<Uuid>, StoreError> {
+    pub(crate) async fn visible_team_ids(&self, store: &dyn Store) -> Result<HashSet<Uuid>, StoreError> {
         let mut out = HashSet::new();
         for org_id in &self.visible_org_ids {
             for t in store.list_teams_for_org(*org_id).await? {

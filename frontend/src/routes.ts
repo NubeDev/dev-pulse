@@ -409,7 +409,7 @@ export function directoryTabOf(route: string): DirectoryTab {
 /** Parse `#/reports/...` → the active sub-tab. Defaults to `user`
  *  (the SCOPE §11.5 landing report). */
 export function reportTabOf(route: string): ReportTab {
-  const path = route.replace(/^#/, "").replace(/^\/+/, "").split("/");
+  const path = route.replace(/^#/, "").replace(/^\/+/, "").split("?")[0]!.split("/");
   if (path[0] !== "reports") return "user";
   switch (path[1]) {
     case "team":

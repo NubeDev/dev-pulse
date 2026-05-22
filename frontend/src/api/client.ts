@@ -469,6 +469,15 @@ export type AppInstallBannerResponse = z.infer<typeof AppInstallBannerResponseSc
 // success and `409 { code: "stale_local_version", current_version }`
 // when the CAS misses (§8.3) — the frontend then reloads and reprompts.
 
+/** Slim per-issue tag chip embedded on `IssueDto.tags`. */
+export const IssueTagDtoSchema = z.object({
+  id: uuid,
+  name: z.string(),
+  color: z.string(),
+  scope_kind: TagScopeKindSchema,
+});
+export type IssueTagDto = z.infer<typeof IssueTagDtoSchema>;
+
 export const IssueDtoSchema = z.object({
   id: uuid,
   repo_id: uuid,
@@ -489,6 +498,10 @@ export const IssueDtoSchema = z.object({
    *  inbox-aware responses (`GET /me/queue`); absent or `false`
    *  elsewhere. Treat `undefined` as `false` at the call site. */
   unread: z.boolean().optional(),
+  /** DP tags attached to this issue (tagging.md §7.4 viewer-
+   *  filtered). Empty / absent on older server builds — clients
+   *  must treat `undefined` as `[]`. */
+  tags: z.array(IssueTagDtoSchema).optional(),
 });
 export type IssueDto = z.infer<typeof IssueDtoSchema>;
 
@@ -878,6 +891,9 @@ export const IssueListItemSchema = z.object({
    *  carry multiple kv tags with the same key. Absent when no
    *  grouping is active. */
   bucket_keys: z.array(z.string().nullable()).optional(),
+  /** DP tags attached to this issue, viewer-filtered. Absent
+   *  on older server builds — treat `undefined` as `[]`. */
+  tags: z.array(IssueTagDtoSchema).optional(),
 });
 export type IssueListItem = z.infer<typeof IssueListItemSchema>;
 
@@ -950,6 +966,18 @@ export const ProjectViewDtoSchema = z.object({
   sort: z.string(),
   position: z.number().int(),
   visibility: z.string(),
+  // Optional view timeline (PROJECT-VIEW.md add-view dialog).
+  // Wire shape is `YYYY-MM-DD` (or null/omitted).
+  start_date: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, "expected YYYY-MM-DD")
+    .nullable()
+    .optional(),
+  due_date: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, "expected YYYY-MM-DD")
+    .nullable()
+    .optional(),
   created_at: isoDateTime,
   updated_at: isoDateTime,
   // Populated only by `GET /projects/{id}/views` (tab counts).
@@ -965,6 +993,10 @@ export interface ProjectViewWriteBody {
   group_by: string | null;
   filter_clauses: ProjectViewFilterClause[];
   sort: string;
+  /** Optional view timeline. `YYYY-MM-DD`, `null`, or omitted. */
+  start_date?: string | null;
+  /** Optional view timeline. `YYYY-MM-DD`, `null`, or omitted. */
+  due_date?: string | null;
 }
 
 // ---------------------------------------------------------------------------

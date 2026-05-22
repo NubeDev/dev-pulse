@@ -5110,6 +5110,13 @@
             "$ref": "#/components/schemas/IssueStateDto",
             "description": "State."
           },
+          "tags": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/IssueTagDto"
+            },
+            "description": "DP tags currently attached to this issue, filtered to the\nviewer-visible subset per tagging.md §7.4. Populated by the\nlist and detail handlers; absent (treated as empty by\nclients) on responses built before that join lands. Each\nentry is the slim chip-render projection (`id`, `name`,\n`color`, `scope_kind`) — enough for the issue-detail\npicker and the row chips, no per-link metadata."
+          },
           "title": {
             "type": "string",
             "description": "Title."
@@ -5228,6 +5235,35 @@
           "open",
           "closed"
         ]
+      },
+      "IssueTagDto": {
+        "type": "object",
+        "description": "Slim per-issue tag chip projection embedded in [`IssueDto::tags`].\nTracks just what the workflow UI needs to render a chip and let\nthe user remove it (`tag_id` keys the `DELETE /tags/{id}/links`\ncall). Visibility is the *tag*'s — issue visibility is enforced\nby the parent handler.",
+        "required": [
+          "id",
+          "name",
+          "color",
+          "scope_kind"
+        ],
+        "properties": {
+          "color": {
+            "type": "string",
+            "description": "Hex colour token used by the chip renderer."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Tag id (the picker uses this for link/unlink)."
+          },
+          "name": {
+            "type": "string",
+            "description": "Display name (single token or `key:value`)."
+          },
+          "scope_kind": {
+            "$ref": "#/components/schemas/TagScopeKindDto",
+            "description": "`user` / `team` / `org`. Lets the UI surface \"your tag\" vs\n\"team tag\" without a second round-trip."
+          }
+        }
       },
       "IssuesReportResponse": {
         "type": "object",
@@ -5977,6 +6013,7 @@
           "project_id",
           "repo_id",
           "repo_org_id",
+          "repo_org_login",
           "repo_name",
           "added_at"
         ],
@@ -6012,6 +6049,10 @@
             "type": "string",
             "format": "uuid",
             "description": "Enriched repo org id (matches `dp_repos.org_id`)."
+          },
+          "repo_org_login": {
+            "type": "string",
+            "description": "Enriched repo org login — used by the frontend to build\n`https://github.com/{org_login}/{repo_name}` links."
           }
         }
       },
@@ -6032,6 +6073,14 @@
           "name"
         ],
         "properties": {
+          "due_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date",
+            "description": "Optional due date for the view's timeline. Same shape as\n[`Self::start_date`]."
+          },
           "filter_clauses": {
             "type": "array",
             "items": {},
@@ -6051,6 +6100,14 @@
           "sort": {
             "type": "string",
             "description": "Sort order. Empty string is rejected — the client sends\n`\"updated_desc\"` to mean \"default\"."
+          },
+          "start_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date",
+            "description": "Optional start date for the view's timeline (AU\n`dd/mm/yyyy` in the picker, `YYYY-MM-DD` on the wire)."
           }
         }
       },
@@ -6074,6 +6131,14 @@
             "type": "string",
             "format": "date-time",
             "description": "First write timestamp."
+          },
+          "due_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date",
+            "description": "Optional due date for the view's timeline. Same shape as\n[`Self::start_date`]."
           },
           "filter_clauses": {
             "type": "array",
@@ -6122,6 +6187,14 @@
           "sort": {
             "type": "string",
             "description": "Sort order. `updated_desc` | `updated_asc` | `title_asc`."
+          },
+          "start_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date",
+            "description": "Optional start date for the view's timeline.\nSerialised as `YYYY-MM-DD` (or omitted/null when unset)."
           },
           "total_issue_count": {
             "type": [

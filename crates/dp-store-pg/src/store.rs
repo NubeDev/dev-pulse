@@ -155,6 +155,8 @@ fn project_view_from_row(
         sort: r.try_get("sort").map_err(map_sqlx)?,
         position: r.try_get("position").map_err(map_sqlx)?,
         visibility,
+        start_date: r.try_get("start_date").map_err(map_sqlx)?,
+        due_date: r.try_get("due_date").map_err(map_sqlx)?,
         created_at: r.try_get("created_at").map_err(map_sqlx)?,
         updated_at: r.try_get("updated_at").map_err(map_sqlx)?,
     })
@@ -4076,6 +4078,7 @@ impl Store for PgStore {
         let rows = sqlx::query(
             r#"SELECT id, project_id, owner_user_id, name, group_by,
                       filter_json, sort, position, visibility,
+                      start_date, due_date,
                       created_at, updated_at
                  FROM dp_project_views
                 WHERE project_id = $1 AND owner_user_id = $2
@@ -4097,6 +4100,7 @@ impl Store for PgStore {
         let row_opt = sqlx::query(
             r#"SELECT id, project_id, owner_user_id, name, group_by,
                       filter_json, sort, position, visibility,
+                      start_date, due_date,
                       created_at, updated_at
                  FROM dp_project_views
                 WHERE id = $1 AND owner_user_id = $2"#,
@@ -4134,10 +4138,12 @@ impl Store for PgStore {
         let row = sqlx::query(
             r#"INSERT INTO dp_project_views
                   (id, project_id, owner_user_id, name, group_by,
-                   filter_json, sort, position, visibility)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                   filter_json, sort, position, visibility,
+                   start_date, due_date)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                RETURNING id, project_id, owner_user_id, name, group_by,
                          filter_json, sort, position, visibility,
+                         start_date, due_date,
                          created_at, updated_at"#,
         )
         .bind(id)
@@ -4153,6 +4159,8 @@ impl Store for PgStore {
         })
         .bind(next_pos as i32)
         .bind(upsert.visibility.as_str())
+        .bind(upsert.start_date)
+        .bind(upsert.due_date)
         .fetch_one(&mut *tx)
         .await
         .map_err(map_sqlx)?;
@@ -4175,10 +4183,13 @@ impl Store for PgStore {
                       filter_json = $5,
                       sort = $6,
                       visibility = $7,
+                      start_date = $8,
+                      due_date = $9,
                       updated_at = now()
                 WHERE id = $1 AND owner_user_id = $2
                 RETURNING id, project_id, owner_user_id, name, group_by,
                           filter_json, sort, position, visibility,
+                          start_date, due_date,
                           created_at, updated_at"#,
         )
         .bind(id)
@@ -4192,6 +4203,8 @@ impl Store for PgStore {
             upsert.sort.as_str()
         })
         .bind(upsert.visibility.as_str())
+        .bind(upsert.start_date)
+        .bind(upsert.due_date)
         .fetch_optional(self.pool.sqlx())
         .await
         .map_err(map_sqlx)?;
@@ -4859,6 +4872,55 @@ impl Store for PgStore {
         .fetch_all(self.pool.sqlx())
         .await
         .map_err(map_sqlx)?;
+        rows.iter().map(row_to_tag_link).collect()
+    }
+
+    async fn list_tag_links_for_targets(
+        &self,
+        kind: TagLinkKind,
+        target_ids: &[Uuid],
+    ) -> Result<Vec<TagLink>, StoreError> {
+        if target_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Picks the right `target_*_id` column per kind so the
+        // existing per-target indexes (`dp_tag_links_target_*_idx`)
+        // are hit instead of a seq scan over the polymorphic table.
+        let sql = match kind {
+            TagLinkKind::Repo => {
+                "SELECT id, tag_id, kind, target_repo_id, target_issue_id, \
+                        target_user_id, target_team_id, added_by, added_at \
+                   FROM dp_tag_links \
+                  WHERE kind = 'repo' AND target_repo_id = ANY($1) \
+                  ORDER BY added_at ASC, id ASC"
+            }
+            TagLinkKind::Issue => {
+                "SELECT id, tag_id, kind, target_repo_id, target_issue_id, \
+                        target_user_id, target_team_id, added_by, added_at \
+                   FROM dp_tag_links \
+                  WHERE kind = 'issue' AND target_issue_id = ANY($1) \
+                  ORDER BY added_at ASC, id ASC"
+            }
+            TagLinkKind::User => {
+                "SELECT id, tag_id, kind, target_repo_id, target_issue_id, \
+                        target_user_id, target_team_id, added_by, added_at \
+                   FROM dp_tag_links \
+                  WHERE kind = 'user' AND target_user_id = ANY($1) \
+                  ORDER BY added_at ASC, id ASC"
+            }
+            TagLinkKind::Team => {
+                "SELECT id, tag_id, kind, target_repo_id, target_issue_id, \
+                        target_user_id, target_team_id, added_by, added_at \
+                   FROM dp_tag_links \
+                  WHERE kind = 'team' AND target_team_id = ANY($1) \
+                  ORDER BY added_at ASC, id ASC"
+            }
+        };
+        let rows = sqlx::query(sql)
+            .bind(target_ids)
+            .fetch_all(self.pool.sqlx())
+            .await
+            .map_err(map_sqlx)?;
         rows.iter().map(row_to_tag_link).collect()
     }
 

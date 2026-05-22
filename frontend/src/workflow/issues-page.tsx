@@ -118,6 +118,7 @@ import {
   writesUnavailableOrg,
 } from "./use-workflow-data.js";
 import { LabelChipList } from "@/components/label-chip";
+import { IssueTagsEditor, IssueTagsRow } from "./issue-tags";
 import { WritesGate } from "./writes-banner.js";
 
 const PAGE_SIZE = 50;
@@ -608,6 +609,7 @@ export function IssuesPage(): JSX.Element {
                             max={3}
                           />
                         )}
+                        <IssueTagsRow tags={row.tags ?? []} />
                       </div>
                       {row.repo_slug && (
                         <span className="text-xs text-muted-foreground">{row.repo_slug}</span>
@@ -1011,6 +1013,7 @@ function IssueFormBody({
         </div>
       </form>
       <IssueProjectChip issueId={issue.id} />
+      <IssueTagsEditor issue={issue} />
       <IssueDatesEditor issueId={issue.id} />
       <form className="flex flex-col gap-3 border-t border-border pt-4" onSubmit={onComment}>
         <Label>Add comment</Label>
