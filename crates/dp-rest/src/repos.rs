@@ -903,6 +903,119 @@ pub async fn request_repo_sync(
     ))
 }
 
+/// Request body for `POST /repos/sync` — operator-triggered
+/// per-repo reconciler tick keyed by `(org_login, name)` rather
+/// than the internal repo `id`. Useful for callers that already
+/// know the GitHub slug (CLI, webhooks, ad-hoc curl) and don't
+/// want a round-trip through `GET /repos` to resolve the UUID.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+pub struct RepoSyncByNameRequest {
+    /// GitHub org login (e.g. `acme-corp`). Case-insensitive.
+    pub org: String,
+    /// Repo name without the `owner/` prefix (e.g. `dev-pulse`).
+    /// Case-insensitive.
+    pub name: String,
+}
+
+/// `POST /repos/sync` — operator-triggered per-repo reconciler
+/// tick keyed by `(org, name)` instead of the internal repo
+/// `id`. Same coalescing / audit behaviour as
+/// [`request_repo_sync`]; the response carries the resolved
+/// `repo_id` so the caller can follow up on `GET
+/// /repos/{id}/sync-status`. Authorisation: `("repos", "sync")`.
+#[utoipa::path(
+    post,
+    path = "/repos/sync",
+    request_body = RepoSyncByNameRequest,
+    responses(
+        (status = 202, description = "Sync queued", body = RepoSyncQueuedByNameDto),
+        (status = 404, description = "No such org or repo"),
+        (status = 503, description = "Reconciler scheduler not configured in this deployment"),
+    ),
+    tag = "repos",
+)]
+pub async fn request_repo_sync_by_name(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    Json(body): Json<RepoSyncByNameRequest>,
+) -> Result<(axum::http::StatusCode, Json<RepoSyncQueuedByNameDto>), ApiError> {
+    let org_login = body.org.trim();
+    let repo_name = body.name.trim();
+    if org_login.is_empty() || repo_name.is_empty() {
+        return Err(ApiError::BadRequest {
+            code: "invalid_repo_slug",
+            message: "both `org` and `name` are required".to_string(),
+        });
+    }
+    let org = state
+        .store
+        .list_orgs()
+        .await?
+        .into_iter()
+        .find(|o| o.login.eq_ignore_ascii_case(org_login))
+        .ok_or_else(|| ApiError::NotFound {
+            code: "org_not_found",
+            message: format!("no org with login '{org_login}'"),
+        })?;
+    let filter = RepoListFilter {
+        org_id: Some(org.id),
+        q: Some(repo_name.to_string()),
+        limit: MAX_LIST_LIMIT,
+        offset: 0,
+    };
+    let repo = state
+        .store
+        .list_repos(&filter)
+        .await?
+        .into_iter()
+        .find(|r| r.name.eq_ignore_ascii_case(repo_name))
+        .ok_or_else(|| ApiError::NotFound {
+            code: "repo_not_found",
+            message: format!("no repo '{org_login}/{repo_name}'"),
+        })?;
+    let Some(scheduler) = state.scheduler.clone() else {
+        return Err(ApiError::BadRequest {
+            code: "reconciler_unavailable",
+            message: "reconciler scheduler not configured".to_string(),
+        });
+    };
+    let org_id = repo.org_id;
+    let repo_id = repo.id;
+    tokio::spawn(async move {
+        let scope = dp_fetcher::reconciler::Scope::Repo { org_id, repo_id };
+        if let Err(e) = scheduler.try_trigger_now(scope).await {
+            tracing::warn!(error = %e, repo_id = %repo_id, "per-repo sync trigger failed");
+        }
+    });
+    crate::audit::record(
+        state.store.as_ref(),
+        principal.actor_user_id,
+        crate::audit::REPO_SYNC_REQUESTED,
+        repo_id.to_string(),
+    )
+    .await
+    .ok();
+    Ok((
+        axum::http::StatusCode::ACCEPTED,
+        Json(RepoSyncQueuedByNameDto {
+            queued: true,
+            repo_id,
+        }),
+    ))
+}
+
+/// Wire envelope for `POST /repos/sync`. Carries the resolved
+/// `repo_id` alongside the `queued` sentinel so the caller can
+/// follow up on `GET /repos/{id}/sync-status` without a second
+/// lookup.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct RepoSyncQueuedByNameDto {
+    /// Sentinel — always `true`.
+    pub queued: bool,
+    /// Internal repo id resolved from `(org, name)`.
+    pub repo_id: Uuid,
+}
+
 /// Build the repos router fragment. Same wrapping pattern as
 /// [`crate::directory::directory_router`] — `repos.read` is the
 /// authz pair the workflow gate matches on; the `POST
@@ -925,7 +1038,9 @@ pub fn repos_router(state: Arc<AppState>) -> Router {
         "read",
     );
     let writes = with_permission(
-        Router::new().route("/repos/{id}/sync", axum::routing::post(request_repo_sync)),
+        Router::new()
+            .route("/repos/{id}/sync", axum::routing::post(request_repo_sync))
+            .route("/repos/sync", axum::routing::post(request_repo_sync_by_name)),
         "repos",
         "sync",
     );

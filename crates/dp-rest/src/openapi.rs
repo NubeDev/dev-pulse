@@ -172,6 +172,7 @@ async fn webhook_github_stub() {}
         crate::repos::get_repo_contributor_diversity,
         crate::repos::get_repo_sync_status,
         crate::repos::request_repo_sync,
+        crate::repos::request_repo_sync_by_name,
         // Reports — slice 2 issue-metric surface.
         crate::reports::issues_report,
         // Inbox endpoints (slice 1) — were missing from the spec.
@@ -288,6 +289,8 @@ async fn webhook_github_stub() {}
         crate::repos::RepoContributorDiversityDto,
         crate::repos::RepoSyncStatusDto,
         crate::repos::RepoSyncQueuedDto,
+        crate::repos::RepoSyncByNameRequest,
+        crate::repos::RepoSyncQueuedByNameDto,
         // Issue-metrics reports (slice 2).
         crate::reports::IssuesReportResponse,
         crate::reports::IssuesReportRow,
