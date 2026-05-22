@@ -222,9 +222,14 @@ export function useDeleteBoardLink(projectId: string) {
 // ---------------------------------------------------------------------------
 
 /** Invalidate every list / count probe after a write so the sidebar
- *  badges and the §6.2 list page redraw without a manual refresh. */
+ *  badges, the §6.2 list page, and the Reports → Project portfolio
+ *  table redraw without a manual refresh. The portfolio report
+ *  lives under its own root key (`report-project-portfolio`)
+ *  because it's served by a different endpoint, so we have to nudge
+ *  it explicitly alongside the `projects` root. */
 function invalidateProjectsRoot(qc: ReturnType<typeof useQueryClient>): void {
   qc.invalidateQueries({ queryKey: ["projects"] });
+  qc.invalidateQueries({ queryKey: ["report-project-portfolio"] });
 }
 
 /** `POST /projects` — create a project. The modal lives on the

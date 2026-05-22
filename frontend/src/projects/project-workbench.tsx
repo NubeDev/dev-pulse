@@ -28,6 +28,7 @@ import { useMemo, useState } from "react";
 import { ChevronDownIcon, ChevronRightIcon, PlusIcon } from "lucide-react";
 
 import type { IssueBucket, IssueListItem, ProjectDto } from "../api/client.js";
+
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -80,6 +81,12 @@ import {
   useUpdateProjectView,
 } from "./use-projects-data.js";
 import { ViewsTabStrip } from "./views-tab-strip.js";
+import {
+  CATEGORISED_GROUP_BY,
+  CATEGORY_TAG_KEY,
+  findCategoryTag,
+} from "./view-wizard/index.js";
+import { useTags } from "../workflow/use-workflow-data.js";
 
 export interface ProjectWorkbenchProps {
   project: ProjectDto;
@@ -130,8 +137,20 @@ export function ProjectWorkbench({
     [activeView],
   );
 
+  // Categorised views (PROJECT-VIEW.md — categories amendment):
+  // when the active view has a non-empty `categories` list it
+  // *always* groups by `tag:category` and renders one section per
+  // category in saved order, including empty ones. URL group
+  // overrides win because the user is in ad-hoc mode.
+  const viewIsCategorised =
+    activeView !== null && activeView.categories.length > 0;
   const groupBy =
-    urlGroupBy ?? (activeView ? activeView.group_by : null);
+    urlGroupBy ??
+    (viewIsCategorised
+      ? CATEGORISED_GROUP_BY
+      : activeView
+        ? activeView.group_by
+        : null);
   // `urlFilterRaw === ""` is the explicit-empty override sentinel
   // (see [`FILTER_EMPTY_OVERRIDE`] in routes.ts) — when set we must
   // *not* fall back to the view's filter; the user is saying "no
@@ -184,6 +203,27 @@ export function ProjectWorkbench({
     updateView.isPending ||
     deleteView.isPending ||
     reorderViews.isPending;
+
+  // Tag context — used to auto-tag new issues created from a
+  // category section. The tag id is resolved lazily per click
+  // because the tags query is shared with the workflow surface
+  // and may not be populated by the time the workbench mounts.
+  const tagsQuery = useTags();
+
+  // Section-scoped "Add issue" context. `null` = the global
+  // toolbar `+ Add issue` button (no category bias); a string =
+  // a per-section `+` was clicked inside a categorised view.
+  const [sectionAddCategory, setSectionAddCategory] = useState<
+    string | null
+  >(null);
+  const sectionAddTagId =
+    sectionAddCategory !== null
+      ? findCategoryTag(
+          tagsQuery.data ?? [],
+          project.org_id,
+          sectionAddCategory,
+        )?.id ?? null
+      : null;
 
   /** Replace the entire ad-hoc URL state in one navigation so the
    *  history stack stays clean (PROJECT-VIEW.md §5.4 — ad-hoc edits
@@ -321,12 +361,18 @@ export function ProjectWorkbench({
 
   // Pre-bucket the rows once per response so re-renders during
   // section collapse / expand don't recompute. We honour the
-  // server's `buckets` ordering verbatim — clients never re-order
-  // (PROJECT-VIEW.md §5.1).
+  // server's `buckets` ordering verbatim for non-categorised
+  // views (PROJECT-VIEW.md §5.1). Categorised views post-process
+  // the bucket list to enforce the saved category order, surface
+  // empty sections, and append a trailing "Uncategorised" group
+  // for tag values not on the view's list.
   const sectioned = useMemo<SectionedRows | null>(() => {
     if (!groupBy || !buckets) return null;
+    if (viewIsCategorised && activeView) {
+      return groupRowsByCategorisedView(rows, buckets, activeView.categories);
+    }
     return groupRowsByBuckets(rows, buckets);
-  }, [groupBy, buckets, rows]);
+  }, [groupBy, buckets, rows, viewIsCategorised, activeView]);
 
   return (
     <Card data-testid="project-issues">
@@ -369,6 +415,7 @@ export function ProjectWorkbench({
             ),
             sort: sort ?? "updated_desc",
           }}
+          orgId={project.org_id}
           onSelectView={selectView}
           onCreateView={handleCreateView}
           onUpdateView={handleUpdateView}
@@ -422,6 +469,11 @@ export function ProjectWorkbench({
             {sectioned.sections.map((section) => {
               const sectionKey = bucketKeyForState(section.bucket.key);
               const isCollapsed = collapsed.has(sectionKey);
+              // Categorised sections expose a `+` button that
+              // pre-scopes the add dialog to the category. Non-
+              // category buckets (status, milestone, gate, the
+              // trailing "Uncategorised" pseudo-section) don't.
+              const sectionCategoryKey = section.categoryKey;
               return (
                 <BucketSection
                   key={sectionKey}
@@ -431,10 +483,18 @@ export function ProjectWorkbench({
                   onToggle={() => toggleCollapsed(sectionKey)}
                   renderRow={renderRow}
                   selectedIssueId={selectedIssueId}
+                  onAddIssue={
+                    viewIsCategorised && sectionCategoryKey !== null
+                      ? () => {
+                          setSectionAddCategory(sectionCategoryKey);
+                          setDialogOpen(true);
+                        }
+                      : undefined
+                  }
                 />
               );
             })}
-            {sectioned.empty && (
+            {sectioned.empty && !viewIsCategorised && (
               <p className="py-6 text-center text-sm text-muted-foreground">
                 No issues match this grouping.
               </p>
@@ -452,10 +512,18 @@ export function ProjectWorkbench({
 
       <AddIssuesDialog
         open={dialogOpen}
-        onOpenChange={setDialogOpen}
+        onOpenChange={(o) => {
+          setDialogOpen(o);
+          // Drop the section context when the dialog closes so
+          // the next global `+ Add issue` click doesn't carry
+          // a stale category.
+          if (!o) setSectionAddCategory(null);
+        }}
         project={project}
         activeViewId={activeView ? activeView.id : null}
         activeViewName={activeView ? activeView.name : null}
+        activeCategoryKey={sectionAddCategory}
+        activeCategoryTagId={sectionAddTagId}
       />
     </Card>
   );
@@ -578,6 +646,10 @@ interface BucketSectionProps {
   onToggle: () => void;
   renderRow: (row: IssueListItem, selected: boolean) => JSX.Element;
   selectedIssueId: string | null;
+  /** When set, renders a `+` button in the section header that
+   *  calls this handler. Used by categorised views to open the
+   *  add-issue dialog pre-scoped to the section's category. */
+  onAddIssue?: () => void;
 }
 
 function BucketSection({
@@ -587,35 +659,51 @@ function BucketSection({
   onToggle,
   renderRow,
   selectedIssueId,
+  onAddIssue,
 }: BucketSectionProps): JSX.Element {
   return (
     <section className="flex flex-col" data-testid="project-issues-section">
-      <button
-        type="button"
-        onClick={onToggle}
-        className="flex items-center justify-between rounded-md px-2 py-1.5 text-left text-sm font-medium hover:bg-accent/30"
-        aria-expanded={!collapsed}
-        data-testid="project-issues-section-header"
-        data-bucket-key={bucket.key ?? ""}
-      >
-        <span className="flex items-center gap-1.5">
-          {collapsed ? (
-            <ChevronRightIcon className="h-4 w-4 text-muted-foreground" />
-          ) : (
-            <ChevronDownIcon className="h-4 w-4 text-muted-foreground" />
-          )}
-          <span>{bucket.label}</span>
-          {bucket.key === null && (
-            <Badge variant="outline" className="ml-1 text-[10px]">
-              none
-            </Badge>
-          )}
-        </span>
-        <span className="text-xs font-normal tabular-nums text-muted-foreground">
-          {bucket.open} open
-          {bucket.closed > 0 ? ` · ${bucket.closed} ✓` : ""}
-        </span>
-      </button>
+      <div className="flex items-center justify-between rounded-md px-2 py-1.5 text-left text-sm font-medium hover:bg-accent/30">
+        <button
+          type="button"
+          onClick={onToggle}
+          className="flex flex-1 items-center justify-between gap-2 bg-transparent text-left"
+          aria-expanded={!collapsed}
+          data-testid="project-issues-section-header"
+          data-bucket-key={bucket.key ?? ""}
+        >
+          <span className="flex items-center gap-1.5">
+            {collapsed ? (
+              <ChevronRightIcon className="h-4 w-4 text-muted-foreground" />
+            ) : (
+              <ChevronDownIcon className="h-4 w-4 text-muted-foreground" />
+            )}
+            <span>{bucket.label}</span>
+            {bucket.key === null && (
+              <Badge variant="outline" className="ml-1 text-[10px]">
+                none
+              </Badge>
+            )}
+          </span>
+          <span className="text-xs font-normal tabular-nums text-muted-foreground">
+            {bucket.open} open
+            {bucket.closed > 0 ? ` · ${bucket.closed} ✓` : ""}
+          </span>
+        </button>
+        {onAddIssue && (
+          <Button
+            type="button"
+            size="icon"
+            variant="ghost"
+            onClick={onAddIssue}
+            aria-label={`Add issue to ${bucket.label}`}
+            data-testid="project-issues-section-add"
+            className="ml-2 size-7 shrink-0"
+          >
+            <PlusIcon className="size-4" />
+          </Button>
+        )}
+      </div>
       {!collapsed && (
         <div className="ml-1 mt-1 flex flex-col gap-2 border-l border-border/60 pl-3">
           {rows.length === 0 ? (
@@ -636,8 +724,19 @@ function BucketSection({
 // ---------------------------------------------------------------------------
 
 interface SectionedRows {
-  sections: { bucket: IssueBucket; rows: IssueListItem[] }[];
+  sections: SectionedRow[];
   empty: boolean;
+}
+
+interface SectionedRow {
+  bucket: IssueBucket;
+  rows: IssueListItem[];
+  /** Category slug when the bucket represents one of the view's
+   *  curated categories — used to scope the per-section `+`
+   *  button to that category. `null` for non-category buckets
+   *  (status, milestone, etc.) and the "Uncategorised" trailing
+   *  group inside a categorised view. */
+  categoryKey: string | null;
 }
 
 /** Compose `IssueListItem.bucket_keys` against the server's
@@ -652,9 +751,10 @@ export function groupRowsByBuckets(
   rows: IssueListItem[],
   buckets: IssueBucket[],
 ): SectionedRows {
-  const sections = buckets.map((b) => ({
+  const sections: SectionedRow[] = buckets.map((b) => ({
     bucket: b,
     rows: [] as IssueListItem[],
+    categoryKey: null,
   }));
   // Use the bucket key (stringified `null` → "") as map key so the
   // "No <key>" bucket is reachable too. The synthetic bucket is
@@ -679,6 +779,139 @@ export function groupRowsByBuckets(
   return {
     sections,
     empty: rows.length === 0,
+  };
+}
+
+/** Categorised-view override of [`groupRowsByBuckets`].
+ *
+ *  The server returns whichever buckets actually have issues for
+ *  the `tag:category` dimension; we layer the view's curated
+ *  list on top to:
+ *
+ *    1. Render sections in the saved order, not count-desc.
+ *    2. Surface EMPTY sections for categories with zero issues
+ *       so the user can drop work into them with the per-section
+ *       `+` button.
+ *    3. Append a trailing "Uncategorised" pseudo-section that
+ *       collects every issue whose `category:<x>` value is
+ *       *not* in the curated list (or has no category tag at
+ *       all — routed through the server's `key: null` bucket).
+ *
+ *  Empty sections get a synthesised `IssueBucket` with `open = 0`
+ *  / `closed = 0` so the header counts read "0 open" rather than
+ *  vanishing the row. Multi-valued issues (an issue tagged both
+ *  `category:hardware` and `category:firmware`) appear in BOTH
+ *  category sections, mirroring the existing tag-bucket
+ *  behaviour in [`groupRowsByBuckets`]. */
+export function groupRowsByCategorisedView(
+  rows: IssueListItem[],
+  buckets: IssueBucket[],
+  categories: readonly string[],
+): SectionedRows {
+  // Index server buckets by their key (category slug for the
+  // `tag:category` dim; `null` -> empty string for the synthetic
+  // "No <key>" bucket).
+  const serverByKey = new Map<string, IssueBucket>();
+  for (const b of buckets) {
+    serverByKey.set(bucketKeyForState(b.key), b);
+  }
+  const curatedSet = new Set(categories);
+
+  // Build curated sections in saved order. Use the server bucket
+  // when present so counts are server-authoritative; synthesise
+  // an empty one otherwise.
+  const sections: SectionedRow[] = categories.map((key) => {
+    const existing = serverByKey.get(key);
+    return {
+      bucket: existing ?? emptyCategoryBucket(key),
+      rows: [] as IssueListItem[],
+      categoryKey: key,
+    };
+  });
+
+  // Trailing "Uncategorised" bucket: every server bucket that
+  // ISN'T on the curated list, plus the server's `key: null`
+  // bucket (issues with no `category:<x>` tag at all).
+  const uncategorisedKeys = new Set<string>();
+  let unOpen = 0;
+  let unClosed = 0;
+  for (const b of buckets) {
+    if (b.key === null || !curatedSet.has(b.key)) {
+      uncategorisedKeys.add(bucketKeyForState(b.key));
+      unOpen += b.open;
+      unClosed += b.closed;
+    }
+  }
+  const includeUncategorised = uncategorisedKeys.size > 0;
+  if (includeUncategorised) {
+    sections.push({
+      bucket: {
+        key: null,
+        label: "Uncategorised",
+        open: unOpen,
+        closed: unClosed,
+      },
+      rows: [],
+      categoryKey: null,
+    });
+  }
+  const uncategorisedSlot = includeUncategorised
+    ? sections[sections.length - 1]!.rows
+    : null;
+
+  // Per-curated-key direct lookup for row distribution.
+  const curatedRowSlot = new Map<string, IssueListItem[]>();
+  for (const s of sections) {
+    if (s.categoryKey !== null) {
+      curatedRowSlot.set(s.categoryKey, s.rows);
+    }
+  }
+
+  for (const row of rows) {
+    const keys = row.bucket_keys;
+    if (!keys || keys.length === 0) {
+      uncategorisedSlot?.push(row);
+      continue;
+    }
+    let landed = false;
+    for (const k of keys) {
+      if (k === null) {
+        // Issues with no category tag — route to Uncategorised.
+        uncategorisedSlot?.push(row);
+        landed = true;
+        continue;
+      }
+      const slot = curatedRowSlot.get(k);
+      if (slot) {
+        slot.push(row);
+        landed = true;
+      }
+    }
+    if (!landed) {
+      // Row carries `category:<x>` values not on the curated
+      // list — route to Uncategorised so it stays visible.
+      uncategorisedSlot?.push(row);
+    }
+  }
+
+  return {
+    sections,
+    empty: rows.length === 0,
+  };
+}
+
+/** Synthesise an empty `IssueBucket` for a curated category slug
+ *  the server didn't return (because no issues currently carry
+ *  that tag). The label mirrors the slug — the editor is the
+ *  single source of truth for display form, and storing the
+ *  display label on a per-view basis would double-write the
+ *  same string. */
+function emptyCategoryBucket(slug: string): IssueBucket {
+  return {
+    key: slug,
+    label: slug,
+    open: 0,
+    closed: 0,
   };
 }
 

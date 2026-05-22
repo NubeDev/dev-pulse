@@ -22,7 +22,9 @@ import {
   LinkIcon,
   PencilIcon,
   SettingsIcon,
+  UserIcon,
 } from "lucide-react";
+import { Popover as PopoverPrimitive } from "radix-ui";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -65,6 +67,7 @@ import { PageHeading } from "../components/page-heading.jsx";
 import { HelpHint } from "@/components/help-hint";
 import { navigate, projectDetailRoute, projectDetailRouteWithParams, projectFilter, projectGroupBy, projectSelectedIssue, projectSort, projectViewId, useRoute } from "../routes.js";
 import { IssueEditCard } from "../workflow/issues-page.js";
+import { UserPicker } from "../components/user-picker.js";
 
 import { LinkBoardDialog } from "./link-board-dialog.js";
 import { MilestonesStrip } from "./milestones-strip.js";
@@ -297,7 +300,7 @@ function ProjectDetailBody({ project }: { project: ProjectDto }): JSX.Element {
             <HelpHint
               title="Project page"
               body={[
-                "Top tiles: Progress (closed / total), Timeline (start + due, click ✎ to edit), Issues (open / closed), and Linked Surfaces (GitHub boards + repos linked to this project).",
+                "Top tiles: Progress (closed / total), Timeline (start + due, click ✎ to edit), Issues (open / closed), Lead (click to assign), and Linked Surfaces (GitHub boards + repos linked to this project).",
                 "Milestones strip: GitHub milestones on the linked repos. Create / Edit / Close / Delete write through to GitHub via the dev-pulse App or a personal access token.",
                 "Workbench: tabs are Saved Views (per-user). Toolbar groups, filters and sorts the issue list; use + Add issue to attach work from the Triage queue.",
                 "Settings ▾: link / unlink GitHub boards, manage which repos this project draws from, and archive or restore the project.",
@@ -736,7 +739,7 @@ function ProjectKpiGrid({
 
   return (
     <div
-      className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4"
+      className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5"
       data-testid="project-detail-kpis"
     >
       <KpiTile
@@ -845,6 +848,8 @@ function ProjectKpiGrid({
         </div>
       </KpiTile>
 
+      <LeadKpiTile project={project} />
+
       <KpiTile
         label="Linked surfaces"
         icon={<LinkIcon className="h-4 w-4 text-muted-foreground" />}
@@ -895,6 +900,131 @@ function KpiTile({
         </div>
       </CardHeader>
       <CardContent className="px-4">{children}</CardContent>
+    </Card>
+  );
+}
+
+/**
+ * `<LeadKpiTile>` — clickable Lead pill on the project KPI grid.
+ *
+ * Opens a popover with a `UserPicker` scoped to the project's
+ * org. Setting picks a `dp_users.id`; the "— Unassigned —"
+ * sentinel clears `lead_user_id`. Writes go through the same
+ * §8.2 CAS PATCH path as every other project mutation so a
+ * concurrent edit can't silently win.
+ */
+function LeadKpiTile({ project }: { project: ProjectDto }): JSX.Element {
+  const patch = usePatchProject(project.id);
+  const [open, setOpen] = useState(false);
+  // Resolve the current lead_user_id → display name from the
+  // org-scoped member list. Reuses the same `["users", orgId]`
+  // cache key as `UserPicker` so opening the popover doesn't
+  // re-fetch.
+  const usersQuery = useQuery({
+    queryKey: ["users", project.org_id],
+    queryFn: () => api.listUsers(project.org_id),
+    staleTime: 60_000,
+  });
+  const leadUser = project.lead_user_id
+    ? usersQuery.data?.find((u) => u.id === project.lead_user_id)
+    : undefined;
+  const leadLabel = project.lead_user_id
+    ? (leadUser
+        ? (leadUser.name && leadUser.name.trim().length > 0
+            ? leadUser.name
+            : leadUser.login)
+        : "…")
+    : "Unassigned";
+  const leadHint = leadUser ? `@${leadUser.login}` : null;
+
+  const handleChange = (next: string | null): void => {
+    if (next === (project.lead_user_id ?? null)) {
+      setOpen(false);
+      return;
+    }
+    patch.mutate(
+      {
+        expected_version: project.version,
+        // `null` clears, UUID assigns. Wrapping in an extra
+        // `Some(...)` layer is the wire convention for "this
+        // field is intentionally being written" vs left alone.
+        lead_user_id: next,
+      },
+      { onSuccess: () => setOpen(false) },
+    );
+  };
+
+  return (
+    <Card className="gap-2 py-4">
+      <CardHeader className="px-4">
+        <div className="flex items-center justify-between">
+          <CardTitle className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+            Lead
+          </CardTitle>
+          <UserIcon className="h-4 w-4 text-muted-foreground" />
+        </div>
+      </CardHeader>
+      <CardContent className="px-4">
+        <PopoverPrimitive.Root open={open} onOpenChange={setOpen}>
+          <PopoverPrimitive.Trigger
+            type="button"
+            disabled={patch.isPending}
+            data-testid="project-detail-edit-lead"
+            aria-label="Set project lead"
+            className={cn(
+              "flex w-full items-center gap-2 rounded-md px-1 py-1 text-left outline-none",
+              "hover:bg-accent focus-visible:bg-accent",
+              "disabled:opacity-50",
+            )}
+          >
+            <span className="flex min-w-0 flex-1 flex-col">
+              <span
+                className={cn(
+                  "truncate text-lg font-semibold",
+                  !project.lead_user_id && "text-muted-foreground",
+                )}
+                data-testid="project-detail-lead-label"
+              >
+                {leadLabel}
+              </span>
+              {leadHint && (
+                <span className="truncate text-xs text-muted-foreground">
+                  {leadHint}
+                </span>
+              )}
+            </span>
+            <PencilIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          </PopoverPrimitive.Trigger>
+          <PopoverPrimitive.Portal>
+            <PopoverPrimitive.Content
+              align="start"
+              sideOffset={4}
+              className={cn(
+                "z-50 w-[20rem] rounded-md border bg-popover p-3 text-popover-foreground shadow-md",
+              )}
+            >
+              <div className="mb-2 text-xs font-medium text-muted-foreground">
+                Project lead
+              </div>
+              <UserPicker
+                orgId={project.org_id}
+                value={project.lead_user_id ?? null}
+                onChange={handleChange}
+                disabled={patch.isPending}
+                data-testid="project-detail-lead-picker"
+              />
+              {patch.isError && (
+                <p
+                  className="mt-2 text-xs text-destructive"
+                  data-testid="project-detail-lead-error"
+                >
+                  {patch.error.message}
+                </p>
+              )}
+            </PopoverPrimitive.Content>
+          </PopoverPrimitive.Portal>
+        </PopoverPrimitive.Root>
+      </CardContent>
     </Card>
   );
 }
@@ -1188,6 +1318,9 @@ function EditDetailsDialog({
   const patch = usePatchProject(project.id);
   const [name, setName] = useState(project.name);
   const [description, setDescription] = useState(project.description ?? "");
+  const [leadUserId, setLeadUserId] = useState<string | null>(
+    project.lead_user_id ?? null,
+  );
 
   useEffect(() => {
     if (!open) {
@@ -1196,8 +1329,9 @@ function EditDetailsDialog({
     }
     setName(project.name);
     setDescription(project.description ?? "");
+    setLeadUserId(project.lead_user_id ?? null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, project.name, project.description]);
+  }, [open, project.name, project.description, project.lead_user_id]);
 
   const trimmedName = name.trim();
   const nameError = trimmedName.length === 0 ? "Name is required." : null;
@@ -1215,8 +1349,16 @@ function EditDetailsDialog({
       // but `null` is the documented clear-form).
       body.description = trimmedDesc.length === 0 ? null : trimmedDesc;
     }
+    const currentLead = project.lead_user_id ?? null;
+    if (leadUserId !== currentLead) {
+      body.lead_user_id = leadUserId;
+    }
     // Nothing changed — just close.
-    if (body.name === undefined && body.description === undefined) {
+    if (
+      body.name === undefined &&
+      body.description === undefined &&
+      body.lead_user_id === undefined
+    ) {
       onOpenChange(false);
       return;
     }
@@ -1283,6 +1425,22 @@ function EditDetailsDialog({
             />
             <p className="text-xs text-muted-foreground">
               Plain text. Leave blank to clear.
+            </p>
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="edit-details-lead">Lead</Label>
+            <UserPicker
+              id="edit-details-lead"
+              data-testid="edit-details-lead"
+              orgId={project.org_id}
+              value={leadUserId}
+              onChange={setLeadUserId}
+              placeholder="Unassigned"
+            />
+            <p className="text-xs text-muted-foreground">
+              The GitHub user accountable for this project. Pick
+              from members of {project.org_id ? "this org" : "the org"}.
             </p>
           </div>
 

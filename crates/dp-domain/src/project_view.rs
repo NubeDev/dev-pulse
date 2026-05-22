@@ -52,6 +52,14 @@ pub struct ProjectView {
     /// Optional due date for the view's timeline. Same shape and
     /// rendering as [`Self::start_date`].
     pub due_date: Option<NaiveDate>,
+    /// Ordered list of category slugs (lowercase, `[a-z0-9_-]{1,50}`)
+    /// rendered as collapsible sections inside the view. Empty
+    /// vector — flat view (whatever `group_by` says); non-empty —
+    /// the workbench forces `group_by = "tag:category"` and renders
+    /// one section per slug in this order, including empty sections.
+    /// Issues whose `tag:category` value isn't in this list fall into
+    /// a trailing "Uncategorised" section.
+    pub categories: Vec<String>,
     /// First write.
     pub created_at: DateTime<Utc>,
     /// Most recent mutation to any field.
@@ -152,4 +160,8 @@ pub struct ProjectViewUpsert {
     pub start_date: Option<NaiveDate>,
     /// Optional due date for the view's timeline.
     pub due_date: Option<NaiveDate>,
+    /// Ordered category slugs. See [`ProjectView::categories`].
+    /// Validated upstream (lowercase, `[a-z0-9_-]{1,50}`, deduped,
+    /// max 32 items — the workbench can't usefully render more).
+    pub categories: Vec<String>,
 }

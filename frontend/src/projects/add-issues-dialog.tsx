@@ -62,6 +62,8 @@ import {
   type ProjectRepoDto,
 } from "../api/client.js";
 
+import { categoryTagName } from "./view-wizard/index.js";
+
 import {
   useAddIssuesToProject,
   useCreateIssue,
@@ -82,6 +84,15 @@ export interface AddIssuesDialogProps {
    *  When omitted (All tab) the title falls back to the project
    *  name. */
   activeViewName?: string | null;
+  /** PROJECT-VIEW.md category amendment — when the active view
+   *  is a category view (single `tag:category:<key>` filter),
+   *  the create-new flow auto-tags the new issue with the
+   *  matching org tag so users don't have to remember. */
+  activeCategoryKey?: string | null;
+  /** Tag id resolved from [`activeCategoryKey`] at the project's
+   *  org. `null` when the tag hasn't been loaded yet or doesn't
+   *  exist — in either case the auto-tag step is skipped. */
+  activeCategoryTagId?: string | null;
 }
 
 export function AddIssuesDialog({
@@ -90,6 +101,8 @@ export function AddIssuesDialog({
   project,
   activeViewId,
   activeViewName,
+  activeCategoryKey,
+  activeCategoryTagId,
 }: AddIssuesDialogProps): JSX.Element {
   const [tab, setTab] = useState<"existing" | "new">("existing");
   // The destination tab the issue(s) will be attached to. `null`
@@ -214,6 +227,8 @@ export function AddIssuesDialog({
             <NewPanel
               project={project}
               activeViewId={destinationViewId}
+              activeCategoryKey={activeCategoryKey ?? null}
+              activeCategoryTagId={activeCategoryTagId ?? null}
               onClose={close}
             />
           </TabsContent>
@@ -457,10 +472,14 @@ function AddIssueRow({
 function NewPanel({
   project,
   activeViewId,
+  activeCategoryKey,
+  activeCategoryTagId,
   onClose,
 }: {
   project: ProjectDto;
   activeViewId: string | null;
+  activeCategoryKey: string | null;
+  activeCategoryTagId: string | null;
   onClose: () => void;
 }): JSX.Element {
   const repoLinks = useProjectRepos(project.id);
@@ -470,6 +489,7 @@ function NewPanel({
   const [repoId, setRepoId] = useState("");
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
+  const [tagError, setTagError] = useState<string | null>(null);
 
   // Seed / refresh the repo selection when the list loads.
   useEffect(() => {
@@ -490,17 +510,44 @@ function NewPanel({
   // org/repo-scoped for permissions and project membership) but
   // the row carries `is_local = true` and the table hides the
   // repo badge for it.
+  //
+  // Category auto-tag: when the user opened the dialog from a
+  // category tab, we (a) pass the matching `category:<key>` as a
+  // GitHub label so the GH issue carries it natively (non-local
+  // only — local issues never touch GH), and (b) once the
+  // backend has materialised the local row, link the DP tag so
+  // the category chip shows up on the workbench immediately.
   const submit = (local: boolean): void => {
     if (!canSubmit) return;
-    create.mutate({
-      repo_id: repoId,
-      title: title.trim(),
-      body: body.trim() ? body.trim() : undefined,
-      project_id: project.id,
-      view_id: activeViewId ?? undefined,
-      expected_version: activeViewId ? undefined : project.version,
-      local,
-    });
+    setTagError(null);
+    const categoryLabel =
+      !local && activeCategoryKey ? categoryTagName(activeCategoryKey) : null;
+    create.mutate(
+      {
+        repo_id: repoId,
+        title: title.trim(),
+        body: body.trim() ? body.trim() : undefined,
+        labels: categoryLabel ? [categoryLabel] : undefined,
+        project_id: project.id,
+        view_id: activeViewId ?? undefined,
+        expected_version: activeViewId ? undefined : project.version,
+        local,
+      },
+      {
+        onSuccess: async (resp) => {
+          if (!activeCategoryTagId || !resp.issue_id) return;
+          try {
+            await api.linkTagTargets(activeCategoryTagId, {
+              items: [{ kind: "issue", target_id: resp.issue_id }],
+            });
+          } catch (err) {
+            setTagError(
+              err instanceof Error ? err.message : String(err),
+            );
+          }
+        },
+      },
+    );
   };
 
   const onSubmit = (e: React.FormEvent): void => {
@@ -535,6 +582,7 @@ function NewPanel({
               create.reset();
               setTitle("");
               setBody("");
+              setTagError(null);
             }}
           >
             Create another
@@ -549,6 +597,26 @@ function NewPanel({
 
   return (
     <form className="flex flex-col gap-4" onSubmit={onSubmit}>
+      {activeCategoryKey && (
+        <div
+          className="rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-xs text-foreground"
+          data-testid="add-issue-new-category-notice"
+        >
+          New issues will be tagged{" "}
+          <code className="font-mono">
+            {categoryTagName(activeCategoryKey)}
+          </code>
+          {activeCategoryTagId ? (
+            <> so they land in this category tab automatically.</>
+          ) : (
+            <>
+              {" "}— the matching tag will appear once it syncs to the
+              project's org.
+            </>
+          )}
+        </div>
+      )}
+
       <div className="flex flex-col gap-2">
         <Label htmlFor="add-issue-new-repo">Repo</Label>
         {repos.length === 0 ? (
@@ -605,6 +673,16 @@ function NewPanel({
         <Alert variant="destructive" data-testid="add-issue-new-error">
           <AlertTitle>Create failed</AlertTitle>
           <AlertDescription>{create.error.message}</AlertDescription>
+        </Alert>
+      )}
+
+      {tagError && (
+        <Alert
+          variant="destructive"
+          data-testid="add-issue-new-tag-error"
+        >
+          <AlertTitle>Issue created, but tagging failed</AlertTitle>
+          <AlertDescription>{tagError}</AlertDescription>
         </Alert>
       )}
 

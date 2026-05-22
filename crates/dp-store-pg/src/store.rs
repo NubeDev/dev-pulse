@@ -140,6 +140,11 @@ fn project_view_from_row(
         serde_json::from_value(filter_json).map_err(|e| {
             StoreError::Invalid(format!("filter_json decode: {e}"))
         })?;
+    let categories_json: serde_json::Value = r.try_get("categories").map_err(map_sqlx)?;
+    let categories: Vec<String> =
+        serde_json::from_value(categories_json).map_err(|e| {
+            StoreError::Invalid(format!("categories decode: {e}"))
+        })?;
     let visibility_text: String = r.try_get("visibility").map_err(map_sqlx)?;
     let visibility = ProjectViewVisibility::from_str(&visibility_text)
         .ok_or_else(|| {
@@ -157,6 +162,7 @@ fn project_view_from_row(
         visibility,
         start_date: r.try_get("start_date").map_err(map_sqlx)?,
         due_date: r.try_get("due_date").map_err(map_sqlx)?,
+        categories,
         created_at: r.try_get("created_at").map_err(map_sqlx)?,
         updated_at: r.try_get("updated_at").map_err(map_sqlx)?,
     })
@@ -4240,7 +4246,7 @@ impl Store for PgStore {
         let rows = sqlx::query(
             r#"SELECT id, project_id, owner_user_id, name, group_by,
                       filter_json, sort, position, visibility,
-                      start_date, due_date,
+                      start_date, due_date, categories,
                       created_at, updated_at
                  FROM dp_project_views
                 WHERE project_id = $1 AND owner_user_id = $2
@@ -4262,7 +4268,7 @@ impl Store for PgStore {
         let row_opt = sqlx::query(
             r#"SELECT id, project_id, owner_user_id, name, group_by,
                       filter_json, sort, position, visibility,
-                      start_date, due_date,
+                      start_date, due_date, categories,
                       created_at, updated_at
                  FROM dp_project_views
                 WHERE id = $1 AND owner_user_id = $2"#,
@@ -4284,6 +4290,8 @@ impl Store for PgStore {
         let id = Uuid::new_v4();
         let filter_json = serde_json::to_value(&upsert.filter_clauses)
             .map_err(|e| StoreError::Invalid(format!("filter_json encode: {e}")))?;
+        let categories_json = serde_json::to_value(&upsert.categories)
+            .map_err(|e| StoreError::Invalid(format!("categories encode: {e}")))?;
         let mut tx = self.pool.sqlx().begin().await.map_err(map_sqlx)?;
         // Append-at-end position. Per-(project, owner) so two users'
         // tab strips never collide on position.
@@ -4301,11 +4309,11 @@ impl Store for PgStore {
             r#"INSERT INTO dp_project_views
                   (id, project_id, owner_user_id, name, group_by,
                    filter_json, sort, position, visibility,
-                   start_date, due_date)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                   start_date, due_date, categories)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
                RETURNING id, project_id, owner_user_id, name, group_by,
                          filter_json, sort, position, visibility,
-                         start_date, due_date,
+                         start_date, due_date, categories,
                          created_at, updated_at"#,
         )
         .bind(id)
@@ -4323,6 +4331,7 @@ impl Store for PgStore {
         .bind(upsert.visibility.as_str())
         .bind(upsert.start_date)
         .bind(upsert.due_date)
+        .bind(&categories_json)
         .fetch_one(&mut *tx)
         .await
         .map_err(map_sqlx)?;
@@ -4338,6 +4347,8 @@ impl Store for PgStore {
     ) -> Result<ProjectView, StoreError> {
         let filter_json = serde_json::to_value(&upsert.filter_clauses)
             .map_err(|e| StoreError::Invalid(format!("filter_json encode: {e}")))?;
+        let categories_json = serde_json::to_value(&upsert.categories)
+            .map_err(|e| StoreError::Invalid(format!("categories encode: {e}")))?;
         let row_opt = sqlx::query(
             r#"UPDATE dp_project_views
                   SET name = $3,
@@ -4347,11 +4358,12 @@ impl Store for PgStore {
                       visibility = $7,
                       start_date = $8,
                       due_date = $9,
+                      categories = $10,
                       updated_at = now()
                 WHERE id = $1 AND owner_user_id = $2
                 RETURNING id, project_id, owner_user_id, name, group_by,
                           filter_json, sort, position, visibility,
-                          start_date, due_date,
+                          start_date, due_date, categories,
                           created_at, updated_at"#,
         )
         .bind(id)
@@ -4367,6 +4379,7 @@ impl Store for PgStore {
         .bind(upsert.visibility.as_str())
         .bind(upsert.start_date)
         .bind(upsert.due_date)
+        .bind(&categories_json)
         .fetch_optional(self.pool.sqlx())
         .await
         .map_err(map_sqlx)?;
@@ -4456,6 +4469,7 @@ impl Store for PgStore {
         let rows = sqlx::query(
             r#"SELECT id, project_id, owner_user_id, name, group_by,
                       filter_json, sort, position, visibility,
+                      start_date, due_date, categories,
                       created_at, updated_at
                  FROM dp_project_views
                 WHERE project_id = $1 AND owner_user_id = $2

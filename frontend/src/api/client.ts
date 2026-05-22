@@ -1007,6 +1007,11 @@ export const ProjectViewDtoSchema = z.object({
     .regex(/^\d{4}-\d{2}-\d{2}$/, "expected YYYY-MM-DD")
     .nullable()
     .optional(),
+  /** Ordered category slugs rendered as collapsible sections.
+   *  Empty array — flat view. Slug grammar: lowercase,
+   *  `[a-z0-9_-]{1,50}`. The server always emits the field
+   *  (defaulting to `[]`) so the schema is strict here. */
+  categories: z.array(z.string()),
   created_at: isoDateTime,
   updated_at: isoDateTime,
   // Populated only by `GET /projects/{id}/views` (tab counts).
@@ -1026,6 +1031,8 @@ export interface ProjectViewWriteBody {
   start_date?: string | null;
   /** Optional view timeline. `YYYY-MM-DD`, `null`, or omitted. */
   due_date?: string | null;
+  /** Ordered category slugs (sections). Omit / empty — flat view. */
+  categories?: string[];
 }
 
 // ---------------------------------------------------------------------------

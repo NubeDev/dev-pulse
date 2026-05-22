@@ -3,7 +3,9 @@ import type {
   ProjectPortfolioRow,
   ProjectStatusDto,
 } from "../../api/client.js";
+import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Popover as PopoverPrimitive } from "radix-ui";
 import {
   Table,
   TableBody,
@@ -13,6 +15,9 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { DateInput } from "@/components/ui/date-input";
 import { Progress } from "@/components/ui/progress";
 import {
   Tooltip,
@@ -21,11 +26,17 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { IconArrowUp, IconArrowDown } from "@tabler/icons-react";
-import { ArchiveIcon, CheckCircle2Icon, RotateCcwIcon } from "lucide-react";
+import {
+  ArchiveIcon,
+  CheckCircle2Icon,
+  PencilIcon,
+  RotateCcwIcon,
+} from "lucide-react";
 import { Spinner } from "@/components/ui/spinner";
 import { api } from "../../api/client.js";
 import { navigate, projectDetailRoute } from "../../routes.js";
 import { ProjectAvatar } from "../../projects/project-avatar.js";
+import { UserPicker } from "@/components/user-picker";
 import {
   useArchiveProject,
   usePatchProject,

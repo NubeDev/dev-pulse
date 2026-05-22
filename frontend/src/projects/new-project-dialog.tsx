@@ -41,6 +41,7 @@ import {
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
+import { UserPicker } from "@/components/user-picker";
 
 import { api, type OrgDto, type ProjectDto } from "../api/client.js";
 
@@ -75,6 +76,7 @@ export function NewProjectDialog({
   const [description, setDescription] = useState("");
   const [startAt, setStartAt] = useState("");
   const [dueAt, setDueAt] = useState("");
+  const [leadUserId, setLeadUserId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -82,6 +84,7 @@ export function NewProjectDialog({
     setDescription("");
     setStartAt("");
     setDueAt("");
+    setLeadUserId(null);
     create.reset();
     if (defaultOrgId) {
       setOrgId(defaultOrgId);
@@ -109,6 +112,13 @@ export function NewProjectDialog({
     return `${v}T00:00:00Z`;
   };
 
+  // Clear an org-scoped lead pick when the user switches orgs —
+  // the picked user is, by definition, only a member of the
+  // previous org.
+  useEffect(() => {
+    setLeadUserId(null);
+  }, [orgId]);
+
   const onSubmit = (e: React.FormEvent): void => {
     e.preventDefault();
     if (!canSubmit) return;
@@ -119,6 +129,7 @@ export function NewProjectDialog({
         description: description.trim() ? description.trim() : null,
         start_at: toIso(startAt) ?? null,
         due_at: toIso(dueAt) ?? null,
+        lead_user_id: leadUserId,
       },
       {
         onSuccess: (project) => {
@@ -216,6 +227,22 @@ export function NewProjectDialog({
                 onChange={(e) => setDueAt(e.target.value)}
               />
             </div>
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="new-project-lead">Lead</Label>
+            <UserPicker
+              id="new-project-lead"
+              data-testid="new-project-lead"
+              orgId={orgId || undefined}
+              value={leadUserId}
+              onChange={setLeadUserId}
+              placeholder="Unassigned"
+            />
+            <p className="text-xs text-muted-foreground">
+              Optional — the GitHub user accountable for this
+              project. Scoped to members of the selected org.
+            </p>
           </div>
 
           {create.isError && (

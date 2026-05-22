@@ -78,6 +78,11 @@ pub struct ProjectViewDto {
     /// Optional due date for the view's timeline. Same shape as
     /// [`Self::start_date`].
     pub due_date: Option<NaiveDate>,
+    /// Ordered category slugs rendered as collapsible sections
+    /// inside this view. Lowercase, `[a-z0-9_-]{1,50}`, deduped,
+    /// max 32. Empty array — flat view (whatever `group_by` says).
+    #[serde(default)]
+    pub categories: Vec<String>,
     /// First write timestamp.
     pub created_at: DateTime<Utc>,
     /// Most recent mutation.
@@ -113,6 +118,7 @@ impl From<ProjectView> for ProjectViewDto {
             visibility: v.visibility.as_str().to_string(),
             start_date: v.start_date,
             due_date: v.due_date,
+            categories: v.categories,
             created_at: v.created_at,
             updated_at: v.updated_at,
             open_issue_count: None,
@@ -147,6 +153,10 @@ pub struct ProjectViewCreateBody {
     /// [`Self::start_date`].
     #[serde(default)]
     pub due_date: Option<NaiveDate>,
+    /// Ordered category slugs (sections inside the view). Lowercase,
+    /// `[a-z0-9_-]{1,50}`. Validated by `validate_categories`.
+    #[serde(default)]
+    pub categories: Vec<String>,
 }
 
 fn default_sort() -> String {
@@ -313,6 +323,7 @@ fn body_to_upsert(body: ProjectViewCreateBody) -> Result<ProjectViewUpsert, ApiE
     validate_group_by(body.group_by.as_deref())?;
     validate_sort(&body.sort)?;
     let filter_clauses = validate_filter_clauses(&body.filter_clauses)?;
+    let categories = validate_categories(&body.categories)?;
     Ok(ProjectViewUpsert {
         name,
         group_by: body.group_by,
@@ -323,7 +334,62 @@ fn body_to_upsert(body: ProjectViewCreateBody) -> Result<ProjectViewUpsert, ApiE
         visibility: ProjectViewVisibility::Private,
         start_date: body.start_date,
         due_date: body.due_date,
+        categories,
     })
+}
+
+/// Validate the `categories` array. Returns the normalised list
+/// (trimmed, deduped, lower-cased). Slug grammar mirrors
+/// `tagging.md` §3: `[a-z0-9_-]{1,50}`. Rejects > 32 entries
+/// because the workbench can't usefully render more sections.
+fn validate_categories(input: &[String]) -> Result<Vec<String>, ApiError> {
+    const MAX_CATEGORIES: usize = 32;
+    if input.len() > MAX_CATEGORIES {
+        return Err(ApiError::BadRequest {
+            code: "invalid_categories",
+            message: format!(
+                "too many categories: {} (max {MAX_CATEGORIES})",
+                input.len()
+            ),
+        });
+    }
+    let mut out: Vec<String> = Vec::with_capacity(input.len());
+    for (idx, raw) in input.iter().enumerate() {
+        let slug = raw.trim();
+        if slug.is_empty() {
+            return Err(ApiError::BadRequest {
+                code: "invalid_categories",
+                message: format!("category #{idx} is empty"),
+            });
+        }
+        if slug.len() > 50 {
+            return Err(ApiError::BadRequest {
+                code: "invalid_categories",
+                message: format!(
+                    "category #{idx} `{slug}` exceeds 50 chars"
+                ),
+            });
+        }
+        if !slug
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
+        {
+            return Err(ApiError::BadRequest {
+                code: "invalid_categories",
+                message: format!(
+                    "category #{idx} `{slug}` must match [a-z0-9_-]"
+                ),
+            });
+        }
+        if out.iter().any(|s| s == slug) {
+            return Err(ApiError::BadRequest {
+                code: "invalid_categories",
+                message: format!("category #{idx} `{slug}` is duplicated"),
+            });
+        }
+        out.push(slug.to_string());
+    }
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------
@@ -793,6 +859,7 @@ mod tests {
                 visibility: upsert.visibility,
                 start_date: upsert.start_date,
                 due_date: upsert.due_date,
+                categories: upsert.categories.clone(),
                 created_at: now,
                 updated_at: now,
             };
@@ -827,6 +894,7 @@ mod tests {
             v.visibility = upsert.visibility;
             v.start_date = upsert.start_date;
             v.due_date = upsert.due_date;
+            v.categories = upsert.categories.clone();
             v.updated_at = Utc::now();
             Ok(v.clone())
         }

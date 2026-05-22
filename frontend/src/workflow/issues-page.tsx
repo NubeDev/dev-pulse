@@ -119,6 +119,7 @@ import {
 } from "./use-workflow-data.js";
 import { LabelChipList } from "@/components/label-chip";
 import { IssueTagsEditor, IssueTagsRow } from "./issue-tags";
+import { UserLoginsPicker } from "@/components/user-picker";
 import { WritesGate } from "./writes-banner.js";
 
 const PAGE_SIZE = 50;
@@ -1015,6 +1016,7 @@ function IssueFormBody({
         </div>
       </form>
       <IssueProjectChip issueId={issue.id} />
+      <IssueAssigneesEditor issue={issue} />
       <IssueTagsEditor issue={issue} />
       <IssueDatesEditor issueId={issue.id} />
       {/* Local-only issues don't exist on GitHub, so there's no
@@ -1052,6 +1054,116 @@ function useOrgLogin(orgId: string): string | undefined {
     }
     return undefined;
   }, [orgId]);
+}
+
+/**
+ * `<IssueAssigneesEditor>` — pick GitHub users from the issue's
+ * org and write them through the §8 `PATCH /issues/{id}` path
+ * (which mirrors to the GitHub Issues API when the org install
+ * grants `issues: write`). The wire field is a flat array of
+ * GitHub `login` strings that fully replaces the existing
+ * assignee set.
+ *
+ * Local UI state is seeded from the issue row and re-seeded on
+ * every server version bump so an out-of-band fetcher refresh
+ * doesn't strand the user's draft. Saves are user-initiated
+ * (Save / Clear) rather than on-change to keep accidental
+ * removals recoverable before the GitHub call goes out.
+ *
+ * Stale-version (409) and writes-not-available errors are
+ * surfaced inline so the surrounding form's stale-version banner
+ * stays the single source of truth for "your edit didn't apply".
+ */
+function IssueAssigneesEditor({ issue }: { issue: IssueDto }): JSX.Element {
+  const update = useUpdateIssue(issue.id);
+  const [draft, setDraft] = useState<string[]>(() => [...issue.assignees]);
+  const [error, setError] = useState<string | null>(null);
+
+  // Re-seed when the issue row's CAS token moves — a successful
+  // PATCH bumps `version` and a fetcher refresh can do the same.
+  useEffect(() => {
+    setDraft([...issue.assignees]);
+    setError(null);
+  }, [issue.id, issue.version]);
+
+  const dirty =
+    draft.length !== issue.assignees.length ||
+    draft.some((l, i) => l !== issue.assignees[i]);
+
+  const save = (next: string[]): void => {
+    setError(null);
+    update.mutate(
+      { expected_version: issue.version, assignees: next },
+      {
+        onError: (e) => {
+          const v = staleVersionFromError(e);
+          if (v !== undefined) {
+            setError(
+              `Stale version (now v${v}). Reload the form to pick up the latest assignees.`,
+            );
+            return;
+          }
+          const org = writesUnavailableOrg(e);
+          if (org) {
+            setError(`Writes not available for ${org}.`);
+            return;
+          }
+          setError(e instanceof Error ? e.message : "Could not save assignees.");
+        },
+      },
+    );
+  };
+
+  return (
+    <div
+      className="flex flex-col gap-2 border-t border-border pt-4"
+      data-testid="issue-assignees-editor"
+    >
+      <Label className="text-sm">Assignees</Label>
+      <UserLoginsPicker
+        orgId={issue.org_id}
+        value={draft}
+        onChange={setDraft}
+        disabled={update.isPending}
+        data-testid="issue-assignees-picker"
+      />
+      <div className="flex items-center gap-2">
+        <Button
+          type="button"
+          size="sm"
+          disabled={update.isPending || !dirty}
+          onClick={() => save(draft)}
+          data-testid="issue-assignees-save"
+        >
+          {update.isPending ? "Saving…" : "Save assignees"}
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          disabled={update.isPending || draft.length === 0}
+          onClick={() => {
+            setDraft([]);
+            save([]);
+          }}
+        >
+          Clear
+        </Button>
+        <span className="ml-auto text-xs text-muted-foreground">
+          {draft.length} of 10
+        </span>
+      </div>
+      {error && (
+        <p
+          className="text-xs text-destructive"
+          data-testid="issue-assignees-error"
+          role="alert"
+        >
+          {error}
+        </p>
+      )}
+    </div>
+  );
 }
 
 /**
