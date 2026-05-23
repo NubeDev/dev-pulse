@@ -5391,6 +5391,7 @@
           "documents",
           "changelog",
           "completion",
+          "skipped_sections",
           "updated_at"
         ],
         "properties": {
@@ -5433,6 +5434,13 @@
           },
           "scope": {
             "$ref": "#/components/schemas/ExecSummaryScopeDto"
+          },
+          "skipped_sections": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Section ids the user has marked as not-applicable. These are\nalready OR'd into `completion.sections` server-side; the field\nis exposed so the UI can render the \"N/A\" affordance per\nsection without recomputing."
           },
           "summary": {
             "$ref": "#/components/schemas/ExecSummarySummaryDto"
@@ -5614,6 +5622,16 @@
                 "$ref": "#/components/schemas/ExecSummaryScopePatch"
               }
             ]
+          },
+          "skipped_sections": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Replace the user-marked \"N/A\" set wholesale. Empty array\nclears every skip; absent leaves the column untouched.\nSection ids must come from the closed set documented on\n[`ProjectExecSummary::skipped_sections`]; unknown ids are\nignored by the completion calc."
           },
           "summary": {
             "oneOf": [

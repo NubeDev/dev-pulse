@@ -6,6 +6,7 @@ import {
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
 
@@ -35,23 +36,23 @@ export function ExecSummaryHeader({
   const status = data.approval.status;
 
   return (
-    <div
-      className="rounded-2xl bg-[#071923] px-5 py-4 text-slate-100 shadow-sm"
+    <Card
+      className="gap-3 px-5 py-4"
       data-testid="exec-summary-header"
     >
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="flex min-w-0 flex-col gap-1.5">
-          <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-slate-400">
+          <div className="flex items-center gap-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
             Executive summary
             {saving && (
-              <span className="inline-flex items-center gap-1 text-slate-400">
+              <span className="inline-flex items-center gap-1">
                 <Loader2Icon className="h-3 w-3 animate-spin" /> Saving…
               </span>
             )}
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <StatusBadge status={status} />
-            <span className="text-xs text-slate-400">
+            <span className="text-xs text-muted-foreground">
               Updated {new Date(data.updated_at).toLocaleString()}
             </span>
           </div>
@@ -61,7 +62,7 @@ export function ExecSummaryHeader({
           <Button
             type="button"
             size="sm"
-            variant="secondary"
+            variant="outline"
             disabled={
               !permissions.canSubmit ||
               submit.isPending ||
@@ -75,7 +76,6 @@ export function ExecSummaryHeader({
           <Button
             type="button"
             size="sm"
-            className="bg-emerald-600 text-white hover:bg-emerald-700"
             disabled={
               !permissions.canApprove ||
               approve.isPending ||
@@ -89,8 +89,7 @@ export function ExecSummaryHeader({
           <Button
             type="button"
             size="sm"
-            variant="outline"
-            className="border-slate-600 bg-transparent text-slate-100 hover:bg-slate-800"
+            variant="ghost"
             disabled={
               !permissions.canRevert ||
               revert.isPending ||
@@ -104,17 +103,14 @@ export function ExecSummaryHeader({
         </div>
       </div>
 
-      <div className="mt-4 flex items-center gap-3">
+      <div className="flex items-center gap-3">
         <div className="flex-1">
           <Progress
             value={pct}
             className={cn(
-              "h-2 bg-slate-800",
+              "h-2",
               pct >= 80 &&
                 "[&>[data-slot=progress-indicator]]:bg-emerald-500",
-              pct < 80 &&
-                pct > 0 &&
-                "[&>[data-slot=progress-indicator]]:bg-sky-500",
             )}
           />
         </div>
@@ -122,6 +118,6 @@ export function ExecSummaryHeader({
           {pct}%
         </span>
       </div>
-    </div>
+    </Card>
   );
 }

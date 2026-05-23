@@ -46,7 +46,6 @@ export function DocumentsSection({
   projectId: string;
   data: ExecSummaryDto;
 }): JSX.Element {
-  const upload = useUploadExecSummaryDocument(projectId);
   const remove = useDeleteExecSummaryDocument(projectId);
   const patchDoc = usePatchExecSummaryDocument(projectId);
   const [pendingFile, setPendingFile] = useState<File | null>(null);
@@ -79,13 +78,6 @@ export function DocumentsSection({
         />
       </div>
 
-      {upload.isError && (
-        <Alert variant="destructive">
-          <AlertTitle>Upload failed</AlertTitle>
-          <AlertDescription>{upload.error.message}</AlertDescription>
-        </Alert>
-      )}
-
       {data.documents.length === 0 ? (
         <div className="rounded-lg border-2 border-dashed border-border bg-muted/20 px-4 py-10 text-center text-sm text-muted-foreground">
           No documents attached yet. Add briefs, BOMs, datasheets, or anything
@@ -100,21 +92,52 @@ export function DocumentsSection({
             >
               <FileIcon className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
               <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-                <div className="flex flex-wrap items-center gap-2">
-                  <a
-                    href={doc.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="truncate font-medium hover:underline"
+                <div className="grid grid-cols-1 gap-2 md:grid-cols-[1fr_140px_auto]">
+                  <Input
+                    defaultValue={doc.title}
+                    className="h-8 font-medium"
+                    aria-label="Title"
+                    onBlur={(e) => {
+                      const next = e.target.value.trim();
+                      if (next.length === 0 || next === doc.title) {
+                        // Empty title is invalid — revert to the
+                        // stored value (the input is uncontrolled, so
+                        // we restamp the defaultValue via key churn).
+                        e.target.value = doc.title;
+                        return;
+                      }
+                      patchDoc.mutate({
+                        documentId: doc.id,
+                        body: { title: next },
+                      });
+                    }}
+                  />
+                  <Select
+                    value={doc.doc_type ?? ""}
+                    onValueChange={(v) => {
+                      const next = v === "" ? null : v;
+                      if (next === (doc.doc_type ?? null)) return;
+                      patchDoc.mutate({
+                        documentId: doc.id,
+                        body: { doc_type: next },
+                      });
+                    }}
                   >
-                    {doc.title}
-                  </a>
-                  {doc.doc_type && (
-                    <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
-                      {doc.doc_type}
-                    </span>
-                  )}
-                  <span className="text-xs text-muted-foreground">
+                    <SelectTrigger className="h-8" aria-label="Type">
+                      <SelectValue placeholder="Type" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {DOC_TYPES.map((t) => (
+                        <SelectItem key={t.value} value={t.value}>
+                          {t.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <span
+                    className="truncate self-center text-xs text-muted-foreground"
+                    title={doc.filename}
+                  >
                     {doc.filename}
                   </span>
                 </div>
@@ -122,6 +145,7 @@ export function DocumentsSection({
                   <Input
                     defaultValue={doc.notes ?? ""}
                     placeholder="Notes"
+                    className="h-8"
                     onBlur={(e) => {
                       const next = e.target.value.trim() || null;
                       if (next === (doc.notes ?? null)) return;
@@ -134,6 +158,7 @@ export function DocumentsSection({
                   <Input
                     defaultValue={doc.required_action ?? ""}
                     placeholder="Required action"
+                    className="h-8"
                     onBlur={(e) => {
                       const next = e.target.value.trim() || null;
                       if (next === (doc.required_action ?? null)) return;

@@ -18,6 +18,7 @@ import { useMemo, useState } from "react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Spinner } from "@/components/ui/spinner";
+import { cn } from "@/lib/utils";
 
 import type {
   ExecSummarySectionId,
@@ -28,6 +29,7 @@ import { ExecSummaryHeader } from "./exec-summary-header.js";
 import { ExecSummaryNav } from "./exec-summary-nav.js";
 import {
   useExecSummary,
+  useExecSummaryInlineImageUploader,
   usePatchExecSummary,
 } from "./hooks/use-exec-summary.js";
 import { ApprovalSection } from "./sections/approval-section.js";
@@ -38,7 +40,12 @@ import { HardwareSection } from "./sections/hardware-section.js";
 import { RequirementsSection } from "./sections/requirements-section.js";
 import { ScopeSection } from "./sections/scope-section.js";
 import { SummarySection } from "./sections/summary-section.js";
-import { SECTIONS, type ExecSummaryPermissions } from "./shared.js";
+import { SectionNaToggle } from "./section-na-toggle.js";
+import {
+  ExecSummaryImageUploaderContext,
+  SECTIONS,
+  type ExecSummaryPermissions,
+} from "./shared.js";
 
 export interface ProjectExecSummaryPageProps {
   project: ProjectDto;
@@ -52,6 +59,7 @@ export function ProjectExecSummaryPage({
 }: ProjectExecSummaryPageProps): JSX.Element {
   const query = useExecSummary(project.id);
   const patchMutation = usePatchExecSummary(project.id);
+  const inlineImageUpload = useExecSummaryInlineImageUploader(project.id);
   const [active, setActive] = useState<ExecSummarySectionId>("summary");
 
   const permissions = useMemo<ExecSummaryPermissions>(() => {
@@ -92,6 +100,7 @@ export function ProjectExecSummaryPage({
   const activeMeta = SECTIONS.find((s) => s.id === active) ?? SECTIONS[0]!;
 
   return (
+    <ExecSummaryImageUploaderContext.Provider value={inlineImageUpload}>
     <div className="flex flex-col gap-4" data-testid="exec-summary-page">
       <ExecSummaryHeader
         projectId={project.id}
@@ -106,18 +115,33 @@ export function ProjectExecSummaryPage({
             active={active}
             onSelect={setActive}
             completion={data.completion.sections}
+            skipped={data.skipped_sections}
           />
         </aside>
 
         <main className="min-w-0 flex-1">
-          <Card className="rounded-2xl border-slate-200 shadow-sm">
+          <Card>
             <CardHeader>
-              <CardTitle className="text-base">{activeMeta.label}</CardTitle>
-              <p className="text-xs text-muted-foreground">
-                {activeMeta.description}
-              </p>
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex flex-col gap-1">
+                  <CardTitle className="text-base">{activeMeta.label}</CardTitle>
+                  <p className="text-xs text-muted-foreground">
+                    {activeMeta.description}
+                  </p>
+                </div>
+                <SectionNaToggle
+                  projectId={project.id}
+                  data={data}
+                  sectionId={active}
+                />
+              </div>
             </CardHeader>
-            <CardContent>
+            <CardContent
+              className={cn(
+                data.skipped_sections.includes(active) &&
+                  "opacity-60",
+              )}
+            >
               {active === "summary" && (
                 <SummarySection projectId={project.id} data={data} />
               )}
@@ -151,5 +175,6 @@ export function ProjectExecSummaryPage({
         </main>
       </div>
     </div>
+    </ExecSummaryImageUploaderContext.Provider>
   );
 }

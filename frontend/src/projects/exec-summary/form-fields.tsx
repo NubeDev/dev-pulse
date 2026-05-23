@@ -10,7 +10,13 @@
  * autosave hook — the input itself doesn't know about react-query.
  */
 
-import { useEffect, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import MDEditor from "@uiw/react-md-editor";
 
 import { Input } from "@/components/ui/input";
@@ -20,6 +26,8 @@ import { DateInput } from "@/components/ui/date-input";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useTheme } from "@kit/theme";
 import { cn } from "@/lib/utils";
+
+import { useExecSummaryImageUploader } from "./shared.js";
 
 interface FieldShellProps {
   id?: string;
@@ -250,6 +258,11 @@ interface MarkdownFieldProps {
   hint?: ReactNode;
   height?: number;
   disabled?: boolean;
+  /** Optional image uploader. When set, paste / drop of an image
+   *  file is intercepted, sent through the uploader, and inserted
+   *  at the caret as a markdown image. The returned URL must be
+   *  the resolvable proxy URL the editor can render inline. */
+  onImageUpload?: (file: File) => Promise<string>;
 }
 
 /**
@@ -264,7 +277,12 @@ export function MarkdownField({
   hint,
   height = 240,
   disabled,
+  onImageUpload: onImageUploadProp,
 }: MarkdownFieldProps): JSX.Element {
+  // Fall back to the page-level uploader so individual sections
+  // don't need to thread the prop through every field.
+  const contextUploader = useExecSummaryImageUploader();
+  const onImageUpload = onImageUploadProp ?? contextUploader;
   const { theme } = useTheme();
   const colorMode =
     theme === "dark" ||
@@ -275,10 +293,99 @@ export function MarkdownField({
       : "light";
   const [draft, setDraft] = useState(value ?? "");
   useEffect(() => setDraft(value ?? ""), [value]);
+
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [uploading, setUploading] = useState(false);
+
+  /** Find the editor's `<textarea>` so we can splice the markdown
+   *  image at the caret position rather than appending blindly. */
+  const findTextarea = (): HTMLTextAreaElement | null => {
+    return (
+      containerRef.current?.querySelector<HTMLTextAreaElement>("textarea") ?? null
+    );
+  };
+
+  const insertAtCaret = useCallback((snippet: string): void => {
+    const ta = findTextarea();
+    const current = draftRef.current;
+    if (!ta) {
+      const next = current + (current.endsWith("\n") ? "" : "\n") + snippet;
+      setDraft(next);
+      return;
+    }
+    const start = ta.selectionStart ?? current.length;
+    const end = ta.selectionEnd ?? current.length;
+    const next = current.slice(0, start) + snippet + current.slice(end);
+    setDraft(next);
+    // Restore caret to the end of the inserted snippet after react
+    // re-renders. Microtask is enough — MDEditor reflows synchronously.
+    queueMicrotask(() => {
+      const after = findTextarea();
+      if (!after) return;
+      const pos = start + snippet.length;
+      after.focus();
+      after.setSelectionRange(pos, pos);
+    });
+  }, []);
+
+  const handleImageFile = useCallback(
+    async (file: File): Promise<void> => {
+      if (!onImageUpload) return;
+      setUploading(true);
+      const placeholderAlt = file.name.replace(/\.[^.]+$/, "") || "image";
+      const placeholder = `![${placeholderAlt}](uploading…)`;
+      insertAtCaret(placeholder);
+      try {
+        const url = await onImageUpload(file);
+        // Replace the *first* matching placeholder. Multiple
+        // concurrent uploads each get their own placeholder line, so
+        // this stays correct even with rapid paste.
+        setDraft((cur) =>
+          cur.replace(placeholder, `![${placeholderAlt}](${url})`),
+        );
+      } catch {
+        setDraft((cur) =>
+          cur.replace(placeholder, `<!-- upload failed: ${placeholderAlt} -->`),
+        );
+      } finally {
+        setUploading(false);
+      }
+    },
+    [insertAtCaret, onImageUpload],
+  );
+
+  const onPaste = (e: React.ClipboardEvent<HTMLDivElement>): void => {
+    if (!onImageUpload) return;
+    const items = Array.from(e.clipboardData?.items ?? []);
+    const images = items
+      .filter((it) => it.kind === "file" && it.type.startsWith("image/"))
+      .map((it) => it.getAsFile())
+      .filter((f): f is File => f !== null);
+    if (images.length === 0) return;
+    e.preventDefault();
+    for (const f of images) void handleImageFile(f);
+  };
+
+  const onDrop = (e: React.DragEvent<HTMLDivElement>): void => {
+    if (!onImageUpload) return;
+    const files = Array.from(e.dataTransfer?.files ?? []).filter((f) =>
+      f.type.startsWith("image/"),
+    );
+    if (files.length === 0) return;
+    e.preventDefault();
+    for (const f of files) void handleImageFile(f);
+  };
+
   return (
     <FieldShell label={label} hint={hint}>
       <div
+        ref={containerRef}
         data-color-mode={colorMode}
+        onPaste={onPaste}
+        onDrop={onDrop}
+        onDragOver={onImageUpload ? (e) => e.preventDefault() : undefined}
         onBlur={(e) => {
           // Only commit if focus is leaving the editor entirely —
           // toolbar buttons trigger blur on the textarea but keep
@@ -296,7 +403,7 @@ export function MarkdownField({
           preview="edit"
           height={height}
           visibleDragbar={false}
-          textareaProps={{ disabled }}
+          textareaProps={{ disabled: disabled || uploading }}
         />
       </div>
     </FieldShell>

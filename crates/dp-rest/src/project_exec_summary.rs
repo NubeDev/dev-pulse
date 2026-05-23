@@ -377,6 +377,11 @@ pub struct ExecSummaryDto {
     #[allow(missing_docs)] pub documents: Vec<ExecSummaryDocumentDto>,
     #[allow(missing_docs)] pub changelog: Vec<ExecSummaryChangelogEntryDto>,
     #[allow(missing_docs)] pub completion: ExecSummaryCompletionDto,
+    /// Section ids the user has marked as not-applicable. These are
+    /// already OR'd into `completion.sections` server-side; the field
+    /// is exposed so the UI can render the "N/A" affordance per
+    /// section without recomputing.
+    pub skipped_sections: Vec<String>,
     #[allow(missing_docs)] pub updated_at: DateTime<Utc>,
 }
 
@@ -388,7 +393,16 @@ fn build_exec_summary_dto(
     documents: Vec<ExecSummaryDocument>,
     changelog: Vec<ExecSummaryChangelogEntry>,
 ) -> ExecSummaryDto {
-    let (summary, scope, requirements, hardware, commercial, approval, updated_at) = match row {
+    let (
+        summary,
+        scope,
+        requirements,
+        hardware,
+        commercial,
+        approval,
+        skipped_sections,
+        updated_at,
+    ) = match row {
         Some(s) => (
             ExecSummarySummaryDto {
                 product_name: s.product_name,
@@ -442,6 +456,7 @@ fn build_exec_summary_dto(
                 submitted_at: s.submitted_at,
                 approved_at: s.approved_at,
             },
+            s.skipped_sections,
             s.updated_at,
         ),
         None => (
@@ -451,6 +466,7 @@ fn build_exec_summary_dto(
             ExecSummaryHardwareDto::default(),
             ExecSummaryCommercialDto::default(),
             ExecSummaryApprovalDto::default(),
+            Vec::new(),
             Utc::now(),
         ),
     };
@@ -466,6 +482,7 @@ fn build_exec_summary_dto(
         documents: documents.into_iter().map(Into::into).collect(),
         changelog: changelog.into_iter().map(Into::into).collect(),
         completion: completion.into(),
+        skipped_sections,
         updated_at,
     }
 }
@@ -578,6 +595,13 @@ pub struct ExecSummaryPatchBody {
     #[allow(missing_docs)] #[serde(default, skip_serializing_if = "Option::is_none")] pub hardware: Option<ExecSummaryHardwarePatch>,
     #[allow(missing_docs)] #[serde(default, skip_serializing_if = "Option::is_none")] pub commercial: Option<ExecSummaryCommercialPatch>,
     #[allow(missing_docs)] #[serde(default, skip_serializing_if = "Option::is_none")] pub approval: Option<ExecSummaryApprovalPatch>,
+    /// Replace the user-marked "N/A" set wholesale. Empty array
+    /// clears every skip; absent leaves the column untouched.
+    /// Section ids must come from the closed set documented on
+    /// [`ProjectExecSummary::skipped_sections`]; unknown ids are
+    /// ignored by the completion calc.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skipped_sections: Option<Vec<String>>,
 }
 
 impl ExecSummaryPatchBody {
@@ -636,6 +660,9 @@ impl ExecSummaryPatchBody {
             out.approver = a.approver;
             out.review_notes = a.review_notes;
             out.approval_notes = a.approval_notes;
+        }
+        if let Some(sk) = self.skipped_sections {
+            out.skipped_sections = Some(sk);
         }
         out
     }

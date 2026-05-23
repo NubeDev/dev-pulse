@@ -98,6 +98,10 @@ impl PgStore {
 
         let Some(r) = row else { return Ok(None) };
         let summary = row_to_exec_summary(&r)?;
+        // OR the user-marked "N/A" set into the strict per-rule
+        // booleans so the completion bar + submit gate honour
+        // explicit opt-outs (e.g. firmware-only project skipping
+        // Hardware). See scope §3.5 + the 0046 migration.
         let completion = ExecSummaryCompletion {
             summary: r.try_get("c_summary").map_err(map_sqlx)?,
             scope: r.try_get("c_scope").map_err(map_sqlx)?,
@@ -107,7 +111,8 @@ impl PgStore {
             documents: r.try_get("c_documents").map_err(map_sqlx)?,
             approval: r.try_get("c_approval").map_err(map_sqlx)?,
             changelog: r.try_get("c_changelog").map_err(map_sqlx)?,
-        };
+        }
+        .with_skips(&summary.skipped_sections);
         Ok(Some((summary, completion)))
     }
 
@@ -221,6 +226,13 @@ impl PgStore {
         let (review_notes, review_notes_set) = opt_pair!(patch.review_notes);
         let (approval_notes, approval_notes_set) = opt_pair!(patch.approval_notes);
 
+        // Same shape as `protocols`: replace-wholesale array, no
+        // double-Option (the field is NOT NULL DEFAULT '{}' in the
+        // schema). Absent ⇒ leave alone.
+        let skipped_sections_set = patch.skipped_sections.is_some();
+        let skipped_sections_val: Vec<String> =
+            patch.skipped_sections.clone().unwrap_or_default();
+
         let row = sqlx::query(
             r#"
             UPDATE dp_project_exec_summary SET
@@ -267,6 +279,8 @@ impl PgStore {
                 review_notes        = CASE WHEN $72 THEN $73 ELSE review_notes        END,
                 approval_notes      = CASE WHEN $74 THEN $75 ELSE approval_notes      END,
 
+                skipped_sections    = CASE WHEN $76 THEN $77 ELSE skipped_sections    END,
+
                 updated_at          = now()
             WHERE project_id = $1
             RETURNING *
@@ -310,6 +324,7 @@ impl PgStore {
         .bind(approver_set).bind(approver)
         .bind(review_notes_set).bind(review_notes)
         .bind(approval_notes_set).bind(approval_notes)
+        .bind(skipped_sections_set).bind(&skipped_sections_val)
         .fetch_optional(self.pool.sqlx())
         .await
         .map_err(map_sqlx)?;
@@ -757,6 +772,8 @@ fn row_to_exec_summary(r: &sqlx::postgres::PgRow) -> Result<ProjectExecSummary, 
         approval_notes: r.try_get("approval_notes").map_err(map_sqlx)?,
         submitted_at: r.try_get("submitted_at").map_err(map_sqlx)?,
         approved_at: r.try_get("approved_at").map_err(map_sqlx)?,
+
+        skipped_sections: r.try_get("skipped_sections").map_err(map_sqlx)?,
 
         created_at: r.try_get("created_at").map_err(map_sqlx)?,
         updated_at: r.try_get("updated_at").map_err(map_sqlx)?,

@@ -4,6 +4,8 @@
  * and the permissions shape passed down from the host page.
  */
 
+import { createContext, useContext } from "react";
+
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 
@@ -93,6 +95,24 @@ const STATUS_CLASS: Record<ExecSummaryStatus, string> = {
   approved:
     "border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-800/60 dark:bg-emerald-950/40 dark:text-emerald-200",
 };
+
+/**
+ * Image uploader shared with every embedded markdown editor on
+ * this surface. The page sets it once via
+ * `<ExecSummaryImageUploaderContext.Provider>`; `MarkdownField`
+ * reads it through `useExecSummaryImageUploader()`. Lets
+ * paste/drop in any section's markdown body push through the same
+ * reference-image endpoint without each section having to plumb
+ * the prop.
+ */
+export type ExecSummaryImageUploader = (file: File) => Promise<string>;
+
+export const ExecSummaryImageUploaderContext =
+  createContext<ExecSummaryImageUploader | null>(null);
+
+export function useExecSummaryImageUploader(): ExecSummaryImageUploader | null {
+  return useContext(ExecSummaryImageUploaderContext);
+}
 
 export function StatusBadge({
   status,

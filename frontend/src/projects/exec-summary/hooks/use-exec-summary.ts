@@ -176,6 +176,26 @@ export function useRevertExecSummary(
 // File uploads + changelog
 // ---------------------------------------------------------------------------
 
+/**
+ * Inline-image uploader for markdown editors inside the exec
+ * summary. Returns a single async function the editor calls with a
+ * dropped/pasted `File`; resolves to the proxy URL that should be
+ * inserted into the markdown body. Reuses the project's reference-
+ * image endpoint so every embedded image is stored, audited, and
+ * deleted alongside the rest of the summary.
+ */
+export function useExecSummaryInlineImageUploader(
+  projectId: string,
+): (file: File) => Promise<string> {
+  return useCallback(
+    async (file) => {
+      const dto = await api.uploadProjectExecSummaryImage(projectId, file);
+      return dto.url;
+    },
+    [projectId],
+  );
+}
+
 export function useUploadExecSummaryImage(
   projectId: string,
 ): UseMutationResult<ExecSummaryImageDto, Error, { file: File; caption?: string }> {

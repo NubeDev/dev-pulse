@@ -195,6 +195,10 @@ export const ExecSummaryDtoSchema = z.object({
   documents: z.array(ExecSummaryDocumentDtoSchema),
   changelog: z.array(ExecSummaryChangelogEntrySchema),
   completion: ExecSummaryCompletionSchema,
+  /** Section ids marked "N/A" by the user. Server already OR's
+   *  these into `completion.sections` — kept on the envelope so the
+   *  UI can render the per-section badge without recomputing. */
+  skipped_sections: z.array(z.string()),
   updated_at: isoDateTime,
 });
 export type ExecSummaryDto = z.infer<typeof ExecSummaryDtoSchema>;
@@ -213,6 +217,9 @@ export interface PatchExecSummaryRequest {
     ExecSummaryApproval,
     "reviewer" | "approver" | "review_notes" | "approval_notes"
   >;
+  /** Replace the user-marked "N/A" set wholesale. Empty array
+   *  clears every skip; omitted leaves it untouched. */
+  skipped_sections?: string[];
 }
 
 export interface AddChangelogEntryRequest {

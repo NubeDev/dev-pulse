@@ -168,6 +168,14 @@ pub struct ProjectExecSummary {
     /// When the summary was approved (most recent transition).
     pub approved_at: Option<DateTime<Utc>>,
 
+    /// Section ids the user has explicitly marked "N/A". Counts as
+    /// complete for the §3.5 completion calc without needing dummy
+    /// content. Section ids match
+    /// `EXEC_SUMMARY_SECTIONS` on the frontend (`summary`, `scope`,
+    /// `requirements`, `hardware`, `commercial`, `documents`,
+    /// `approval`, `changelog`). Unknown ids are ignored.
+    pub skipped_sections: Vec<String>,
+
     /// Row creation timestamp.
     pub created_at: DateTime<Utc>,
     /// Last update timestamp; touched on every PATCH.
@@ -375,6 +383,13 @@ pub struct ProjectExecSummaryPatch {
     #[allow(missing_docs)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approval_notes: Option<Option<String>>,
+
+    /// Replace the skipped-sections set wholesale when present.
+    /// `Some(vec![])` clears every skip; `None` leaves the column
+    /// untouched. Matches the `protocols` shape for the same reason
+    /// (can be empty but never null).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skipped_sections: Option<Vec<String>>,
 }
 
 /// Per-section completion booleans computed server-side from the
@@ -400,6 +415,31 @@ pub struct ExecSummaryCompletion {
 }
 
 impl ExecSummaryCompletion {
+    /// Apply the user-marked "N/A" set: any section listed in
+    /// `skipped` flips to `true` for completion purposes. Lets the
+    /// store layer compute the strict rules from the row + child
+    /// counts and then merge the user's skip choices in one place.
+    pub fn with_skips<I, S>(mut self, skipped: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        for s in skipped {
+            match s.as_ref() {
+                "summary" => self.summary = true,
+                "scope" => self.scope = true,
+                "requirements" => self.requirements = true,
+                "hardware" => self.hardware = true,
+                "commercial" => self.commercial = true,
+                "documents" => self.documents = true,
+                "approval" => self.approval = true,
+                "changelog" => self.changelog = true,
+                _ => {}
+            }
+        }
+        self
+    }
+
     /// Number of completed sections (0..=8).
     pub fn completed(&self) -> u8 {
         [

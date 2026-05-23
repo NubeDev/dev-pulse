@@ -5,6 +5,8 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 
 import type { ExecSummaryDto } from "../../../api/client.js";
+import { isDpRestError } from "../../../api/client.js";
+import { SECTIONS } from "../shared.js";
 import { useExecSummaryAutosave } from "../hooks/use-exec-summary.js";
 import {
   useApproveExecSummary,
@@ -148,9 +150,12 @@ export function ApprovalSection({
 
       {(submit.error || approve.error || revert.error) && (
         <Alert variant="destructive">
-          <AlertTitle>Action failed</AlertTitle>
+          <AlertTitle>
+            {submitIncompleteMessage(submit.error) ? "Not ready to submit" : "Action failed"}
+          </AlertTitle>
           <AlertDescription>
-            {(submit.error ?? approve.error ?? revert.error)?.message}
+            {submitIncompleteMessage(submit.error) ??
+              (submit.error ?? approve.error ?? revert.error)?.message}
           </AlertDescription>
         </Alert>
       )}
@@ -180,6 +185,25 @@ function StatusCard({
       </CardContent>
     </Card>
   );
+}
+
+/** Render the `400 incomplete` rejection from `submit` as a
+ *  human sentence listing the missing sections. Returns `null`
+ *  when the error is anything else, so the caller can fall back
+ *  to the generic action-failed message. */
+function submitIncompleteMessage(err: Error | null): string | null {
+  if (!err || !isDpRestError(err)) return null;
+  if (err.code !== "incomplete") return null;
+  const missing = Array.isArray(err.body?.missing)
+    ? (err.body!.missing as string[])
+    : [];
+  const labels = missing.map(
+    (id) => SECTIONS.find((s) => s.id === id)?.label ?? id,
+  );
+  const pct = err.body?.percent;
+  const threshold = err.body?.threshold;
+  const list = labels.length > 0 ? labels.join(", ") : "several sections";
+  return `Completion is ${pct ?? "?"}% — needs ${threshold ?? "?"}% to submit. Missing: ${list}.`;
 }
 
 function fmtDateTime(iso: string): string {
