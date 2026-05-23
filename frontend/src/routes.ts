@@ -197,6 +197,27 @@ export function projectDetailRouteWithParams(
   return `#/projects/${id}${qs ? `?${qs}` : ""}`;
 }
 
+/** Sub-tab on `#/projects/{id}` — `workbench` (default issue list /
+ *  KPIs / milestones) or `exec-summary` (the §4 Executive Summary
+ *  surface). Persisted via `?tab=…` so deep links land on the right
+ *  surface. */
+export type ProjectDetailTab = "workbench" | "exec-summary";
+
+export function projectDetailTab(route: string): ProjectDetailTab {
+  const q = route.indexOf("?");
+  if (q < 0) return "workbench";
+  const params = new URLSearchParams(route.slice(q + 1));
+  return params.get("tab") === "exec-summary" ? "exec-summary" : "workbench";
+}
+
+export function projectDetailTabRoute(
+  id: string,
+  tab: ProjectDetailTab,
+): string {
+  if (tab === "workbench") return `#/projects/${id}`;
+  return `#/projects/${id}?tab=${tab}`;
+}
+
 /** Sub-route under the account section. Defaults to
  *  `identities` — the link / unlink / transfer / set-primary
  *  surface (`linear-projects-idea.md` §10 multi-identity).

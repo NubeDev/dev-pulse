@@ -60,12 +60,16 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 
 import { useQuery } from "@tanstack/react-query";
+import { useAuth } from "@nube/starter-ui-core/auth";
 
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+
+import { ProjectExecSummaryPage } from "./exec-summary/project-exec-summary-page.js";
 import { api } from "../api/client.js";
 import type { IssueListItem, MilestoneDto, OrgDto, PatchProjectRequest, ProjectDto } from "../api/client.js";
 import { PageHeading } from "../components/page-heading.jsx";
 import { HelpHint } from "@/components/help-hint";
-import { navigate, projectDetailRoute, projectDetailRouteWithParams, projectFilter, projectGroupBy, projectSelectedIssue, projectSort, projectViewId, useRoute } from "../routes.js";
+import { navigate, projectDetailRoute, projectDetailRouteWithParams, projectDetailTab, projectDetailTabRoute, projectFilter, projectGroupBy, projectSelectedIssue, projectSort, projectViewId, useRoute } from "../routes.js";
 import { IssueEditCard } from "../workflow/issues-page.js";
 import { UserPicker } from "../components/user-picker.js";
 
@@ -268,6 +272,12 @@ function ProjectDetailBody({ project }: { project: ProjectDto }): JSX.Element {
     staleTime: 60_000,
   });
   const orgLogin = (orgsQ.data ?? []).find((o) => o.id === project.org_id)?.login;
+
+  const auth = useAuth();
+  const viewerUserId: string | null = auth.user?.subject ?? null;
+  // Sub-tab on the project detail surface. Defaults to the workbench
+  // — the historical landing. "exec-summary" opens the §4 page.
+  const activeTab = projectDetailTab(route);
 
   return (
     <div className="flex gap-4 px-4 lg:px-6" data-testid="project-detail">
@@ -490,6 +500,33 @@ function ProjectDetailBody({ project }: { project: ProjectDto }): JSX.Element {
         </Alert>
       )}
 
+      <Tabs
+        value={activeTab}
+        onValueChange={(v) =>
+          navigate(projectDetailTabRoute(project.id, v as "workbench" | "exec-summary"))
+        }
+        data-testid="project-detail-tabs"
+      >
+        <TabsList>
+          <TabsTrigger value="workbench" data-testid="project-tab-workbench">
+            Workbench
+          </TabsTrigger>
+          <TabsTrigger
+            value="exec-summary"
+            data-testid="project-tab-exec-summary"
+          >
+            Exec Summary
+          </TabsTrigger>
+        </TabsList>
+      </Tabs>
+
+      {activeTab === "exec-summary" ? (
+        <ProjectExecSummaryPage
+          project={project}
+          viewerUserId={viewerUserId}
+        />
+      ) : (
+        <>
       <MilestonesStrip
         milestones={milestones.data ?? []}
         primaryMilestoneId={project.primary_milestone_id ?? null}
@@ -543,6 +580,8 @@ function ProjectDetailBody({ project }: { project: ProjectDto }): JSX.Element {
           />
         )}
       />
+        </>
+      )}
 
       <LinkBoardDialog
         open={linkBoardOpen}

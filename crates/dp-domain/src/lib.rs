@@ -38,6 +38,7 @@ pub mod milestone;
 pub mod org;
 pub mod pin;
 pub mod project;
+pub mod project_exec_summary;
 pub mod project_view;
 pub mod repo;
 pub mod setting;
@@ -71,6 +72,11 @@ pub use pin::{Pin, PinKind, PIN_CAP};
 pub use project::{
     Project, ProjectIssueAddOutcome, ProjectIssueAddSkip, ProjectListFilter, ProjectRepo,
     ProjectStatus, ProjectUpsert,
+};
+pub use project_exec_summary::{
+    BlobRefJson, ExecSummaryChangelogEntry, ExecSummaryChangelogInsert, ExecSummaryCompletion,
+    ExecSummaryDocument, ExecSummaryImage, ExecSummaryStatus, ProjectExecSummary,
+    ProjectExecSummaryPatch, EXEC_SUMMARY_SUBMIT_THRESHOLD_PERCENT,
 };
 pub use repo::{Repo, RepoMetadata};
 pub use setting::UserSetting;
