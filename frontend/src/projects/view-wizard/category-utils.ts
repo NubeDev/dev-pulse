@@ -108,13 +108,24 @@ function pickCategoryColor(key: string): string {
 /** Ensure every category in `keys` has a backing org-scoped tag.
  *  Sequenced (not parallel) so back-to-back 409 collisions are
  *  easy to reason about. Errors short-circuit so the caller can
- *  surface them before persisting the view. */
+ *  surface them before persisting the view.
+ *
+ *  Lists existing tags up-front (or accepts a cached list) and
+ *  skips slugs that already have a backing tag. Without this we
+ *  always POST `category:<slug>` on every save and rely on the
+ *  server's 409 swallow — noisy in DevTools and an unnecessary
+ *  round trip per category. */
 export async function ensureCategoryTags(
   orgId: string,
   keys: readonly string[],
+  existingTags?: readonly TagDto[],
 ): Promise<void> {
-  for (const key of keys) {
-    if (key.length === 0) continue;
+  const filtered = keys.filter((k) => k.length > 0);
+  if (filtered.length === 0) return;
+
+  const tags = existingTags ?? (await api.listTags());
+  for (const key of filtered) {
+    if (findCategoryTag(tags as TagDto[], orgId, key)) continue;
     await ensureCategoryTag(orgId, key);
   }
 }

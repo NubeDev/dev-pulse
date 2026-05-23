@@ -23,6 +23,7 @@
  */
 
 import { useEffect, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -39,8 +40,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
 import { iconForName } from "../icon-for-name.js";
+import { workflowKeys } from "../../workflow/use-workflow-data.js";
 
-import type { ProjectViewDto, ProjectViewWriteBody } from "../../api/client.js";
+import type { ProjectViewDto, ProjectViewWriteBody, TagDto } from "../../api/client.js";
 
 import { ensureCategoryTags } from "./category-utils.js";
 import {
@@ -60,6 +62,11 @@ export interface EditViewDialogProps {
   /** Org of the project — required so we can ensure org-scoped
    *  tags for any category slugs added by the user. */
   orgId: string;
+  /** Cached tag list, so we can skip POSTs for slugs that
+   *  already have a backing org-scoped tag. `null` while the
+   *  parent's `useTags()` is loading — the helper falls back to
+   *  a fresh `listTags` in that case. */
+  existingTags: readonly TagDto[] | null;
   busy?: boolean;
   onCancel: () => void;
   onSubmit: (viewId: string, body: ProjectViewWriteBody) => void;
@@ -74,6 +81,7 @@ export function EditViewDialog({
   open,
   view,
   orgId,
+  existingTags,
   busy,
   onCancel,
   onSubmit,
@@ -83,6 +91,7 @@ export function EditViewDialog({
   completed,
   onChangeCompleted,
 }: EditViewDialogProps): JSX.Element {
+  const qc = useQueryClient();
   const [name, setName] = useState("");
   const [startDate, setStartDate] = useState("");
   const [dueDate, setDueDate] = useState("");
@@ -119,7 +128,12 @@ export function EditViewDialog({
       setEnsuringTags(true);
       setEnsureError(null);
       try {
-        await ensureCategoryTags(orgId, newOnly);
+        await ensureCategoryTags(orgId, newOnly, existingTags ?? undefined);
+        // See `wizard-dialog.tsx` for the full story: invalidate
+        // the shared tags cache so the workbench picks up the
+        // freshly-created `category:<slug>` tag and the add-issue
+        // dialog's auto-tag wiring can resolve a non-null id.
+        qc.invalidateQueries({ queryKey: workflowKeys.tags() });
       } catch (err) {
         setEnsureError(err instanceof Error ? err.message : String(err));
         setEnsuringTags(false);

@@ -2051,6 +2051,24 @@ pub trait Store: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// Variant of [`list_project_issue_tag_values`] scoped to an
+    /// explicit issue id set. Used by saved-view tabs (PROJECT-
+    /// VIEW.md §5.4) whose membership lives in
+    /// `dp_project_view_issues` and may not intersect with the
+    /// project's "All"-tab `dp_project_issues` rows — the
+    /// project-scoped variant would miss them.
+    ///
+    /// Same kv / non-archived semantics as the project-scoped
+    /// variant. Default impl returns an empty vec so non-Postgres
+    /// fakes don't need to override.
+    async fn list_issue_tag_values(
+        &self,
+        _issue_ids: &[Uuid],
+        _tag_key: &str,
+    ) -> Result<Vec<(Uuid, String)>, StoreError> {
+        Ok(Vec::new())
+    }
+
     /// Return the distinct `dp_tags.key` values present on the
     /// project's issues — non-NULL, non-archived, `kind='kv'`. Used
     /// by `GET /projects/{id}/group-by-options` to drive the

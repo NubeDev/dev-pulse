@@ -25,7 +25,12 @@
  */
 
 import { useMemo, useState } from "react";
-import { ChevronDownIcon, ChevronRightIcon, PlusIcon } from "lucide-react";
+import {
+  ChevronDownIcon,
+  ChevronRightIcon,
+  PlusIcon,
+  SettingsIcon,
+} from "lucide-react";
 
 import type { IssueBucket, IssueListItem, ProjectDto } from "../api/client.js";
 
@@ -63,6 +68,7 @@ import {
 } from "../routes.js";
 
 import { AddIssuesDialog } from "./add-issues-dialog.js";
+import { CategoriesManagerDialog } from "./categories-manager-dialog.js";
 import {
   FilterChipBar,
   parseFilterString,
@@ -109,7 +115,12 @@ export function ProjectWorkbench({
   const urlSort = projectSort(route);
   const urlViewId = projectViewId(route);
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
+  // Inverted from the previous `collapsed` set so the default
+  // empty set = every section starts COLLAPSED. Cuts the visual
+  // weight on first paint for categorised views with eight-plus
+  // buckets; the user opens what they care about.
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+  const [categoriesManagerOpen, setCategoriesManagerOpen] = useState(false);
 
   // Saved views (PROJECT-VIEW.md §5.4 / §7.1). The strip + dirty
   // detection both depend on this list, so resolve `activeView`
@@ -330,9 +341,20 @@ export function ProjectWorkbench({
   // §5.4 — stale `?view=` recovery: the id was valid on the wire
   // but isn't in the loaded list (deleted in another tab, etc.).
   // We silently strip it once the load has resolved.
+  //
+  // Must wait for `!isFetching` (not just `!isPending`): after a
+  // create-view mutation we call `patchUrl({ view: v.id })` from
+  // the mutation's call-site `onSuccess` and the hook's
+  // `onSuccess` invalidates the views query in the same tick. The
+  // cached `data` is still the OLD list while the refetch is in
+  // flight (`isPending=false`, `isFetching=true`) — without the
+  // `!isFetching` guard this branch fires, bounces the URL back
+  // to "All", and the user perceives the just-saved view as
+  // missing even though the tab actually arrives a beat later.
   if (
     urlViewId !== null &&
     !viewsQuery.isPending &&
+    !viewsQuery.isFetching &&
     !viewsQuery.isError &&
     activeView === null
   ) {
@@ -344,8 +366,8 @@ export function ProjectWorkbench({
     queueMicrotask(() => patchUrl({ view: null }));
   }
 
-  const toggleCollapsed = (key: string): void => {
-    setCollapsed((prev) => {
+  const toggleSection = (key: string): void => {
+    setExpanded((prev) => {
       const next = new Set(prev);
       if (next.has(key)) {
         next.delete(key);
@@ -373,6 +395,26 @@ export function ProjectWorkbench({
     }
     return groupRowsByBuckets(rows, buckets);
   }, [groupBy, buckets, rows, viewIsCategorised, activeView]);
+
+  const expandAll = (): void => {
+    if (!sectioned) return;
+    const next = new Set<string>();
+    for (const s of sectioned.sections) {
+      next.add(bucketKeyForState(s.bucket.key));
+    }
+    setExpanded(next);
+  };
+
+  const collapseAll = (): void => {
+    setExpanded(new Set());
+  };
+
+  const allExpanded =
+    sectioned !== null &&
+    sectioned.sections.length > 0 &&
+    sectioned.sections.every((s) =>
+      expanded.has(bucketKeyForState(s.bucket.key)),
+    );
 
   return (
     <Card data-testid="project-issues">
@@ -416,6 +458,7 @@ export function ProjectWorkbench({
             sort: sort ?? "updated_desc",
           }}
           orgId={project.org_id}
+          existingTags={tagsQuery.data ?? null}
           onSelectView={selectView}
           onCreateView={handleCreateView}
           onUpdateView={handleUpdateView}
@@ -433,6 +476,16 @@ export function ProjectWorkbench({
           milestoneOptions={milestoneFilterOptions}
           sort={sort}
           onSortChange={setSort}
+          onManageCategories={
+            // Show the gear on any saved view so the manager stays
+            // reachable after a `Delete all` empties `categories`
+            // (which would otherwise flip `viewIsCategorised` to
+            // false and hide the entry point — leaving the user
+            // unable to add categories back without a page change).
+            activeView !== null
+              ? () => setCategoriesManagerOpen(true)
+              : undefined
+          }
         />
 
         {issues.isPending && (
@@ -447,14 +500,17 @@ export function ProjectWorkbench({
           </Alert>
         )}
 
-        {!issues.isPending && !issues.isError && rows.length === 0 && (
-          <p
-            className="py-6 text-center text-sm text-muted-foreground"
-            data-testid="project-issues-empty"
-          >
-            No issues in this project yet. Click [+ Add issue] to attach work from the workflow surface.
-          </p>
-        )}
+        {!issues.isPending &&
+          !issues.isError &&
+          rows.length === 0 &&
+          !viewIsCategorised && (
+            <p
+              className="py-6 text-center text-sm text-muted-foreground"
+              data-testid="project-issues-empty"
+            >
+              No issues in this project yet. Click [+ Add issue] to attach work from the workflow surface.
+            </p>
+          )}
 
         {/* Flat list — no grouping active. */}
         {!sectioned && rows.length > 0 && (
@@ -465,10 +521,27 @@ export function ProjectWorkbench({
 
         {/* Sectioned list — one collapsible block per bucket. */}
         {sectioned && (
-          <div className="flex flex-col gap-3" data-testid="project-issues-grouped">
+          <div
+            className="flex flex-col gap-3"
+            data-testid="project-issues-grouped"
+          >
+            {sectioned.sections.length > 0 && (
+              <div className="flex items-center justify-end">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={allExpanded ? collapseAll : expandAll}
+                  data-testid="project-issues-toggle-all"
+                  className="h-7 text-xs text-muted-foreground hover:text-foreground"
+                >
+                  {allExpanded ? "Collapse all" : "Expand all"}
+                </Button>
+              </div>
+            )}
             {sectioned.sections.map((section) => {
               const sectionKey = bucketKeyForState(section.bucket.key);
-              const isCollapsed = collapsed.has(sectionKey);
+              const isCollapsed = !expanded.has(sectionKey);
               // Categorised sections expose a `+` button that
               // pre-scopes the add dialog to the category. Non-
               // category buckets (status, milestone, gate, the
@@ -480,7 +553,7 @@ export function ProjectWorkbench({
                   bucket={section.bucket}
                   rows={section.rows}
                   collapsed={isCollapsed}
-                  onToggle={() => toggleCollapsed(sectionKey)}
+                  onToggle={() => toggleSection(sectionKey)}
                   renderRow={renderRow}
                   selectedIssueId={selectedIssueId}
                   onAddIssue={
@@ -510,6 +583,18 @@ export function ProjectWorkbench({
         )}
       </CardContent>
 
+      <CategoriesManagerDialog
+        open={categoriesManagerOpen}
+        view={activeView}
+        orgId={project.org_id}
+        existingTags={tagsQuery.data ?? null}
+        busy={updateView.isPending}
+        onClose={() => setCategoriesManagerOpen(false)}
+        onSubmit={(viewId, body) =>
+          updateView.mutate({ viewId, body })
+        }
+      />
+
       <AddIssuesDialog
         open={dialogOpen}
         onOpenChange={(o) => {
@@ -524,6 +609,9 @@ export function ProjectWorkbench({
         activeViewName={activeView ? activeView.name : null}
         activeCategoryKey={sectionAddCategory}
         activeCategoryTagId={sectionAddTagId}
+        categoryOptions={
+          viewIsCategorised && activeView ? activeView.categories : undefined
+        }
       />
     </Card>
   );
@@ -542,6 +630,11 @@ interface ToolbarProps {
   milestoneOptions: { id: string; title: string }[];
   sort: string | null;
   onSortChange: (next: string | null) => void;
+  /** When provided, renders a trailing settings icon on the right
+   *  edge of the toolbar that opens the categories manager popup.
+   *  Set by the workbench only when the active view is
+   *  categorised. */
+  onManageCategories?: () => void;
 }
 
 const GROUP_NONE = "__none__";
@@ -564,6 +657,7 @@ function Toolbar({
   milestoneOptions,
   sort,
   onSortChange,
+  onManageCategories,
 }: ToolbarProps): JSX.Element {
   // Sentinel value so the Select can represent "no grouping" — the
   // routing layer keeps the URL as the source of truth, but Radix
@@ -631,6 +725,25 @@ function Toolbar({
           </SelectContent>
         </Select>
       </label>
+
+      {onManageCategories && (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              type="button"
+              size="icon"
+              variant="ghost"
+              onClick={onManageCategories}
+              aria-label="Manage categories"
+              data-testid="project-manage-categories"
+              className="ml-auto size-7"
+            >
+              <SettingsIcon className="size-4" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>Manage categories</TooltipContent>
+        </Tooltip>
+      )}
     </div>
   );
 }
@@ -663,11 +776,11 @@ function BucketSection({
 }: BucketSectionProps): JSX.Element {
   return (
     <section className="flex flex-col" data-testid="project-issues-section">
-      <div className="flex items-center justify-between rounded-md px-2 py-1.5 text-left text-sm font-medium hover:bg-accent/30">
+      <div className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm font-medium hover:bg-accent/30">
         <button
           type="button"
           onClick={onToggle}
-          className="flex flex-1 items-center justify-between gap-2 bg-transparent text-left"
+          className="flex items-center gap-2 bg-transparent text-left"
           aria-expanded={!collapsed}
           data-testid="project-issues-section-header"
           data-bucket-key={bucket.key ?? ""}
@@ -698,7 +811,7 @@ function BucketSection({
             onClick={onAddIssue}
             aria-label={`Add issue to ${bucket.label}`}
             data-testid="project-issues-section-add"
-            className="ml-2 size-7 shrink-0"
+            className="size-7 shrink-0"
           >
             <PlusIcon className="size-4" />
           </Button>

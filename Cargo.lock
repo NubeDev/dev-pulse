@@ -3339,7 +3339,9 @@ name = "starter-spi"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "bytes",
  "chrono",
+ "futures",
  "prometheus",
  "secrecy",
  "serde",

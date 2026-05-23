@@ -110,6 +110,30 @@ impl PgStore {
 /// * `RowNotFound` becomes [`StoreError::NotFound`] (the caller's
 ///   `entity`/`id` is set by the helper, see [`not_found`]).
 /// * Everything else is boxed into [`StoreError::Backend`].
+/// Split a tag `name` into `(kind, key, value)` per migration
+/// 0031's grammar:
+///
+///   * Colon strictly between other chars → `kv`, split on the
+///     FIRST `:` (so `team:backend:v2` = key `team`, value
+///     `backend:v2`).
+///   * Otherwise → `single`, with NULL key/value.
+///
+/// Mirrored from the migration's backfill UPDATE so create-tag
+/// produces rows that pass the `dp_tags_kind_kv_invariant` check
+/// constraint.
+fn parse_tag_name_kv(name: &str) -> (&'static str, Option<String>, Option<String>) {
+    if let Some(pos) = name.find(':') {
+        if pos > 0 && pos + 1 < name.len() {
+            return (
+                "kv",
+                Some(name[..pos].to_owned()),
+                Some(name[pos + 1..].to_owned()),
+            );
+        }
+    }
+    ("single", None, None)
+}
+
 fn map_sqlx(err: sqlx::Error) -> StoreError {
     if let sqlx::Error::Database(db) = &err {
         if db.code().as_deref() == Some("23505") {
@@ -4211,6 +4235,38 @@ impl Store for PgStore {
             .collect()
     }
 
+    async fn list_issue_tag_values(
+        &self,
+        issue_ids: &[Uuid],
+        tag_key: &str,
+    ) -> Result<Vec<(Uuid, String)>, StoreError> {
+        if issue_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query(
+            r#"SELECT tl.target_issue_id AS issue_id, t.value AS value
+                 FROM dp_tag_links tl
+                 JOIN dp_tags t ON t.id = tl.tag_id
+                                AND t.kind = 'kv'
+                                AND t.key = $2
+                                AND t.archived_at IS NULL
+                WHERE tl.kind = 'issue'
+                  AND tl.target_issue_id = ANY($1)"#,
+        )
+        .bind(issue_ids)
+        .bind(tag_key)
+        .fetch_all(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        rows.iter()
+            .map(|r| {
+                let id: Uuid = r.try_get("issue_id").map_err(map_sqlx)?;
+                let v: String = r.try_get("value").map_err(map_sqlx)?;
+                Ok((id, v))
+            })
+            .collect()
+    }
+
     async fn list_project_issue_tag_keys(
         &self,
         project_id: Uuid,
@@ -4921,11 +4977,19 @@ impl Store for PgStore {
     }
 
     async fn create_tag(&self, tag: &Tag) -> Result<Tag, StoreError> {
+        // Derive kv-tag columns from the name per migration 0031's
+        // grammar: a colon strictly between other chars = `kv` with
+        // `key` = prefix and `value` = suffix (split on first `:`).
+        // Without this the row defaults to `kind='single'` and the
+        // bucket queries (`AND t.kind = 'kv'`) silently drop links,
+        // landing issues under "Uncategorised" even when tagged.
+        let (kind, key, value) = parse_tag_name_kv(&tag.name);
         let row = sqlx::query(
             "INSERT INTO dp_tags \
                  (id, scope_kind, scope_user_id, scope_team_id, scope_org_id, \
-                  name, color, description, created_by, created_at, archived_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
+                  name, color, description, created_by, created_at, archived_at, \
+                  kind, key, value) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) \
              RETURNING id, scope_kind, scope_user_id, scope_team_id, scope_org_id, \
                        name, color, description, created_by, created_at, archived_at",
         )
@@ -4940,6 +5004,9 @@ impl Store for PgStore {
         .bind(tag.created_by)
         .bind(tag.created_at)
         .bind(tag.archived_at)
+        .bind(kind)
+        .bind(key)
+        .bind(value)
         .fetch_one(self.pool.sqlx())
         .await
         .map_err(map_sqlx)?;
@@ -4964,12 +5031,23 @@ impl Store for PgStore {
         let desc_val = description.flatten();
         let archived_set = archived_at.is_some();
         let archived_val = archived_at.flatten();
+        // Recompute kv columns when the name changes so a rename
+        // (`foo` → `category:bar`) doesn't leave a stale `single`
+        // row that the bucket queries silently skip.
+        let kv = name.map(parse_tag_name_kv);
+        let new_kind = kv.as_ref().map(|(k, _, _)| *k);
+        let new_key = kv.as_ref().and_then(|(_, k, _)| k.clone());
+        let new_value = kv.as_ref().and_then(|(_, _, v)| v.clone());
+        let rename = name.is_some();
         let row = sqlx::query(
             "UPDATE dp_tags SET \
                  name        = COALESCE($2, name), \
                  color       = COALESCE($3, color), \
                  description = CASE WHEN $4 THEN $5 ELSE description END, \
-                 archived_at = CASE WHEN $6 THEN $7 ELSE archived_at END \
+                 archived_at = CASE WHEN $6 THEN $7 ELSE archived_at END, \
+                 kind        = CASE WHEN $8 THEN $9  ELSE kind  END, \
+                 key         = CASE WHEN $8 THEN $10 ELSE key   END, \
+                 value       = CASE WHEN $8 THEN $11 ELSE value END \
                WHERE id = $1 \
              RETURNING id, scope_kind, scope_user_id, scope_team_id, scope_org_id, \
                        name, color, description, created_by, created_at, archived_at",
@@ -4981,6 +5059,10 @@ impl Store for PgStore {
         .bind(desc_val)
         .bind(archived_set)
         .bind(archived_val)
+        .bind(rename)
+        .bind(new_kind)
+        .bind(new_key)
+        .bind(new_value)
         .fetch_optional(self.pool.sqlx())
         .await
         .map_err(map_sqlx)?;

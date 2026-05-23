@@ -34,6 +34,7 @@ import type {
   ProjectViewDto,
   ProjectViewFilterClause,
   ProjectViewWriteBody,
+  TagDto,
 } from "../api/client.js";
 
 /** The effective workbench shape the strip needs both to save new
@@ -58,6 +59,12 @@ export interface ViewsTabStripProps {
    *  dialog can create org-scoped `category:<slug>` tags before
    *  the view PATCH lands. */
   orgId: string;
+  /** Cached tag list from the workbench's `useTags()` query.
+   *  Forwarded to both dialogs so `ensureCategoryTags` can skip
+   *  slugs that already have a backing tag instead of POSTing and
+   *  relying on the server's 409 swallow. `null` while the query
+   *  is loading — the dialog will fetch as a fallback. */
+  existingTags: readonly TagDto[] | null;
   onSelectView: (viewId: string | null) => void;
   onCreateView: (body: ProjectViewWriteBody) => void;
   onUpdateView: (viewId: string, body: ProjectViewWriteBody) => void;
@@ -82,6 +89,7 @@ export function ViewsTabStrip({
   isDirty,
   current,
   orgId,
+  existingTags,
   onSelectView,
   onCreateView,
   onUpdateView,
@@ -315,6 +323,7 @@ export function ViewsTabStrip({
       <NewViewWizard
         open={dialog.kind === "create"}
         orgId={orgId}
+        existingTags={existingTags}
         current={current}
         busy={busy}
         onCancel={() => setDialog({ kind: "closed" })}
@@ -331,6 +340,7 @@ export function ViewsTabStrip({
         open={dialog.kind === "edit"}
         view={dialog.kind === "edit" ? dialog.view : null}
         orgId={orgId}
+        existingTags={existingTags}
         busy={busy}
         onCancel={() => setDialog({ kind: "closed" })}
         onSubmit={(viewId, body) => {

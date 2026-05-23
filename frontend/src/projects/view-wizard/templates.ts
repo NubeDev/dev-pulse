@@ -140,9 +140,9 @@ export const VIEW_TEMPLATES: ViewTemplate[] = [
  *  the server-side bucketing dimension for kv tags. */
 export const CATEGORISED_GROUP_BY = `tag:${CATEGORY_TAG_KEY}`;
 
-/** Pre-baked category packs surfaced as quick-add chips in step
- *  2's optional categories editor. The user can edit/remove
- *  freely after applying a pack. */
+/** Pre-baked category packs surfaced as quick-add chips in the
+ *  categories manager. The user can edit/remove freely after
+ *  applying a pack. */
 export interface CategoryPack {
   id: string;
   label: string;
@@ -165,4 +165,25 @@ export const CATEGORY_PACKS: CategoryPack[] = [
     label: "Launch",
     categories: ["Manufacturing", "Compliance", "GTM"],
   },
+];
+
+/** Individual category quick-add chips — the full menu of
+ *  standard product-development categories. Each chip adds ONE
+ *  category. Letting users mix-and-match a custom list without
+ *  having to type each name. The `display` form is what gets
+ *  inserted into the editor (slugified on save). */
+export interface CategoryChip {
+  id: string;
+  display: string;
+}
+
+export const CATEGORY_CHIPS: CategoryChip[] = [
+  { id: "hardware", display: "Hardware" },
+  { id: "firmware", display: "Firmware" },
+  { id: "software", display: "Software" },
+  { id: "testing", display: "Testing" },
+  { id: "manufacturing", display: "Manufacturing" },
+  { id: "compliance", display: "Compliance" },
+  { id: "operations", display: "Operations" },
+  { id: "gtm", display: "GTM (Go-To-Market)" },
 ];

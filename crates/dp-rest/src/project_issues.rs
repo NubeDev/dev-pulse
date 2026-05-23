@@ -621,8 +621,10 @@ pub(crate) async fn apply_filter_clauses(
                 });
             }
             FilterClause::Tag { key, value } => {
+                let scope_ids: Vec<Uuid> = issues.iter().map(|i| i.id).collect();
+                let _ = project_id;
                 let pairs = store
-                    .list_project_issue_tag_values(project_id, key)
+                    .list_issue_tag_values(&scope_ids, key)
                     .await?;
                 let matching: HashSet<Uuid> = pairs
                     .into_iter()
@@ -757,11 +759,15 @@ async fn build_buckets(
         }
         GroupBy::Tag { key } => {
             // Pull every (issue_id, value) link for this key across
-            // the project's issues. The store fn already restricts
-            // to `kind='kv'` and non-archived tags.
+            // the post-filter issues set. We scope by the actual
+            // issue ids (not just `dp_project_issues`) so saved-view
+            // tabs whose membership lives in `dp_project_view_issues`
+            // also pick up their tag links (PROJECT-VIEW.md §5.4).
+            let scope_ids: Vec<Uuid> = issues.iter().map(|i| i.id).collect();
             let rows = store
-                .list_project_issue_tag_values(project_id, key)
+                .list_issue_tag_values(&scope_ids, key)
                 .await?;
+            let _ = project_id;
 
             // Per-bucket open/closed counters. The issues vector is
             // already post-filter — use it as the source of truth

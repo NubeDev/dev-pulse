@@ -21,7 +21,7 @@
  */
 
 import { useEffect, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   Alert,
@@ -55,14 +55,16 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   api,
   BULK_ADD_ISSUE_CAP,
+  isDpRestError,
   type BulkAddResult,
   type IssueListItem,
   type IssueListResponse,
   type ProjectDto,
   type ProjectRepoDto,
 } from "../api/client.js";
+import { workflowKeys } from "../workflow/use-workflow-data.js";
 
-import { categoryTagName } from "./view-wizard/index.js";
+import { categoryTagName, ensureCategoryTag, findCategoryTag } from "./view-wizard/index.js";
 
 import {
   useAddIssuesToProject,
@@ -70,6 +72,24 @@ import {
   useProjectRepos,
   useProjectViews,
 } from "./use-projects-data.js";
+
+/** A `POST /tags/{id}/links` batch where every rejected item was
+ *  a `duplicate` (issue already tagged) is functionally a no-op —
+ *  the tag is already where the caller wants it. Surface those as
+ *  success so the user doesn't see a red "tagging failed" banner
+ *  on a re-add of an issue that already carried the category. */
+function isAllDuplicatesBatchError(err: unknown): boolean {
+  if (!isDpRestError(err)) return false;
+  if (err.code !== "batch_rejected") return false;
+  const items = err.body?.["items"];
+  if (!Array.isArray(items) || items.length === 0) return false;
+  return items.every(
+    (it) =>
+      typeof it === "object" &&
+      it !== null &&
+      (it as { code?: unknown }).code === "duplicate",
+  );
+}
 
 export interface AddIssuesDialogProps {
   open: boolean;
@@ -93,6 +113,12 @@ export interface AddIssuesDialogProps {
    *  org. `null` when the tag hasn't been loaded yet or doesn't
    *  exist — in either case the auto-tag step is skipped. */
   activeCategoryTagId?: string | null;
+  /** When the dialog is opened from a categorised view *without*
+   *  a pre-selected section (the top-level `+ Add issue` button
+   *  on a category-view tab), the caller passes the view's full
+   *  category list so the dialog can prompt the user for one.
+   *  Empty / undefined = non-categorised view. */
+  categoryOptions?: readonly string[];
 }
 
 export function AddIssuesDialog({
@@ -103,8 +129,23 @@ export function AddIssuesDialog({
   activeViewName,
   activeCategoryKey,
   activeCategoryTagId,
+  categoryOptions,
 }: AddIssuesDialogProps): JSX.Element {
   const [tab, setTab] = useState<"existing" | "new">("existing");
+  // When the caller didn't pin a section (`activeCategoryKey ==
+  // null`) but the active view IS categorised, the user picks
+  // which category to drop into here. Pre-seed with the first
+  // option on open so the auto-tag fires by default — users on
+  // a category view almost always want the tag.
+  const [pickedCategoryKey, setPickedCategoryKey] = useState<string | null>(
+    activeCategoryKey ?? categoryOptions?.[0] ?? null,
+  );
+  useEffect(() => {
+    if (open) {
+      setPickedCategoryKey(activeCategoryKey ?? categoryOptions?.[0] ?? null);
+    }
+  }, [open, activeCategoryKey, categoryOptions]);
+  const effectiveCategoryKey = activeCategoryKey ?? pickedCategoryKey;
   // The destination tab the issue(s) will be attached to. `null`
   // = "All" (project-level membership, CAS-gated on
   // `project.version`). Any other value = the named saved-view's
@@ -164,6 +205,43 @@ export function AddIssuesDialog({
           </DialogDescription>
         </DialogHeader>
 
+        {activeCategoryKey === null &&
+          categoryOptions &&
+          categoryOptions.length > 0 && (
+            <div className="flex items-center gap-2">
+              <Label
+                htmlFor="add-issue-category"
+                className="text-xs text-muted-foreground"
+              >
+                Category
+              </Label>
+              <Select
+                value={pickedCategoryKey ?? "__none__"}
+                onValueChange={(v) =>
+                  setPickedCategoryKey(v === "__none__" ? null : v)
+                }
+              >
+                <SelectTrigger
+                  id="add-issue-category"
+                  className="w-full"
+                  data-testid="add-issue-category"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">
+                    Uncategorised (no tag)
+                  </SelectItem>
+                  {categoryOptions.map((k) => (
+                    <SelectItem key={k} value={k}>
+                      {k}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+
         {views.length > 0 && (
           <div className="flex items-center gap-2">
             <Label
@@ -217,6 +295,12 @@ export function AddIssuesDialog({
             <ExistingPanel
               project={project}
               activeViewId={destinationViewId}
+              activeCategoryKey={effectiveCategoryKey}
+              activeCategoryTagId={
+                effectiveCategoryKey === activeCategoryKey
+                  ? activeCategoryTagId ?? null
+                  : null
+              }
               onClose={close}
             />
           </TabsContent>
@@ -227,8 +311,12 @@ export function AddIssuesDialog({
             <NewPanel
               project={project}
               activeViewId={destinationViewId}
-              activeCategoryKey={activeCategoryKey ?? null}
-              activeCategoryTagId={activeCategoryTagId ?? null}
+              activeCategoryKey={effectiveCategoryKey}
+              activeCategoryTagId={
+                effectiveCategoryKey === activeCategoryKey
+                  ? activeCategoryTagId ?? null
+                  : null
+              }
               onClose={close}
             />
           </TabsContent>
@@ -245,16 +333,22 @@ export function AddIssuesDialog({
 function ExistingPanel({
   project,
   activeViewId,
+  activeCategoryKey,
+  activeCategoryTagId,
   onClose,
 }: {
   project: ProjectDto;
   activeViewId: string | null;
+  activeCategoryKey: string | null;
+  activeCategoryTagId: string | null;
   onClose: () => void;
 }): JSX.Element {
+  const qc = useQueryClient();
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [result, setResult] = useState<BulkAddResult | null>(null);
   const [linkedReposOnly, setLinkedReposOnly] = useState(true);
+  const [tagError, setTagError] = useState<string | null>(null);
 
   const projectRepos = useProjectRepos(project.id);
   const repoIds = (projectRepos.data ?? []).map((r) => r.repo_id);
@@ -295,6 +389,7 @@ function ExistingPanel({
 
   const onSubmit = (): void => {
     if (selected.size === 0) return;
+    setTagError(null);
     add.mutate(
       {
         // Backend ignores `expected_version` when `view_id` is set;
@@ -305,9 +400,61 @@ function ExistingPanel({
         view_id: activeViewId ?? undefined,
       },
       {
-        onSuccess: (r) => {
+        onSuccess: async (r) => {
           setResult(r);
           setSelected(new Set());
+          // Auto-tag accepted issues with the section's category
+          // tag so they land in the right bucket instead of
+          // "Uncategorised". Mirrors the NewPanel auto-tag path.
+          if (!activeCategoryKey || r.added.length === 0) return;
+          try {
+            let tagId = activeCategoryTagId;
+            if (!tagId) {
+              const created = await ensureCategoryTag(
+                project.org_id,
+                activeCategoryKey,
+              );
+              if (created) {
+                tagId = created.id;
+              } else {
+                const fresh = await qc.fetchQuery({
+                  queryKey: workflowKeys.tags(),
+                  queryFn: () => api.listTags(),
+                });
+                tagId =
+                  findCategoryTag(
+                    fresh,
+                    project.org_id,
+                    activeCategoryKey,
+                  )?.id ?? null;
+              }
+              qc.invalidateQueries({ queryKey: workflowKeys.tags() });
+            }
+            if (!tagId) {
+              setTagError(
+                `Could not resolve category tag '${categoryTagName(activeCategoryKey)}'.`,
+              );
+              return;
+            }
+            try {
+              await api.linkTagTargets(tagId, {
+                items: r.added.map((issueId) => ({
+                  kind: "issue",
+                  target_id: issueId,
+                })),
+              });
+            } catch (err) {
+              // `batch_rejected` where every item is a `duplicate`
+              // means the issues are already tagged — that's a
+              // success, not a user-visible error.
+              if (!isAllDuplicatesBatchError(err)) throw err;
+            }
+            qc.invalidateQueries({
+              queryKey: ["projects", "issues", project.id],
+            });
+          } catch (err) {
+            setTagError(err instanceof Error ? err.message : String(err));
+          }
         },
       },
     );
@@ -316,6 +463,18 @@ function ExistingPanel({
   return (
     <>
       <div className="flex min-h-0 flex-1 flex-col gap-3">
+        {activeCategoryKey && (
+          <div
+            className="rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-xs text-foreground"
+            data-testid="add-issues-existing-category-notice"
+          >
+            Selected issues will be tagged{" "}
+            <code className="font-mono">
+              {categoryTagName(activeCategoryKey)}
+            </code>{" "}
+            so they land in this category section.
+          </div>
+        )}
         <Input
           data-testid="add-issues-search"
           placeholder="Search by title…"
@@ -378,6 +537,13 @@ function ExistingPanel({
           <Alert variant="destructive" data-testid="add-issues-error">
             <AlertTitle>Add failed</AlertTitle>
             <AlertDescription>{add.error.message}</AlertDescription>
+          </Alert>
+        )}
+
+        {tagError && (
+          <Alert variant="destructive" data-testid="add-issues-tag-error">
+            <AlertTitle>Added, but tagging failed</AlertTitle>
+            <AlertDescription>{tagError}</AlertDescription>
           </Alert>
         )}
 
@@ -485,6 +651,7 @@ function NewPanel({
   const repoLinks = useProjectRepos(project.id);
   const repos: ProjectRepoDto[] = repoLinks.data ?? [];
   const create = useCreateIssue(project.id);
+  const qc = useQueryClient();
 
   const [repoId, setRepoId] = useState("");
   const [title, setTitle] = useState("");
@@ -535,10 +702,69 @@ function NewPanel({
       },
       {
         onSuccess: async (resp) => {
-          if (!activeCategoryTagId || !resp.issue_id) return;
+          // Bail only when there's nothing to link against. The
+          // backend may surface `issue_id = null` when the create
+          // payload couldn't be materialised synchronously (stub
+          // backends, certain test fakes); in that case the row
+          // arrives via the next sync and the user can tag it
+          // manually.
+          if (!activeCategoryKey || !resp.issue_id) return;
           try {
-            await api.linkTagTargets(activeCategoryTagId, {
-              items: [{ kind: "issue", target_id: resp.issue_id }],
+            // The pre-resolved `activeCategoryTagId` from the
+            // workbench can be `null` when the shared tags cache
+            // hasn't yet picked up a freshly-created
+            // `category:<slug>` tag (the wizard creates it via a
+            // direct `api.createTag` call, not the `useCreateTag`
+            // hook). Re-resolve here so the link always lands —
+            // `ensureCategoryTag` is idempotent (swallows 409) and
+            // falls back to a tags refetch when the server says
+            // the row already exists.
+            let tagId = activeCategoryTagId;
+            if (!tagId) {
+              const created = await ensureCategoryTag(
+                project.org_id,
+                activeCategoryKey,
+              );
+              if (created) {
+                tagId = created.id;
+              } else {
+                const fresh = await qc.fetchQuery({
+                  queryKey: workflowKeys.tags(),
+                  queryFn: () => api.listTags(),
+                });
+                tagId =
+                  findCategoryTag(
+                    fresh,
+                    project.org_id,
+                    activeCategoryKey,
+                  )?.id ?? null;
+              }
+              // Make sure the shared `useTags()` cache picks the
+              // new row up so the next click resolves instantly.
+              qc.invalidateQueries({ queryKey: workflowKeys.tags() });
+            }
+            if (!tagId) {
+              setTagError(
+                `Could not resolve category tag '${categoryTagName(activeCategoryKey)}'.`,
+              );
+              return;
+            }
+            try {
+              await api.linkTagTargets(tagId, {
+                items: [{ kind: "issue", target_id: resp.issue_id }],
+              });
+            } catch (err) {
+              if (!isAllDuplicatesBatchError(err)) throw err;
+            }
+            // `useCreateIssue.onSuccess` already invalidated the
+            // project's issues query before this callback ran, so
+            // the refetch in flight reflects the issue WITHOUT the
+            // category tag and the row lands in "Uncategorised"
+            // even when the link below succeeds. Re-invalidate
+            // after the link so the next refetch sees the tag and
+            // buckets the row into its category section.
+            qc.invalidateQueries({
+              queryKey: ["projects", "issues", project.id],
             });
           } catch (err) {
             setTagError(

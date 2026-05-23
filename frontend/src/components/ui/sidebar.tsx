@@ -495,7 +495,14 @@ const sidebarMenuButtonVariants = cva(
   }
 )
 
-function SidebarMenuButton({
+const SidebarMenuButton = React.forwardRef<
+  HTMLButtonElement,
+  React.ComponentProps<"button"> & {
+    asChild?: boolean
+    isActive?: boolean
+    tooltip?: string | React.ComponentProps<typeof TooltipContent>
+  } & VariantProps<typeof sidebarMenuButtonVariants>
+>(({
   asChild = false,
   isActive = false,
   variant = "default",
@@ -503,16 +510,13 @@ function SidebarMenuButton({
   tooltip,
   className,
   ...props
-}: React.ComponentProps<"button"> & {
-  asChild?: boolean
-  isActive?: boolean
-  tooltip?: string | React.ComponentProps<typeof TooltipContent>
-} & VariantProps<typeof sidebarMenuButtonVariants>) {
+}, ref) => {
   const Comp = asChild ? Slot.Root : "button"
   const { isMobile, state } = useSidebar()
 
   const button = (
     <Comp
+      ref={ref as React.Ref<HTMLButtonElement>}
       data-slot="sidebar-menu-button"
       data-sidebar="menu-button"
       data-size={size}
@@ -543,7 +547,8 @@ function SidebarMenuButton({
       />
     </Tooltip>
   )
-}
+})
+SidebarMenuButton.displayName = "SidebarMenuButton"
 
 function SidebarMenuAction({
   className,
@@ -666,21 +671,25 @@ function SidebarMenuSubItem({
   )
 }
 
-function SidebarMenuSubButton({
+const SidebarMenuSubButton = React.forwardRef<
+  HTMLAnchorElement,
+  React.ComponentProps<"a"> & {
+    asChild?: boolean
+    size?: "sm" | "md"
+    isActive?: boolean
+  }
+>(({
   asChild = false,
   size = "md",
   isActive = false,
   className,
   ...props
-}: React.ComponentProps<"a"> & {
-  asChild?: boolean
-  size?: "sm" | "md"
-  isActive?: boolean
-}) {
+}, ref) => {
   const Comp = asChild ? Slot.Root : "a"
 
   return (
     <Comp
+      ref={ref as React.Ref<HTMLAnchorElement>}
       data-slot="sidebar-menu-sub-button"
       data-sidebar="menu-sub-button"
       data-size={size}
@@ -696,7 +705,8 @@ function SidebarMenuSubButton({
       {...props}
     />
   )
-}
+})
+SidebarMenuSubButton.displayName = "SidebarMenuSubButton"
 
 export {
   Sidebar,

@@ -16,7 +16,13 @@ export {
   findCategoryTag,
   slugifyCategoryKey,
 } from "./category-utils.js";
-export { CATEGORISED_GROUP_BY } from "./templates.js";
+export {
+  CATEGORISED_GROUP_BY,
+  CATEGORY_CHIPS,
+  CATEGORY_PACKS,
+  type CategoryChip,
+  type CategoryPack,
+} from "./templates.js";
 export {
   formatAu,
   formatDateDisplay,
