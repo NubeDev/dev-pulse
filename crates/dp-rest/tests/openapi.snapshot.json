@@ -1914,6 +1914,226 @@
         }
       }
     },
+    "/projects/{id}/exec-summary": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "`GET /projects/{id}/exec-summary` — full DTO.",
+        "operationId": "get_project_exec_summary",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Exec summary",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecSummaryDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such project"
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "`PATCH /projects/{id}/exec-summary` — sparse, section-grouped\nmerge. Lazy-creates the row on first call. Returns the full DTO.",
+        "operationId": "patch_project_exec_summary",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExecSummaryPatchBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Updated exec summary",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecSummaryDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such project"
+          }
+        }
+      }
+    },
+    "/projects/{id}/exec-summary/approve": {
+      "post": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "`POST /projects/{id}/exec-summary/approve` — `in_review →\napproved`. Project-lead only (E2).",
+        "operationId": "approve_project_exec_summary",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExecSummaryApproveBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Updated exec summary",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecSummaryDto"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not the project lead"
+          },
+          "404": {
+            "description": "No such project / summary"
+          },
+          "409": {
+            "description": "Status is not in_review"
+          }
+        }
+      }
+    },
+    "/projects/{id}/exec-summary/revert": {
+      "post": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "`POST /projects/{id}/exec-summary/revert` — `* → draft`.\nProject-lead only (E2).",
+        "operationId": "revert_project_exec_summary",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Updated exec summary",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecSummaryDto"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not the project lead"
+          },
+          "404": {
+            "description": "No such project / summary"
+          }
+        }
+      }
+    },
+    "/projects/{id}/exec-summary/submit": {
+      "post": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "`POST /projects/{id}/exec-summary/submit` — `draft → in_review`.\nServer-side completion-gate.",
+        "operationId": "submit_project_exec_summary",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Updated exec summary",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecSummaryDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Incomplete",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubmitIncompleteBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such project / summary"
+          },
+          "409": {
+            "description": "Status is not draft"
+          }
+        }
+      }
+    },
     "/projects/{id}/group-by-options": {
       "get": {
         "tags": [
@@ -3087,6 +3307,43 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/repos/sync": {
+      "post": {
+        "tags": [
+          "repos"
+        ],
+        "summary": "`POST /repos/sync` — operator-triggered per-repo reconciler\ntick keyed by `(org, name)`. If the repo isn't tracked yet,\nit's resolved against GitHub and upserted into `dp_orgs` /\n`dp_repos` before the sync is queued. Same coalescing /\naudit behaviour as [`request_repo_sync`]; the response\ncarries the resolved `repo_id` plus an `imported` flag so\nthe caller can tell whether the row was new.\nAuthorisation: `(\"repos\", \"sync\")`.",
+        "operationId": "request_repo_sync_by_name",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RepoSyncByNameRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Sync queued (repo registered if it wasn't already)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoSyncQueuedByNameDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "GitHub has no such repo"
+          },
+          "503": {
+            "description": "Reconciler scheduler not configured in this deployment"
           }
         }
       }
@@ -4740,6 +4997,942 @@
           }
         }
       },
+      "ExecSummaryApprovalDto": {
+        "type": "object",
+        "description": "Approval section (form tab 07). Status + timestamps + free-text\ncontacts. State transitions go through dedicated routes.",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "approval_notes": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "approved_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "approver": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "review_notes": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reviewer": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/ExecSummaryStatusDto"
+          },
+          "submitted_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        }
+      },
+      "ExecSummaryApprovalPatch": {
+        "type": "object",
+        "description": "Patch payload for the Approval section's editable contacts +\nnotes. Status transitions go through `submit` / `approve` /\n`revert`.",
+        "properties": {
+          "approval_notes": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "approver": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "review_notes": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reviewer": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "ExecSummaryApproveBody": {
+        "type": "object",
+        "description": "Body for `POST .../approve`.",
+        "properties": {
+          "approval_notes": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional approval notes (markdown)."
+          }
+        }
+      },
+      "ExecSummaryChangelogEntryDto": {
+        "type": "object",
+        "description": "One change-log entry.",
+        "required": [
+          "id",
+          "project_id",
+          "version",
+          "changed_at",
+          "changed_by",
+          "summary",
+          "created_at"
+        ],
+        "properties": {
+          "changed_at": {
+            "type": "string",
+            "format": "date"
+          },
+          "changed_by": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "project_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      },
+      "ExecSummaryChangelogInsertBody": {
+        "type": "object",
+        "description": "Body for `POST .../changelog`.",
+        "required": [
+          "version",
+          "changed_at",
+          "changed_by",
+          "summary"
+        ],
+        "properties": {
+          "changed_at": {
+            "type": "string",
+            "format": "date"
+          },
+          "changed_by": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      },
+      "ExecSummaryCommercialDto": {
+        "type": "object",
+        "description": "Commercial section (form tab 05). `target_gp_pct` is the human\npercent (e.g. `42.5`); the store keeps `target_gp_bp` in basis\npoints and this seam converts on the way in and out.",
+        "properties": {
+          "channel_strategy": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "oem_price_cents": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "revenue_model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rrp_cents": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "target_gp_pct": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "target_market": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "volume_assumptions": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "ExecSummaryCommercialPatch": {
+        "type": "object",
+        "description": "Patch payload for the Commercial section. `target_gp_pct` is the\nhuman percent; the seam multiplies by 100 to land\n`target_gp_bp`.",
+        "properties": {
+          "channel_strategy": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "oem_price_cents": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "revenue_model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rrp_cents": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "target_gp_pct": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "target_market": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "volume_assumptions": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "ExecSummaryCompletionDto": {
+        "type": "object",
+        "description": "Per-section completion booleans + computed percent. Mirrors the\nfrontend's `{ percent, sections: { summary: bool, … } }` shape.",
+        "required": [
+          "percent",
+          "sections"
+        ],
+        "properties": {
+          "percent": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Rounded percentage (0..=100).",
+            "minimum": 0
+          },
+          "sections": {
+            "type": "object",
+            "description": "One boolean per section keyed by section id.",
+            "additionalProperties": {
+              "type": "boolean"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "ExecSummaryDocumentDto": {
+        "type": "object",
+        "description": "One supporting document. Same `url` convention as\n[`ExecSummaryImageDto`].",
+        "required": [
+          "id",
+          "project_id",
+          "url",
+          "title",
+          "filename",
+          "content_type",
+          "created_at"
+        ],
+        "properties": {
+          "content_type": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "doc_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filename": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "notes": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "required_action": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "uploaded_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "url": {
+            "type": "string"
+          }
+        }
+      },
+      "ExecSummaryDocumentPatchBody": {
+        "type": "object",
+        "description": "PATCH body for a document row.",
+        "properties": {
+          "doc_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "notes": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "required_action": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "ExecSummaryDto": {
+        "type": "object",
+        "description": "Full envelope returned by GET + every mutation. Section-grouped\nto match `frontend/src/api/schemas/exec-summary.ts`.",
+        "required": [
+          "project_id",
+          "summary",
+          "scope",
+          "requirements",
+          "hardware",
+          "commercial",
+          "approval",
+          "images",
+          "documents",
+          "changelog",
+          "completion",
+          "updated_at"
+        ],
+        "properties": {
+          "approval": {
+            "$ref": "#/components/schemas/ExecSummaryApprovalDto"
+          },
+          "changelog": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ExecSummaryChangelogEntryDto"
+            }
+          },
+          "commercial": {
+            "$ref": "#/components/schemas/ExecSummaryCommercialDto"
+          },
+          "completion": {
+            "$ref": "#/components/schemas/ExecSummaryCompletionDto"
+          },
+          "documents": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ExecSummaryDocumentDto"
+            }
+          },
+          "hardware": {
+            "$ref": "#/components/schemas/ExecSummaryHardwareDto"
+          },
+          "images": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ExecSummaryImageDto"
+            }
+          },
+          "project_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "requirements": {
+            "$ref": "#/components/schemas/ExecSummaryRequirementsDto"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/ExecSummaryScopeDto"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/ExecSummarySummaryDto"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "ExecSummaryHardwareDto": {
+        "type": "object",
+        "description": "Hardware section (form tab 04). Reference images live in\nthe top-level `images` array.",
+        "properties": {
+          "enclosure": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "hardware_features": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mounting_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "operating_env": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "physical_notes": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "ExecSummaryHardwarePatch": {
+        "type": "object",
+        "description": "Patch payload for the Hardware section.",
+        "properties": {
+          "enclosure": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "hardware_features": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mounting_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "operating_env": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "physical_notes": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "ExecSummaryImageDto": {
+        "type": "object",
+        "description": "One reference image. `url` is the auth-checked proxy URL the UI\nrenders in `<img src>`. Until the starter-blob proxy is wired,\n`url` carries a placeholder built from the blob ref id so the\nfrontend's required field stays present and round-tripping works\n— see scope §3 follow-up.",
+        "required": [
+          "id",
+          "project_id",
+          "url",
+          "filename",
+          "content_type",
+          "ord",
+          "created_at"
+        ],
+        "properties": {
+          "caption": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "content_type": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "filename": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "ord": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "project_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "url": {
+            "type": "string"
+          }
+        }
+      },
+      "ExecSummaryPatchBody": {
+        "type": "object",
+        "description": "Top-level PATCH body. Each section is its own optional payload so\nthe wire form matches the frontend's `PatchExecSummaryRequest`.",
+        "properties": {
+          "approval": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ExecSummaryApprovalPatch"
+              }
+            ]
+          },
+          "commercial": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ExecSummaryCommercialPatch"
+              }
+            ]
+          },
+          "hardware": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ExecSummaryHardwarePatch"
+              }
+            ]
+          },
+          "requirements": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ExecSummaryRequirementsPatch"
+              }
+            ]
+          },
+          "scope": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ExecSummaryScopePatch"
+              }
+            ]
+          },
+          "summary": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ExecSummarySummaryPatch"
+              }
+            ]
+          }
+        }
+      },
+      "ExecSummaryRequirementsDto": {
+        "type": "object",
+        "description": "Requirements section (form tab 03).",
+        "required": [
+          "protocols"
+        ],
+        "properties": {
+          "architecture": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "certification": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mounting": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "must_have": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "optional": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "power": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "protocols": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "user_interaction": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "ExecSummaryRequirementsPatch": {
+        "type": "object",
+        "description": "Patch payload for the Requirements section.",
+        "properties": {
+          "architecture": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "certification": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mounting": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "must_have": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "optional": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "power": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "protocols": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Replace the protocols set wholesale when present. Empty array\nclears."
+          },
+          "user_interaction": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "ExecSummaryScopeDto": {
+        "type": "object",
+        "description": "Scope section (form tab 02).",
+        "properties": {
+          "assumptions": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "constraints": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "dependencies": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "in_scope": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "out_of_scope": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "ExecSummaryScopePatch": {
+        "type": "object",
+        "description": "Patch payload for the Scope section.",
+        "properties": {
+          "assumptions": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "constraints": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "dependencies": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "in_scope": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "out_of_scope": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "ExecSummaryStatusDto": {
+        "type": "string",
+        "description": "Wire form of [`ExecSummaryStatus`]. Snake-case mirrors the SQL\nCHECK vocabulary.",
+        "enum": [
+          "draft",
+          "in_review",
+          "approved"
+        ]
+      },
+      "ExecSummarySummaryDto": {
+        "type": "object",
+        "description": "Summary section (form tab 01).",
+        "properties": {
+          "differentiators": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "objective": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "part_number": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "problem": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "product_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "success_criteria": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "target_release_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date"
+          },
+          "value": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "ExecSummarySummaryPatch": {
+        "type": "object",
+        "description": "Patch payload for the Summary section.",
+        "properties": {
+          "differentiators": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "objective": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "part_number": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "problem": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "product_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "success_criteria": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "target_release_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date"
+          },
+          "value": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
       "ExportEvent": {
         "type": "object",
         "description": "Per-event projection inside the export. Carries the event row\nplus every role this user played on it — a squash-merge author\nwho later closed the same PR shows up once with\n`roles: [\"author\", \"closer\"]`.",
@@ -6162,6 +7355,13 @@
           "name"
         ],
         "properties": {
+          "categories": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Ordered category slugs (sections inside the view). Lowercase,\n`[a-z0-9_-]{1,50}`. Validated by `validate_categories`."
+          },
           "due_date": {
             "type": [
               "string",
@@ -6216,6 +7416,13 @@
           "updated_at"
         ],
         "properties": {
+          "categories": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Ordered category slugs rendered as collapsible sections\ninside this view. Lowercase, `[a-z0-9_-]{1,50}`, deduped,\nmax 32. Empty array — flat view (whatever `group_by` says)."
+          },
           "created_at": {
             "type": "string",
             "format": "date-time",
@@ -6808,6 +8015,48 @@
           }
         }
       },
+      "RepoSyncByNameRequest": {
+        "type": "object",
+        "description": "Request body for `POST /repos/sync` — operator-triggered\nper-repo reconciler tick keyed by `(org_login, name)` rather\nthan the internal repo `id`. If the repo (or its owning org)\nis not yet tracked locally, the handler discovers it via\nGitHub's `GET /repos/{owner}/{name}` and upserts the rows\nbefore queueing the sync — same flow as `POST /admin/repos`.",
+        "required": [
+          "org",
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Repo name without the `owner/` prefix (e.g. `dev-pulse`).\nCase-insensitive."
+          },
+          "org": {
+            "type": "string",
+            "description": "GitHub org login (e.g. `acme-corp`). Case-insensitive."
+          }
+        }
+      },
+      "RepoSyncQueuedByNameDto": {
+        "type": "object",
+        "description": "Wire envelope for `POST /repos/sync`. Carries the resolved\n`repo_id` and an `imported` flag indicating whether the row\nwas newly created during this call (vs already tracked).",
+        "required": [
+          "queued",
+          "repo_id",
+          "imported"
+        ],
+        "properties": {
+          "imported": {
+            "type": "boolean",
+            "description": "`true` if the repo row did not previously exist in\n`dp_repos` and was registered as part of this call."
+          },
+          "queued": {
+            "type": "boolean",
+            "description": "Sentinel — always `true`."
+          },
+          "repo_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Internal repo id resolved (or freshly created) from\n`(org, name)`."
+          }
+        }
+      },
       "RepoSyncQueuedDto": {
         "type": "object",
         "description": "Wire envelope for `POST /repos/{id}/sync`. Always\n`{ \"queued\": true }` on the 202 reply.",
@@ -6976,6 +8225,41 @@
               "null"
             ],
             "description": "The actual value. `null` when the key is `is_secret` or\nwhen no row exists. Non-secret keys with a row return the\nplaintext here."
+          }
+        }
+      },
+      "SubmitIncompleteBody": {
+        "type": "object",
+        "description": "Response body for a `400 incomplete` rejection from `submit`.",
+        "required": [
+          "code",
+          "percent",
+          "threshold",
+          "missing"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Always `\"incomplete\"`."
+          },
+          "missing": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Section names that are not complete."
+          },
+          "percent": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Computed percent at submit time.",
+            "minimum": 0
+          },
+          "threshold": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Threshold required.",
+            "minimum": 0
           }
         }
       },

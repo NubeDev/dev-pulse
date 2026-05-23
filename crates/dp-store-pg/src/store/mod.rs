@@ -26,7 +26,6 @@
 // need to be in scope because they appear in trait method signatures, but the
 // Rust unused-imports lint can't see through the trait signatures vs body
 // split, so silence it for this file specifically.
-#![allow(unused_imports)]
 
 use std::error::Error as StdError;
 
@@ -36,17 +35,16 @@ use dp_domain::audit::AuditEntry;
 use dp_domain::event::{ActivityEvent, ActorRole, EventActor};
 use dp_domain::fetch::{FetchCursor, FetchRun, FetchRunErrorSample, FetchRunKind, ResourceKind};
 use dp_domain::freshness::DataAsOf;
-use dp_domain::identity::{IdentityLinkPending, UserIdentity, VerifiedVia};
+use dp_domain::identity::{IdentityLinkPending, UserIdentity};
 use dp_domain::inbox::{InboxIssueRow, InboxStatus, UserIssueState};
 use dp_domain::membership::Membership;
-use dp_domain::milestone::{Milestone, MilestoneState, MilestoneUpsert};
+use dp_domain::milestone::{Milestone, MilestoneUpsert};
 use dp_domain::org::Org;
 use dp_domain::pin::{Pin, PinKind};
 use dp_domain::repo::Repo;
 use dp_domain::setting::UserSetting;
-use dp_domain::issue::{Issue, IssueState, IssueUpsert, IssueUpsertOutcome, RepoSummary};
-use dp_domain::issue_mutation::{IssueMutation, IssueMutationOp, IssueMutationResult};
-use dp_domain::event::EventKind;
+use dp_domain::issue::{Issue, IssueUpsert, IssueUpsertOutcome, RepoSummary};
+use dp_domain::issue_mutation::{IssueMutation, IssueMutationResult};
 use dp_domain::tag::Tag;
 use dp_domain::tag_link::{TagLink, TagLinkKind};
 use dp_domain::board_link::{
@@ -54,14 +52,14 @@ use dp_domain::board_link::{
 };
 use dp_domain::issue_dates::{IssueDates, ProjectV2MirrorTask, ProjectV2MirrorTaskKind};
 use dp_domain::project::{
-    PortfolioQueryFilter, PortfolioRawRow, Project, ProjectIssueAddOutcome, ProjectIssueAddSkip,
-    ProjectListFilter, ProjectRepo, ProjectStatus, ProjectUpsert,
+    PortfolioQueryFilter, PortfolioRawRow, Project, ProjectIssueAddOutcome,
+    ProjectListFilter, ProjectRepo, ProjectUpsert,
 };
 use dp_domain::project_view::{
-    ProjectView, ProjectViewFilterClause, ProjectViewUpsert, ProjectViewVisibility,
+    ProjectView, ProjectViewUpsert,
 };
 use dp_domain::store::{
-    EventActorRow, IssueDatesMirrorOutcome, IssueListFilter, IssueMetric, IssueMetricGroupBy,
+    EventActorRow, IssueDatesMirrorOutcome, IssueListFilter,
     IssueMetricRow, IssueMetricsFilter, IssueTimelineRow, PendingRemoteIssue, RepoListFilter,
     RepoSyncStatus, Store, StoreError,
 };
@@ -69,17 +67,9 @@ use dp_domain::team::Team;
 use dp_domain::user::User;
 use dp_domain::webhook::WebhookDelivery;
 use dp_domain::window::Window;
-use serde_json::Value as JsonValue;
-use sqlx::Row;
 use starter_store_postgres::Pool;
 use uuid::Uuid;
 
-use crate::encode::{
-    actor_role_from_text, actor_role_to_text, event_kind_from_text, event_kind_to_text,
-    tag_link_kind_from_text, tag_scope_kind_from_text,
-    fetch_run_kind_from_text, fetch_run_kind_to_text, membership_role_from_text,
-    membership_role_to_text, resource_kind_from_text, resource_kind_to_text,
-};
 
 mod rows;
 mod users;
@@ -96,6 +86,7 @@ mod projects;
 mod board_links;
 mod tags;
 mod milestones;
+mod project_exec_summary;
 
 /// Postgres-backed [`Store`].
 ///
@@ -1219,6 +1210,171 @@ impl Store for PgStore {
         milestone_id: Uuid,
     ) -> Result<(), StoreError> {
         self.delete_milestone_impl(milestone_id).await
+    }
+
+    // ---- project executive summary (DOCS/SCOPE-PROJECT-EXECUTIVE-SUMMARY.md) ----
+
+    async fn get_project_exec_summary(
+        &self,
+        project_id: Uuid,
+    ) -> Result<
+        Option<(
+            dp_domain::project_exec_summary::ProjectExecSummary,
+            dp_domain::project_exec_summary::ExecSummaryCompletion,
+        )>,
+        StoreError,
+    > {
+        self.get_project_exec_summary_impl(project_id).await
+    }
+
+    async fn upsert_project_exec_summary(
+        &self,
+        project_id: Uuid,
+    ) -> Result<dp_domain::project_exec_summary::ProjectExecSummary, StoreError> {
+        self.upsert_project_exec_summary_impl(project_id).await
+    }
+
+    async fn patch_project_exec_summary(
+        &self,
+        project_id: Uuid,
+        patch: &dp_domain::project_exec_summary::ProjectExecSummaryPatch,
+    ) -> Result<dp_domain::project_exec_summary::ProjectExecSummary, StoreError> {
+        self.patch_project_exec_summary_impl(project_id, patch).await
+    }
+
+    async fn submit_project_exec_summary(
+        &self,
+        project_id: Uuid,
+    ) -> Result<dp_domain::project_exec_summary::ProjectExecSummary, StoreError> {
+        self.submit_project_exec_summary_impl(project_id).await
+    }
+
+    async fn approve_project_exec_summary(
+        &self,
+        project_id: Uuid,
+        approval_notes: Option<&str>,
+    ) -> Result<dp_domain::project_exec_summary::ProjectExecSummary, StoreError> {
+        self.approve_project_exec_summary_impl(project_id, approval_notes).await
+    }
+
+    async fn revert_project_exec_summary(
+        &self,
+        project_id: Uuid,
+    ) -> Result<dp_domain::project_exec_summary::ProjectExecSummary, StoreError> {
+        self.revert_project_exec_summary_impl(project_id).await
+    }
+
+    async fn list_exec_summary_images(
+        &self,
+        project_id: Uuid,
+    ) -> Result<Vec<dp_domain::project_exec_summary::ExecSummaryImage>, StoreError> {
+        self.list_exec_summary_images_impl(project_id).await
+    }
+
+    async fn get_exec_summary_image(
+        &self,
+        image_id: Uuid,
+    ) -> Result<Option<dp_domain::project_exec_summary::ExecSummaryImage>, StoreError> {
+        self.get_exec_summary_image_impl(image_id).await
+    }
+
+    async fn insert_exec_summary_image(
+        &self,
+        project_id: Uuid,
+        blob_ref: &dp_domain::project_exec_summary::BlobRefJson,
+        filename: &str,
+        content_type: &str,
+        caption: Option<&str>,
+        ord: Option<i32>,
+    ) -> Result<dp_domain::project_exec_summary::ExecSummaryImage, StoreError> {
+        self.insert_exec_summary_image_impl(project_id, blob_ref, filename, content_type, caption, ord)
+            .await
+    }
+
+    async fn update_exec_summary_image(
+        &self,
+        image_id: Uuid,
+        caption: Option<Option<String>>,
+        ord: Option<i32>,
+    ) -> Result<dp_domain::project_exec_summary::ExecSummaryImage, StoreError> {
+        self.update_exec_summary_image_impl(image_id, caption, ord).await
+    }
+
+    async fn delete_exec_summary_image(
+        &self,
+        image_id: Uuid,
+    ) -> Result<(), StoreError> {
+        self.delete_exec_summary_image_impl(image_id).await
+    }
+
+    async fn list_exec_summary_documents(
+        &self,
+        project_id: Uuid,
+    ) -> Result<Vec<dp_domain::project_exec_summary::ExecSummaryDocument>, StoreError> {
+        self.list_exec_summary_documents_impl(project_id).await
+    }
+
+    async fn get_exec_summary_document(
+        &self,
+        document_id: Uuid,
+    ) -> Result<Option<dp_domain::project_exec_summary::ExecSummaryDocument>, StoreError> {
+        self.get_exec_summary_document_impl(document_id).await
+    }
+
+    async fn insert_exec_summary_document(
+        &self,
+        project_id: Uuid,
+        blob_ref: &dp_domain::project_exec_summary::BlobRefJson,
+        title: &str,
+        doc_type: Option<&str>,
+        notes: Option<&str>,
+        required_action: Option<&str>,
+        uploaded_by: Option<&str>,
+    ) -> Result<dp_domain::project_exec_summary::ExecSummaryDocument, StoreError> {
+        self.insert_exec_summary_document_impl(
+            project_id, blob_ref, title, doc_type, notes, required_action, uploaded_by,
+        )
+        .await
+    }
+
+    async fn update_exec_summary_document(
+        &self,
+        document_id: Uuid,
+        title: Option<String>,
+        doc_type: Option<Option<String>>,
+        notes: Option<Option<String>>,
+        required_action: Option<Option<String>>,
+    ) -> Result<dp_domain::project_exec_summary::ExecSummaryDocument, StoreError> {
+        self.update_exec_summary_document_impl(document_id, title, doc_type, notes, required_action)
+            .await
+    }
+
+    async fn delete_exec_summary_document(
+        &self,
+        document_id: Uuid,
+    ) -> Result<(), StoreError> {
+        self.delete_exec_summary_document_impl(document_id).await
+    }
+
+    async fn list_exec_summary_changelog(
+        &self,
+        project_id: Uuid,
+    ) -> Result<Vec<dp_domain::project_exec_summary::ExecSummaryChangelogEntry>, StoreError> {
+        self.list_exec_summary_changelog_impl(project_id).await
+    }
+
+    async fn insert_exec_summary_changelog(
+        &self,
+        insert: &dp_domain::project_exec_summary::ExecSummaryChangelogInsert,
+    ) -> Result<dp_domain::project_exec_summary::ExecSummaryChangelogEntry, StoreError> {
+        self.insert_exec_summary_changelog_impl(insert).await
+    }
+
+    async fn delete_exec_summary_changelog(
+        &self,
+        entry_id: Uuid,
+    ) -> Result<(), StoreError> {
+        self.delete_exec_summary_changelog_impl(entry_id).await
     }
 }
 

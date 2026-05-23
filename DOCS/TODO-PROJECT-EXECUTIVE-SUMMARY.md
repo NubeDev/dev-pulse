@@ -27,13 +27,109 @@ Tracking what's landed and what's left for the scope in
   decimal precision is enforced by the `NUMERIC(5,2)` column. If
   rust_decimal becomes a workspace dep for other reasons, swap.
 
-## Not done — backend
+- [x] **Store trait methods** added in
+  [crates/dp-domain/src/store.rs](../crates/dp-domain/src/store.rs)
+  (project-exec-summary section, after milestones). 16 methods cover
+  the row + 3 child tables + state transitions. All have safe
+  defaults so other store impls / fakes stay compiling.
 
-### Store CRUD ([crates/dp-store-pg/src/store.rs](../crates/dp-store-pg/src/store.rs))
+- [x] **Postgres impl** —
+  [crates/dp-store-pg/src/store/project_exec_summary.rs](../crates/dp-store-pg/src/store/project_exec_summary.rs).
+  Sparse PATCH uses `CASE WHEN $set THEN $val ELSE col END` per
+  nullable column (verbose but keeps the SQL static and the round-trip
+  to one statement). Completion booleans are projected alongside the
+  row in `get_project_exec_summary_impl` so GET stays one round-trip.
+  Status transitions disambiguate "no row" vs "wrong status" with a
+  follow-up SELECT, returning `StoreError::Conflict` for the latter.
+  Schema decision: `target_gp_bp` (basis points, `BIGINT`) replaced
+  the original `NUMERIC(5,2)` plan — keeps the no-floats-for-money
+  rule and avoids pulling `rust_decimal` into the workspace.
 
-Add methods on the `Store` trait in `dp-domain` and implement them in
-`dp-store-pg`. Suggested signatures (all `async fn`,
-`-> Result<_, StoreError>`):
+  `cargo check --workspace` passes clean.
+
+- [x] **REST router** —
+  [crates/dp-rest/src/project_exec_summary.rs](../crates/dp-rest/src/project_exec_summary.rs).
+  14 routes: GET envelope, PATCH (sparse merge), submit / approve /
+  revert state transitions, image/document list+patch+delete,
+  changelog list+append+delete. Wire DTOs (`ExecSummaryDto`,
+  `ExecSummaryEnvelopeDto`, `ExecSummaryCompletionDto`,
+  `SubmitIncompleteBody`, …) carry the `target_gp_pct ↔
+  target_gp_bp / 100` conversion at the seam. Lead-only check
+  (E2) is enforced per-handler via `require_project_lead`.
+  Mounted in [dp-server/src/lib.rs](../crates/dp-server/src/lib.rs)
+  on the protected router.
+
+- [x] **Audit verbs** added in
+  [crates/dp-rest/src/audit.rs](../crates/dp-rest/src/audit.rs):
+  `PROJECT_EXEC_SUMMARY_PATCH/SUBMIT/APPROVE/REVERT` plus
+  `_IMAGE_ADD/REMOVE`, `_DOCUMENT_ADD/REMOVE`, `_CHANGELOG_ADD/REMOVE`.
+
+- [x] **DTO reshape to match frontend.** The first REST cut shipped
+  flat DTOs; the frontend in
+  [frontend/src/api/schemas/exec-summary.ts](../frontend/src/api/schemas/exec-summary.ts)
+  is **section-grouped** (`{ summary: {...}, scope: {...}, … }`)
+  and was already built around that shape. The DTO block in
+  [crates/dp-rest/src/project_exec_summary.rs](../crates/dp-rest/src/project_exec_summary.rs)
+  is now section-grouped end-to-end:
+  - `ExecSummaryDto` is the full envelope (frontend's
+    `ExecSummaryDto` = backend's `ExecSummaryDto`).
+  - Per-section dtos (`ExecSummarySummaryDto`,
+    `ExecSummaryScopeDto`, `ExecSummaryRequirementsDto`,
+    `ExecSummaryHardwareDto`, `ExecSummaryCommercialDto`,
+    `ExecSummaryApprovalDto`) and matching `*Patch` payloads.
+  - `ExecSummaryCompletionDto` is `{ percent, sections: { summary:
+    bool, … } }` (BTreeMap on the wire).
+  - Image / document DTOs carry `url` (proxy URL — placeholder
+    `/blobs/exec-summary/{kind}/{id}` until the proxy is wired).
+  - Mutation handlers (PATCH / submit / approve / revert) all
+    return the full envelope so the frontend's react-query cache
+    can `setQueryData` without a follow-up GET.
+  - `cargo check --workspace` and `tsc --noEmit` both pass.
+
+- [x] **Blob storage wiring** — end-to-end.
+  - Workspace adds `starter-blob-memory` and pulls `axum/multipart`.
+  - [crates/dp-rest/src/state.rs](../crates/dp-rest/src/state.rs)
+    gained `blob_store: Option<Arc<dyn BlobStore>>` plus
+    `with_blob_store(...)` builder.
+  - **Upload handlers** (`POST /projects/{id}/exec-summary/images`
+    and `…/documents`) parse multipart, push bytes to the engine
+    via `put_bytes(...)`, persist the opaque `BlobRef` JSON on the
+    row alongside `filename` / `content_type`. 25 MiB per-file cap;
+    8 KiB text-field cap.
+  - **Proxy GET** (`/blobs/exec-summary/{kind}/{row_id}`)
+    resolves the row → `BlobRef` → engine `get()` and streams the
+    bytes back with `Content-Type` and `Content-Disposition:
+    inline; filename="…"`. Mounted under `(projects, read)`.
+  - Store gained `get_exec_summary_image / _document` single-row
+    lookups so the proxy is O(1).
+  - dp-server constructs a `MemoryBlobStore` by default and threads
+    it through `RestAppState::with_blob_store`; bin layer swaps to
+    `FsBlobStore` / `GarageBlobStore` when shipping.
+  - `cargo check --workspace` passes clean.
+
+- [x] **OpenAPI registration + snapshot.** Every new handler and
+  DTO is registered in
+  [crates/dp-rest/src/openapi.rs](../crates/dp-rest/src/openapi.rs)
+  and the snapshot test passes
+  (`UPDATE_OPENAPI_SNAPSHOT=1 cargo test -p dp-rest --test
+  openapi_snapshot`).
+
+- [x] **Frontend builds and typechecks** against the new
+  contract (`tsc --noEmit` clean; `pnpm build` succeeds).
+
+## Verification done
+
+- `cargo check --workspace` clean
+- `cargo test -p dp-domain -p dp-store-pg` passes
+- `cargo test -p dp-rest --test openapi_snapshot` passes
+- `tsc --noEmit` on the frontend clean
+- `pnpm build` succeeds
+
+## Follow-ups
+
+### Per-row authz on the blob proxy
+
+Original Store CRUD signature notes (kept for reference; now landed):
 
 - `get_project_exec_summary(&self, project_id: Uuid) -> Result<Option<(ProjectExecSummary, ExecSummaryCompletion)>, StoreError>` —
   one row + computed completion. `None` if the project has no

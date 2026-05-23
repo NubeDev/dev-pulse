@@ -22,9 +22,11 @@
 --   state back to `draft`. Schema enforces the closed vocabulary;
 --   §3.4 of the scope owns the transition rules.
 -- * **`*_cents` for money.** No floats for currency, ever.
---   `target_gp_pct NUMERIC(5,2)` for the gross-profit percent (range
---   `0.00`–`999.99`; the over-100 case is a legitimate cost-recovery
---   model that some hardware lines use).
+--   `target_gp_bp` for the gross-profit percent: stored as basis
+--   points (1 bp = 0.01%) in a BIGINT so the same no-float rule
+--   applies. The wire format on the REST DTO is `f64` percent for
+--   ease of display; the rest layer multiplies/divides by 100 at
+--   the seam. Range comment lives on the CHECK constraint.
 -- * **`BlobRef` as JSONB.** The starter blob crates serde a `BlobRef`
 --   to a small JSON object; storing it as JSONB lets us round-trip
 --   it verbatim without inventing a column-per-field encoding.
@@ -86,7 +88,9 @@ CREATE TABLE dp_project_exec_summary (
     -- Commercial section (form tab 05)
     rrp_cents            bigint       NULL CHECK (rrp_cents       IS NULL OR rrp_cents       >= 0),
     oem_price_cents      bigint       NULL CHECK (oem_price_cents IS NULL OR oem_price_cents >= 0),
-    target_gp_pct        numeric(5,2) NULL CHECK (target_gp_pct   IS NULL OR target_gp_pct   >= 0),
+    -- Basis points: 1234 = 12.34%. Upper bound 999.99% (99999 bp)
+    -- mirrors the original NUMERIC(5,2) range.
+    target_gp_bp         bigint       NULL CHECK (target_gp_bp    IS NULL OR (target_gp_bp >= 0 AND target_gp_bp <= 99999)),
     revenue_model        text         NULL,
     channel_strategy     text         NULL,
     target_market        text         NULL,

@@ -33,6 +33,7 @@ dp-server   = { path = "crates/dp-server",   version = "0.1.0" }
 # starter-* — consumed as a library (TODO §1). Pinned via path per
 # SCOPE §"In scope". Never edited from this repo.
 starter-spi             = { path = "../starter/crates/starter-spi",             version = "0.1.0" }
+starter-blob-memory     = { path = "../starter/crates/starter-blob-memory",     version = "0.1.0" }
 starter-config          = { path = "../starter/crates/starter-config",          version = "0.1.0" }
 starter-observability   = { path = "../starter/crates/starter-observability",   version = "0.1.0" }
 starter-server          = { path = "../starter/crates/starter-server",          version = "0.1.0" }
@@ -59,6 +60,8 @@ tokio       = { version = "1",   features = ["rt-multi-thread", "macros", "sync"
 tracing     = "0.1"
 uuid        = { version = "1",   features = ["v4", "serde"] }
 sqlx        = { version = "0.8", default-features = false, features = ["runtime-tokio", "macros", "postgres"] }
-axum        = { version = "0.8", features = ["macros"] }
+axum        = { version = "0.8", features = ["macros", "multipart"] }
+bytes       = "1"
+futures     = "0.3"
 utoipa      = { version = "5",   features = ["axum_extras", "uuid", "chrono"] }
 prometheus  = "0.14"

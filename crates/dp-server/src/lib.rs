@@ -84,7 +84,8 @@ use dp_fetcher::webhook::{self, WebhookMetrics, WebhookSecretSource, WebhookStat
 use dp_rest::{
     admin_router, app_permissions_router, board_links_router, directory_router, inbox_router,
     issue_dates_router, issues_read_router, issues_write_router, me_identities_router,
-    pins_router, project_issues_router, project_milestones_router, project_repos_router,
+    pins_router, project_exec_summary_blob_router, project_exec_summary_router,
+    project_issues_router, project_milestones_router, project_repos_router,
     project_views_router,
     projects_router, repos_router,
     reports_router, settings_router,
@@ -280,11 +281,20 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
     // callback writes to. Cheap `Arc` clone — no fan-out cost.
     let identity_store = oauth.identity_store.clone();
 
+    // Default in-process blob store for the project Executive
+    // Summary upload + proxy routes. Production binaries swap to
+    // `starter-blob-fs` (single-node) or `starter-blob-garage`
+    // (cluster) via a follow-up; the trait surface lets that be
+    // a one-line wiring change per the storage-scope §"Swap test".
+    let blob_store: Arc<dyn starter_spi::blob::BlobStore> =
+        Arc::new(starter_blob_memory::MemoryBlobStore::new());
+
     let rest_state = Arc::new({
         let mut s = RestAppState::new(store.clone())
             .with_github_app(github_app.clone())
             .with_scheduler(scheduler.clone())
-            .with_identity_store(identity_store);
+            .with_identity_store(identity_store)
+            .with_blob_store(blob_store);
         if let Some(w) = issue_writer {
             s = s.with_issue_writer(w);
         }
@@ -326,6 +336,22 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
     // §5.5, Slice 1). Read-only; `(projects, read)` lane. Adopt-
     // as-primary lands in Slice 5.
     let project_milestones = project_milestones_router(rest_state.clone());
+    // Per-project Executive Summary (DOCS/SCOPE-PROJECT-EXECUTIVE-SUMMARY.md):
+    // tabbed form (Summary / Scope / Requirements / Hardware / Commercial /
+    // Documents / Approval / Change Log) with a `draft → in_review →
+    // approved` state machine. Reads ride `(projects, read)`; writes ride
+    // `(projects, write)`; approve / revert add a per-handler
+    // project-lead check (E2). Image and document upload presign +
+    // confirm routes are deferred until the starter-blob wiring lands;
+    // the list / patch / delete routes already work end-to-end against
+    // any `BlobRef`s a future upload path produces.
+    let project_exec_summary = project_exec_summary_router(rest_state.clone());
+    // Proxy GET surface for exec-summary blob attachments
+    // (`/blobs/exec-summary/{kind}/{row_id}`). Auth-checked per
+    // request under `(projects, read)` so anyone who can read the
+    // project can fetch the bytes; the URL is the same one the
+    // image / document DTOs carry on `url`.
+    let project_exec_summary_blob = project_exec_summary_blob_router(rest_state.clone());
     // First-class Project ↔ GitHub Projects v2 board picker + link
     // CRUD (linear-projects-v2.md §7.3). Replaces the retired
     // per-repo admin surface on the primary path; the §6.4 dialog
@@ -373,6 +399,8 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
         .merge(project_repos)
         .merge(project_views)
         .merge(project_milestones)
+        .merge(project_exec_summary)
+        .merge(project_exec_summary_blob)
         .merge(board_links)
         .merge(tags)
         .merge(repos)

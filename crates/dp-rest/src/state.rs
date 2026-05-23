@@ -16,6 +16,7 @@ use std::sync::Arc;
 use dp_domain::store::Store;
 use dp_fetcher::reconciler::Scheduler;
 use starter_auth_oauth::IdentityStore;
+use starter_spi::blob::BlobStore;
 
 use crate::app_permissions::GitHubAppConfig;
 use crate::board_links::{
@@ -94,6 +95,16 @@ pub struct AppState {
     /// misconfigured deployment fails loudly instead of silently
     /// returning an empty list.
     pub identity_store: Option<Arc<dyn IdentityStore>>,
+    /// Blob storage backend for the project Executive Summary
+    /// image / document upload + proxy routes
+    /// ([`crate::project_exec_summary`]). `None` in test builds and
+    /// any composition root that has not wired a [`BlobStore`]; in
+    /// that case the upload handlers return `503
+    /// blob_storage_unavailable` and the proxy returns `404`.
+    /// Production binaries wire a `MemoryBlobStore` (dev) or
+    /// `FsBlobStore` / `GarageBlobStore` (prod) via
+    /// [`AppState::with_blob_store`].
+    pub blob_store: Option<Arc<dyn BlobStore>>,
 }
 
 impl AppState {
@@ -110,7 +121,18 @@ impl AppState {
             projectv2_mirror: Arc::new(UnconfiguredProjectV2Mirror),
             org_projects_picker: Arc::new(UnconfiguredOrgProjectsPicker),
             identity_store: None,
+            blob_store: None,
         }
+    }
+
+    /// Wire the [`BlobStore`] backing the project Executive Summary
+    /// image / document upload + proxy routes. Bin layer constructs
+    /// the engine (typically `MemoryBlobStore` in dev, `FsBlobStore`
+    /// on a single-node deploy, `GarageBlobStore` in prod) and hands
+    /// it in.
+    pub fn with_blob_store(mut self, blob_store: Arc<dyn BlobStore>) -> Self {
+        self.blob_store = Some(blob_store);
+        self
     }
 
     /// Override the Projects v2 mirror backend. Bin layer wires

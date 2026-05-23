@@ -136,11 +136,13 @@ pub struct ProjectExecSummary {
     pub rrp_cents: Option<i64>,
     /// OEM price in cents.
     pub oem_price_cents: Option<i64>,
-    /// Target gross-profit percent (0–999.99). Stored server-side as
-    /// `NUMERIC(5,2)`; carried here as `f64` to avoid pulling in a
-    /// workspace-wide decimal crate for one column. The two-decimal
-    /// precision is enforced by the SQL column, not by this type.
-    pub target_gp_pct: Option<f64>,
+    /// Target gross-profit, in basis points (1 bp = 0.01%). Range
+    /// `0..=99_999` (0%–999.99%, mirroring the original NUMERIC(5,2)
+    /// scope decision). Stored as `BIGINT` to keep the no-floats-
+    /// for-money rule and avoid pulling in a decimal crate workspace-
+    /// wide. REST DTOs expose `f64` percent for ease of display and
+    /// multiply/divide by 100 at the wire seam.
+    pub target_gp_bp: Option<i64>,
     /// Revenue model.
     pub revenue_model: Option<String>,
     /// Channel strategy.
@@ -345,7 +347,7 @@ pub struct ProjectExecSummaryPatch {
     pub oem_price_cents: Option<Option<i64>>,
     #[allow(missing_docs)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub target_gp_pct: Option<Option<f64>>,
+    pub target_gp_bp: Option<Option<i64>>,
     #[allow(missing_docs)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revenue_model: Option<Option<String>>,

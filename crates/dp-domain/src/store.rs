@@ -1526,6 +1526,266 @@ pub trait Store: Send + Sync {
         ))
     }
 
+    // ---- project executive summary (DOCS/SCOPE-PROJECT-EXECUTIVE-SUMMARY.md) ----
+    //
+    // One [`ProjectExecSummary`] per `dp_projects` row, lazily
+    // materialised on first edit. Schema in migration
+    // `0045_project_exec_summary.sql`. Default impls return safe
+    // empties / `Invalid` so test fakes stay compiling until they
+    // opt-in to the surface.
+    //
+    // The status state machine (`draft → in_review → approved`)
+    // lives on the dedicated `submit_*` / `approve_*` / `revert_*`
+    // methods so the rule is in one place; `patch_*` never touches
+    // `status`.
+
+    /// Fetch the exec summary row + computed
+    /// [`ExecSummaryCompletion`] for a project. Returns `Ok(None)`
+    /// when no row exists yet (lazy materialisation — callers
+    /// should treat this as an all-fields-null draft).
+    async fn get_project_exec_summary(
+        &self,
+        _project_id: Uuid,
+    ) -> Result<
+        Option<(
+            crate::project_exec_summary::ProjectExecSummary,
+            crate::project_exec_summary::ExecSummaryCompletion,
+        )>,
+        StoreError,
+    > {
+        Ok(None)
+    }
+
+    /// Lazy-create the exec summary row for a project. Idempotent —
+    /// returns the existing row when one is already present. The
+    /// REST PATCH path calls this before applying the patch so the
+    /// happy path is a single round-trip in the common case.
+    async fn upsert_project_exec_summary(
+        &self,
+        _project_id: Uuid,
+    ) -> Result<crate::project_exec_summary::ProjectExecSummary, StoreError> {
+        Err(StoreError::Invalid(
+            "project exec summary not supported by this store".into(),
+        ))
+    }
+
+    /// Apply a sparse [`ProjectExecSummaryPatch`] to the row. Only
+    /// fields present in the patch are updated; `updated_at` is
+    /// bumped unconditionally. Status is never mutated here — use
+    /// `submit_project_exec_summary` / `approve_project_exec_summary`
+    /// / `revert_project_exec_summary` instead.
+    async fn patch_project_exec_summary(
+        &self,
+        _project_id: Uuid,
+        _patch: &crate::project_exec_summary::ProjectExecSummaryPatch,
+    ) -> Result<crate::project_exec_summary::ProjectExecSummary, StoreError> {
+        Err(StoreError::Invalid(
+            "project exec summary not supported by this store".into(),
+        ))
+    }
+
+    /// `draft → in_review`. Sets `submitted_at = now()`. The
+    /// completion-threshold check lives in the REST layer (it needs
+    /// the same computed completion the GET returns); the store
+    /// only enforces the state-machine transition and returns
+    /// [`StoreError::Conflict`] if the current status is not
+    /// `draft`.
+    async fn submit_project_exec_summary(
+        &self,
+        _project_id: Uuid,
+    ) -> Result<crate::project_exec_summary::ProjectExecSummary, StoreError> {
+        Err(StoreError::Invalid(
+            "project exec summary not supported by this store".into(),
+        ))
+    }
+
+    /// `in_review → approved`. Sets `approved_at = now()` and
+    /// optionally overwrites `approval_notes`. Lead-only authz
+    /// lives in the REST layer; the store just enforces the
+    /// transition and returns [`StoreError::Conflict`] when the
+    /// current status is not `in_review`.
+    async fn approve_project_exec_summary(
+        &self,
+        _project_id: Uuid,
+        _approval_notes: Option<&str>,
+    ) -> Result<crate::project_exec_summary::ProjectExecSummary, StoreError> {
+        Err(StoreError::Invalid(
+            "project exec summary not supported by this store".into(),
+        ))
+    }
+
+    /// `* → draft`. Unconditional (E3 of the scope doc). Preserves
+    /// `submitted_at` / `approved_at` so the history of the most
+    /// recent transitions stays visible in the UI even after a
+    /// revert.
+    async fn revert_project_exec_summary(
+        &self,
+        _project_id: Uuid,
+    ) -> Result<crate::project_exec_summary::ProjectExecSummary, StoreError> {
+        Err(StoreError::Invalid(
+            "project exec summary not supported by this store".into(),
+        ))
+    }
+
+    /// List reference images attached to the Hardware section,
+    /// ordered by `(ord, created_at)`.
+    async fn list_exec_summary_images(
+        &self,
+        _project_id: Uuid,
+    ) -> Result<Vec<crate::project_exec_summary::ExecSummaryImage>, StoreError> {
+        Ok(Vec::new())
+    }
+
+    /// Insert a confirmed image row. `blob_ref` is the opaque
+    /// serde-json round-trip of the starter `BlobRef`; the store
+    /// never inspects its shape (B2 of the storage scope).
+    async fn insert_exec_summary_image(
+        &self,
+        _project_id: Uuid,
+        _blob_ref: &crate::project_exec_summary::BlobRefJson,
+        _filename: &str,
+        _content_type: &str,
+        _caption: Option<&str>,
+        _ord: Option<i32>,
+    ) -> Result<crate::project_exec_summary::ExecSummaryImage, StoreError> {
+        Err(StoreError::Invalid(
+            "project exec summary not supported by this store".into(),
+        ))
+    }
+
+    /// Fetch one image row by surrogate id — used by the blob proxy
+    /// route to resolve `BlobRef` + content-type + filename without
+    /// a full per-project scan.
+    async fn get_exec_summary_image(
+        &self,
+        _image_id: Uuid,
+    ) -> Result<Option<crate::project_exec_summary::ExecSummaryImage>, StoreError> {
+        Ok(None)
+    }
+
+    /// Patch the editable bits of an image row (caption / ord).
+    /// Pass `None` for "leave as-is", `Some(None)` for "set to NULL"
+    /// on `caption`. `ord` is `Option<i32>` (always present-or-absent;
+    /// no NULL semantics on a non-NULL column).
+    async fn update_exec_summary_image(
+        &self,
+        _image_id: Uuid,
+        _caption: Option<Option<String>>,
+        _ord: Option<i32>,
+    ) -> Result<crate::project_exec_summary::ExecSummaryImage, StoreError> {
+        Err(StoreError::Invalid(
+            "project exec summary not supported by this store".into(),
+        ))
+    }
+
+    /// Delete an image row by surrogate id. Returns
+    /// [`StoreError::NotFound`] when no row matched. The blob
+    /// bytes themselves are not deleted here — that's a
+    /// follow-up sweep job per the storage scope's E3 hard rule
+    /// (combinators don't silently mutate engine state).
+    async fn delete_exec_summary_image(
+        &self,
+        _image_id: Uuid,
+    ) -> Result<(), StoreError> {
+        Err(StoreError::Invalid(
+            "project exec summary not supported by this store".into(),
+        ))
+    }
+
+    /// List supporting documents for a project, newest first.
+    async fn list_exec_summary_documents(
+        &self,
+        _project_id: Uuid,
+    ) -> Result<Vec<crate::project_exec_summary::ExecSummaryDocument>, StoreError> {
+        Ok(Vec::new())
+    }
+
+    /// Fetch one document row by surrogate id — used by the blob
+    /// proxy route. Same rationale as
+    /// [`Store::get_exec_summary_image`].
+    async fn get_exec_summary_document(
+        &self,
+        _document_id: Uuid,
+    ) -> Result<Option<crate::project_exec_summary::ExecSummaryDocument>, StoreError> {
+        Ok(None)
+    }
+
+    /// Insert a confirmed document row.
+    async fn insert_exec_summary_document(
+        &self,
+        _project_id: Uuid,
+        _blob_ref: &crate::project_exec_summary::BlobRefJson,
+        _title: &str,
+        _doc_type: Option<&str>,
+        _notes: Option<&str>,
+        _required_action: Option<&str>,
+        _uploaded_by: Option<&str>,
+    ) -> Result<crate::project_exec_summary::ExecSummaryDocument, StoreError> {
+        Err(StoreError::Invalid(
+            "project exec summary not supported by this store".into(),
+        ))
+    }
+
+    /// Patch a document's editable fields. Same `Option<Option<T>>`
+    /// "absent vs null" convention as the scalar patch.
+    #[allow(clippy::too_many_arguments)]
+    async fn update_exec_summary_document(
+        &self,
+        _document_id: Uuid,
+        _title: Option<String>,
+        _doc_type: Option<Option<String>>,
+        _notes: Option<Option<String>>,
+        _required_action: Option<Option<String>>,
+    ) -> Result<crate::project_exec_summary::ExecSummaryDocument, StoreError> {
+        Err(StoreError::Invalid(
+            "project exec summary not supported by this store".into(),
+        ))
+    }
+
+    /// Delete a document row. Same caveat as image delete — bytes
+    /// are reaped separately.
+    async fn delete_exec_summary_document(
+        &self,
+        _document_id: Uuid,
+    ) -> Result<(), StoreError> {
+        Err(StoreError::Invalid(
+            "project exec summary not supported by this store".into(),
+        ))
+    }
+
+    /// List change-log entries newest-first (by `changed_at` DESC,
+    /// then `created_at` DESC for stable ordering when two entries
+    /// share a date).
+    async fn list_exec_summary_changelog(
+        &self,
+        _project_id: Uuid,
+    ) -> Result<Vec<crate::project_exec_summary::ExecSummaryChangelogEntry>, StoreError> {
+        Ok(Vec::new())
+    }
+
+    /// Append a change-log entry. E5 of the scope doc: the UI's
+    /// default affords add only; updates / deletes require an
+    /// explicit confirm.
+    async fn insert_exec_summary_changelog(
+        &self,
+        _insert: &crate::project_exec_summary::ExecSummaryChangelogInsert,
+    ) -> Result<crate::project_exec_summary::ExecSummaryChangelogEntry, StoreError> {
+        Err(StoreError::Invalid(
+            "project exec summary not supported by this store".into(),
+        ))
+    }
+
+    /// Delete a change-log entry. Reserved for the admin-only
+    /// confirm path; the regular UI never reaches this.
+    async fn delete_exec_summary_changelog(
+        &self,
+        _entry_id: Uuid,
+    ) -> Result<(), StoreError> {
+        Err(StoreError::Invalid(
+            "project exec summary not supported by this store".into(),
+        ))
+    }
+
     // ---- GitHub App installation permissions (SCOPE-PROJECTS §8.4, §13.6) ----
     //
     // The reconciler / install-callback writes one row per org

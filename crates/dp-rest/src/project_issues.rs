@@ -1559,6 +1559,8 @@ mod tests {
             subject: actor.to_string(),
             role: Role::Admin,
             scopes: Vec::new(),
+            tenant_id: None,
+            teams: Vec::new(),
             extra: serde_json::Value::Null,
         };
         project_issues_router(app_state)

@@ -208,6 +208,47 @@ pub const PROJECT_MILESTONE_REOPEN: &str = "project.milestone.reopen";
 /// Target carries `<project_id>:<milestone_id>`.
 pub const PROJECT_MILESTONE_DELETE: &str = "project.milestone.delete";
 
+/// `project.exec_summary.patch` — `PATCH /projects/{id}/exec-summary`.
+/// Target carries `<project_id>`.
+pub const PROJECT_EXEC_SUMMARY_PATCH: &str = "project.exec_summary.patch";
+
+/// `project.exec_summary.submit` — `POST /projects/{id}/exec-summary/submit`.
+/// Target carries `<project_id>`.
+pub const PROJECT_EXEC_SUMMARY_SUBMIT: &str = "project.exec_summary.submit";
+
+/// `project.exec_summary.approve` — `POST /projects/{id}/exec-summary/approve`.
+/// Target carries `<project_id>`.
+pub const PROJECT_EXEC_SUMMARY_APPROVE: &str = "project.exec_summary.approve";
+
+/// `project.exec_summary.revert` — `POST /projects/{id}/exec-summary/revert`.
+/// Target carries `<project_id>`.
+pub const PROJECT_EXEC_SUMMARY_REVERT: &str = "project.exec_summary.revert";
+
+/// `project.exec_summary.image_add` — recorded by the upload-confirm
+/// handler (lands when the starter-blob wiring is in place). Target
+/// carries `<project_id>:<image_id>`.
+pub const PROJECT_EXEC_SUMMARY_IMAGE_ADD: &str = "project.exec_summary.image_add";
+
+/// `project.exec_summary.image_remove` — `DELETE /projects/{id}/exec-summary/images/{image_id}`.
+/// Target carries `<project_id>:<image_id>`.
+pub const PROJECT_EXEC_SUMMARY_IMAGE_REMOVE: &str = "project.exec_summary.image_remove";
+
+/// `project.exec_summary.document_add` — recorded by the upload-confirm
+/// handler. Target carries `<project_id>:<document_id>`.
+pub const PROJECT_EXEC_SUMMARY_DOCUMENT_ADD: &str = "project.exec_summary.document_add";
+
+/// `project.exec_summary.document_remove` — `DELETE /projects/{id}/exec-summary/documents/{doc_id}`.
+/// Target carries `<project_id>:<document_id>`.
+pub const PROJECT_EXEC_SUMMARY_DOCUMENT_REMOVE: &str = "project.exec_summary.document_remove";
+
+/// `project.exec_summary.changelog_add` — `POST /projects/{id}/exec-summary/changelog`.
+/// Target carries `<project_id>:<entry_id>`.
+pub const PROJECT_EXEC_SUMMARY_CHANGELOG_ADD: &str = "project.exec_summary.changelog_add";
+
+/// `project.exec_summary.changelog_remove` — `DELETE /projects/{id}/exec-summary/changelog/{entry_id}`.
+/// Target carries `<project_id>:<entry_id>`.
+pub const PROJECT_EXEC_SUMMARY_CHANGELOG_REMOVE: &str = "project.exec_summary.changelog_remove";
+
 /// `issue.pending_remote_timeout` — emitted by the §8.5 sweeper
 /// when a `dp_issues.pending_remote` flag has lingered past
 /// `issues.pending_remote_timeout_secs`. The audit target carries

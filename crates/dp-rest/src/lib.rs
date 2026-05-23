@@ -46,6 +46,7 @@ pub mod issues_write;
 pub mod me_identities;
 pub mod openapi;
 pub mod pins;
+pub mod project_exec_summary;
 pub mod project_issues;
 pub mod project_milestones;
 pub mod project_repos;
@@ -139,6 +140,22 @@ pub use project_issues::{
 pub use project_repos::{
     add_project_repo, list_project_repos, project_repos_router, remove_project_repo,
     ProjectRepoDto,
+};
+pub use project_exec_summary::{
+    append_exec_summary_changelog, approve_project_exec_summary,
+    delete_exec_summary_changelog, delete_exec_summary_document, delete_exec_summary_image,
+    get_project_exec_summary, patch_exec_summary_document, patch_project_exec_summary,
+    project_exec_summary_blob_router, project_exec_summary_router, proxy_exec_summary_blob,
+    revert_project_exec_summary, submit_project_exec_summary,
+    upload_exec_summary_document, upload_exec_summary_image,
+    ExecSummaryApprovalDto, ExecSummaryApprovalPatch, ExecSummaryApproveBody,
+    ExecSummaryChangelogEntryDto, ExecSummaryChangelogInsertBody, ExecSummaryCommercialDto,
+    ExecSummaryCommercialPatch, ExecSummaryCompletionDto, ExecSummaryDocumentDto,
+    ExecSummaryDocumentPatchBody, ExecSummaryDto, ExecSummaryHardwareDto,
+    ExecSummaryHardwarePatch, ExecSummaryImageDto, ExecSummaryPatchBody,
+    ExecSummaryRequirementsDto, ExecSummaryRequirementsPatch, ExecSummaryScopeDto,
+    ExecSummaryScopePatch, ExecSummaryStatusDto, ExecSummarySummaryDto,
+    ExecSummarySummaryPatch, SubmitIncompleteBody,
 };
 pub use project_milestones::{
     adopt_milestone, create_project_milestone, delete_project_milestone,

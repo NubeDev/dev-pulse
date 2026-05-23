@@ -978,6 +978,8 @@ mod tests {
             subject: actor.to_string(),
             role: Role::Admin,
             scopes: Vec::new(),
+            tenant_id: None,
+            teams: Vec::new(),
             extra: serde_json::Value::Null,
         };
         projects_router(app_state)
