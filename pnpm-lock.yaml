@@ -345,6 +345,9 @@ importers:
       '@nube/starter-ui-core':
         specifier: workspace:*
         version: link:../../starter/packages/starter-ui-core
+      '@nube/starter-ui-export':
+        specifier: workspace:*
+        version: link:../../starter/packages/starter-ui-export
       '@nube/starter-ui-kit':
         specifier: workspace:*
         version: link:../../starter/packages/starter-ui-kit

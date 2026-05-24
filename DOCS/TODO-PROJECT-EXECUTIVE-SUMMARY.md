@@ -117,6 +117,31 @@ Tracking what's landed and what's left for the scope in
 - [x] **Frontend builds and typechecks** against the new
   contract (`tsc --noEmit` clean; `pnpm build` succeeds).
 
+### PDF export
+
+Browser-side print → "Save as PDF" of the whole exec summary. Header
+gets a new **Download PDF** button (`frontend/src/projects/exec-summary/pdf/print-pdf-button.tsx`)
+that mounts a hidden printable view (`exec-summary-print-document.tsx`)
+into a portal and fires the native print dialog via `usePrint` +
+`PrintableContent` from `@nube/starter-ui-export`; `print-host.tsx`
+wires the two together and listens for `afterprint` cleanup. The
+document renders all 8 sections in order with a cover header (status,
+completion %, generated-at, skipped-sections list); skipped sections
+render the heading with a `(N/A)` suffix and omit the body. Markdown
+bodies reuse `components/markdown.tsx`; hardware images use plain
+`<img>` with absolute URLs so the browser carries session cookies. Spec
+§2 "Print / export" goal delivered. Verified with `tsc --noEmit`,
+`pnpm build`, and a Playwright smoke that loads the SPA + dynamically
+imports `print-host.tsx` end-to-end (added then removed; the static
+import path used in production was the bug-prone surface).
+
+Also landed three improvements to `@nube/starter-ui-export` upstream
+(in `../starter/packages/starter-ui-export`): `printNode` now awaits
+`document.fonts.ready` + `img.decode()` before opening the dialog so the
+first preview isn't missing glyphs/images; a new `<PrintableContent>`
+portal + `usePrint` hook replace the per-consumer hidden-offscreen
+pattern; README updated.
+
 ## Verification done
 
 - `cargo check --workspace` clean

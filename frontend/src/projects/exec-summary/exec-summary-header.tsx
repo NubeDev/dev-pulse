@@ -16,6 +16,7 @@ import {
   useRevertExecSummary,
   useSubmitExecSummary,
 } from "./hooks/use-exec-summary.js";
+import { PrintPdfButton } from "./pdf/print-pdf-button.js";
 import { StatusBadge, type ExecSummaryPermissions } from "./shared.js";
 
 export function ExecSummaryHeader({
@@ -59,6 +60,7 @@ export function ExecSummaryHeader({
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          <PrintPdfButton projectId={projectId} data={data} />
           <Button
             type="button"
             size="sm"
