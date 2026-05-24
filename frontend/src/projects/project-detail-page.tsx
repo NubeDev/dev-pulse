@@ -71,6 +71,7 @@ import { PageHeading } from "../components/page-heading.jsx";
 import { HelpHint } from "@/components/help-hint";
 import { navigate, projectDetailRoute, projectDetailRouteWithParams, projectDetailTab, projectDetailTabRoute, projectFilter, projectGroupBy, projectSelectedIssue, projectSort, projectViewId, useRoute } from "../routes.js";
 import { IssueEditCard } from "../workflow/issues-page.js";
+import { useIssueDates } from "../workflow/use-workflow-data.js";
 import { UserPicker } from "../components/user-picker.js";
 
 import { LinkBoardDialog } from "./link-board-dialog.js";
@@ -1116,11 +1117,13 @@ function ProjectIssueRowWired({
   activeViewId?: string | null;
 }): JSX.Element {
   const remove = useRemoveIssueFromProject(project.id);
+  const dates = useIssueDates(row.id);
   return (
     <ProjectIssueRow
       row={row}
       selected={selected}
       onSelect={onSelect}
+      dueAt={dates.data?.due_at ?? null}
       onRemove={() =>
         remove.mutate({
           issueId: row.id,
@@ -1137,12 +1140,14 @@ function ProjectIssueRow({
   row,
   selected,
   onSelect,
+  dueAt,
   onRemove,
   removePending,
 }: {
   row: IssueListItem;
   selected: boolean;
   onSelect: () => void;
+  dueAt?: string | null;
   onRemove: () => void;
   removePending: boolean;
 }): JSX.Element {
@@ -1201,6 +1206,28 @@ function ProjectIssueRow({
       <span className="flex-1 truncate">
         {row.title}
       </span>
+      {row.assignees.length > 0 && (
+        <span
+          className="shrink-0 truncate text-xs text-muted-foreground"
+          title={`Assignees: ${row.assignees.join(", ")}`}
+          data-testid="project-issue-assignees"
+        >
+          {row.assignees.map((a) => `@${a}`).join(", ")}
+        </span>
+      )}
+      {dueAt && (
+        <span
+          className={`shrink-0 rounded px-1.5 py-0.5 text-[11px] tabular-nums ${
+            new Date(dueAt) < new Date()
+              ? "bg-destructive/10 text-destructive"
+              : "bg-muted text-muted-foreground"
+          }`}
+          title={`Due ${dueAt.slice(0, 10)}`}
+          data-testid="project-issue-due"
+        >
+          due {dueAt.slice(0, 10)}
+        </span>
+      )}
       <Button
         variant="ghost"
         size="sm"
