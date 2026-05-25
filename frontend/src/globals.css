@@ -25,6 +25,15 @@
 @theme inline {
     --font-heading: var(--font-sans);
     --font-sans: 'Inter Variable', sans-serif;
+    /* Rubix-style brand surface vars — additive, consumed by the
+     * brand mark, scroll-progress bar, and any leaf/aqua/sun tints
+     * the chrome wants. Light/dark values are set in :root / .dark. */
+    --color-brand-leaf: var(--brand-leaf);
+    --color-brand-leaf-2: var(--brand-leaf-2);
+    --color-brand-aqua: var(--brand-aqua);
+    --color-brand-sun: var(--brand-sun);
+    --color-surface-2: var(--surface-2);
+    --color-subtle: var(--subtle);
     --color-sidebar-ring: var(--sidebar-ring);
     --color-sidebar-border: var(--sidebar-border);
     --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -71,93 +80,114 @@
     --radius-4xl: calc(var(--radius) * 2.6);
 }
 
+/* ---------------------------------------------------------------------------
+ * Nube iO palette — teal-500 (#459AA4) brand + neutral greys + yellow callout.
+ * Lifted from the rubix design system (design-system.md §5). Slots map onto
+ * shadcn's standard token names so all existing components inherit the look
+ * with zero refactor. Light values live on :root; dark on .dark (next-themes).
+ * ------------------------------------------------------------------------- */
 :root {
-    --background: oklch(1 0 0);
-    --foreground: oklch(0.148 0.004 228.8);
-    --card: oklch(1 0 0);
-    --card-foreground: oklch(0.148 0.004 228.8);
-    --popover: oklch(1 0 0);
-    --popover-foreground: oklch(0.148 0.004 228.8);
-    --primary: oklch(0.218 0.008 223.9);
-    --primary-foreground: oklch(0.987 0.002 197.1);
-    --secondary: oklch(0.963 0.002 197.1);
-    --secondary-foreground: oklch(0.218 0.008 223.9);
-    --muted: oklch(0.963 0.002 197.1);
-    --muted-foreground: oklch(0.56 0.021 213.5);
-    --accent: oklch(0.963 0.002 197.1);
-    --accent-foreground: oklch(0.218 0.008 223.9);
-    --destructive: oklch(0.577 0.245 27.325);
-    --border: oklch(0.925 0.005 214.3);
-    --input: oklch(0.925 0.005 214.3);
-    --ring: oklch(0.723 0.014 214.4);
-    --chart-1: oklch(0.872 0.007 219.6);
-    --chart-2: oklch(0.56 0.021 213.5);
-    --chart-3: oklch(0.45 0.017 213.2);
-    --chart-4: oklch(0.378 0.015 216);
-    --chart-5: oklch(0.275 0.011 216.9);
+    /* shadcn slots */
+    --background: hsl(0 0% 98%);
+    --foreground: hsl(0 0% 15%);
+    --card: hsl(0 0% 100%);
+    --card-foreground: hsl(0 0% 15%);
+    --popover: hsl(0 0% 100%);
+    --popover-foreground: hsl(0 0% 15%);
+    --primary: hsl(187 41% 45%);              /* teal-500 — brand */
+    --primary-foreground: hsl(0 0% 100%);
+    --secondary: hsl(0 0% 96%);
+    --secondary-foreground: hsl(0 0% 15%);
+    --muted: hsl(0 0% 96%);
+    --muted-foreground: hsl(0 0% 45%);
+    --accent: hsl(188 25% 96%);               /* teal-50 */
+    --accent-foreground: hsl(187 43% 31%);    /* teal-700 */
+    --destructive: hsl(0 84% 60%);
+    --border: hsl(0 0% 90%);
+    --input: hsl(0 0% 90%);
+    --ring: hsl(187 41% 45%);
+    /* Chart arc — teal ladder with a yellow callout. */
+    --chart-1: hsl(187 41% 45%);              /* teal-500 */
+    --chart-2: hsl(188 31% 63%);              /* teal-300 */
+    --chart-3: hsl(187 43% 31%);              /* teal-700 */
+    --chart-4: hsl(40 96% 62%);               /* yellow-400 */
+    --chart-5: hsl(0 0% 45%);                 /* grey-500 */
     --radius: 0.625rem;
     /* Sidebar block: SiteHeader uses `h-(--header-height)`. */
     --header-height: 3.5rem;
-    --sidebar: oklch(0.987 0.002 197.1);
-    --sidebar-foreground: oklch(0.148 0.004 228.8);
-    --sidebar-primary: oklch(0.218 0.008 223.9);
-    --sidebar-primary-foreground: oklch(0.987 0.002 197.1);
-    --sidebar-accent: oklch(0.963 0.002 197.1);
-    --sidebar-accent-foreground: oklch(0.218 0.008 223.9);
-    --sidebar-border: oklch(0.925 0.005 214.3);
-    --sidebar-ring: oklch(0.723 0.014 214.4);
-    /* dev-pulse section accents — additive, never override the
-     * codeless-ui base tokens above. Used for sidebar section icons,
-     * KPI deltas, and the activity area chart. Hues picked to be
-     * distinguishable in both themes while staying calm. */
-    --accent-reports: oklch(0.62 0.18 250);   /* indigo */
-    --accent-directory: oklch(0.66 0.16 165);  /* teal */
-    --accent-admin: oklch(0.62 0.2 25);        /* warm red */
-    --accent-success: oklch(0.62 0.16 150);    /* green */
-    --accent-warning: oklch(0.72 0.17 70);     /* amber */
-    --accent-info: oklch(0.62 0.18 250);       /* indigo (chart) */
+    --sidebar: hsl(0 0% 100%);
+    --sidebar-foreground: hsl(0 0% 15%);
+    --sidebar-primary: hsl(187 41% 45%);
+    --sidebar-primary-foreground: hsl(0 0% 100%);
+    --sidebar-accent: hsl(188 25% 96%);
+    --sidebar-accent-foreground: hsl(187 43% 31%);
+    --sidebar-border: hsl(0 0% 90%);
+    --sidebar-ring: hsl(187 41% 45%);
+    /* Rubix-style brand vars consumed by the new chrome (brand mark,
+     * scroll-progress bar, header gradient, tenant pill). Light values. */
+    --brand-leaf: hsl(187 41% 45%);           /* teal-500 */
+    --brand-leaf-2: hsl(187 44% 38%);         /* teal-600 */
+    --brand-aqua: hsl(188 32% 53%);           /* teal-400 */
+    --brand-sun: hsl(40 96% 62%);             /* yellow-400 */
+    --surface-2: hsl(0 0% 96%);               /* grey-100 */
+    --subtle: hsl(0 0% 64%);                  /* grey-400 */
+    /* dev-pulse section accents — additive. Used for sidebar section
+     * icons, KPI deltas, and the activity area chart. Retuned to a
+     * teal-friendly arc so they sit next to the brand without clash. */
+    --accent-reports: hsl(187 41% 45%);       /* teal — brand */
+    --accent-directory: hsl(199 89% 48%);     /* sky */
+    --accent-admin: hsl(0 84% 60%);           /* red */
+    --accent-success: hsl(142 71% 45%);       /* green */
+    --accent-warning: hsl(40 96% 62%);        /* yellow */
+    --accent-info: hsl(187 41% 45%);          /* teal */
 }
 
 .dark {
-    --background: oklch(0.148 0.004 228.8);
-    --foreground: oklch(0.987 0.002 197.1);
-    --card: oklch(0.218 0.008 223.9);
-    --card-foreground: oklch(0.987 0.002 197.1);
-    --popover: oklch(0.218 0.008 223.9);
-    --popover-foreground: oklch(0.987 0.002 197.1);
-    --primary: oklch(0.925 0.005 214.3);
-    --primary-foreground: oklch(0.218 0.008 223.9);
-    --secondary: oklch(0.275 0.011 216.9);
-    --secondary-foreground: oklch(0.987 0.002 197.1);
-    --muted: oklch(0.275 0.011 216.9);
-    --muted-foreground: oklch(0.723 0.014 214.4);
-    --accent: oklch(0.275 0.011 216.9);
-    --accent-foreground: oklch(0.987 0.002 197.1);
-    --destructive: oklch(0.704 0.191 22.216);
-    --border: oklch(1 0 0 / 10%);
-    --input: oklch(1 0 0 / 15%);
-    --ring: oklch(0.56 0.021 213.5);
-    --chart-1: oklch(0.872 0.007 219.6);
-    --chart-2: oklch(0.56 0.021 213.5);
-    --chart-3: oklch(0.45 0.017 213.2);
-    --chart-4: oklch(0.378 0.015 216);
-    --chart-5: oklch(0.275 0.011 216.9);
-    --sidebar: oklch(0.218 0.008 223.9);
-    --sidebar-foreground: oklch(0.987 0.002 197.1);
-    --sidebar-primary: oklch(0.488 0.243 264.376);
-    --sidebar-primary-foreground: oklch(0.987 0.002 197.1);
-    --sidebar-accent: oklch(0.275 0.011 216.9);
-    --sidebar-accent-foreground: oklch(0.987 0.002 197.1);
-    --sidebar-border: oklch(1 0 0 / 10%);
-    --sidebar-ring: oklch(0.56 0.021 213.5);
+    --background: hsl(0 0% 4%);               /* grey-950 */
+    --foreground: hsl(0 0% 96%);
+    --card: hsl(0 0% 9%);                     /* grey-900 */
+    --card-foreground: hsl(0 0% 96%);
+    --popover: hsl(0 0% 9%);
+    --popover-foreground: hsl(0 0% 96%);
+    --primary: hsl(188 32% 53%);              /* teal-400 — lifted */
+    --primary-foreground: hsl(0 0% 4%);
+    --secondary: hsl(0 0% 15%);               /* grey-800 */
+    --secondary-foreground: hsl(0 0% 96%);
+    --muted: hsl(0 0% 15%);
+    --muted-foreground: hsl(0 0% 64%);
+    --accent: hsl(188 43% 14%);               /* teal-950 */
+    --accent-foreground: hsl(188 31% 63%);    /* teal-300 */
+    --destructive: hsl(0 84% 60%);
+    --border: hsl(0 0% 15%);
+    --input: hsl(0 0% 15%);
+    --ring: hsl(188 32% 53%);
+    --chart-1: hsl(188 32% 53%);              /* teal-400 */
+    --chart-2: hsl(188 31% 63%);              /* teal-300 */
+    --chart-3: hsl(188 30% 77%);              /* teal-200 */
+    --chart-4: hsl(40 96% 62%);               /* yellow-400 */
+    --chart-5: hsl(0 0% 64%);                 /* grey-400 */
+    --sidebar: hsl(0 0% 9%);
+    --sidebar-foreground: hsl(0 0% 96%);
+    --sidebar-primary: hsl(188 32% 53%);
+    --sidebar-primary-foreground: hsl(0 0% 4%);
+    --sidebar-accent: hsl(0 0% 15%);
+    --sidebar-accent-foreground: hsl(0 0% 96%);
+    --sidebar-border: hsl(0 0% 15%);
+    --sidebar-ring: hsl(188 32% 53%);
+    --brand-leaf: hsl(188 32% 53%);           /* teal-400 */
+    --brand-leaf-2: hsl(188 31% 63%);         /* teal-300 */
+    --brand-aqua: hsl(188 31% 63%);
+    --brand-sun: hsl(40 96% 62%);
+    --surface-2: hsl(0 0% 15%);
+    --subtle: hsl(0 0% 45%);
     /* dev-pulse section accents — dark variants, brighter chroma
      * to stay legible against the dark sidebar/card backgrounds. */
-    --accent-reports: oklch(0.72 0.17 250);
-    --accent-directory: oklch(0.74 0.15 165);
-    --accent-admin: oklch(0.72 0.18 25);
-    --accent-success: oklch(0.72 0.16 150);
-    --accent-warning: oklch(0.8 0.17 70);
-    --accent-info: oklch(0.72 0.17 250);
+    --accent-reports: hsl(188 32% 53%);
+    --accent-directory: hsl(199 89% 60%);
+    --accent-admin: hsl(0 84% 65%);
+    --accent-success: hsl(142 71% 55%);
+    --accent-warning: hsl(40 96% 62%);
+    --accent-info: hsl(188 32% 53%);
 }
 
 @layer base {
@@ -170,6 +200,22 @@
   html, body, #root {
     height: 100%;
   }
+}
+
+/* Collapsible animation — used by `NavMain`'s SidebarGroup sub-menus.
+ * Mirrors the rubix .CollapsibleContent rules so chevron sections feel
+ * springy rather than snapping open. Radix exposes the measured height
+ * via `--radix-collapsible-content-height`. */
+.CollapsibleContent { overflow: hidden; }
+.CollapsibleContent[data-state='open']  { animation: dp-slideDown 250ms ease-out; }
+.CollapsibleContent[data-state='closed'] { animation: dp-slideUp 200ms ease-out; }
+@keyframes dp-slideDown {
+  from { height: 0; }
+  to   { height: var(--radix-collapsible-content-height); }
+}
+@keyframes dp-slideUp {
+  from { height: var(--radix-collapsible-content-height); }
+  to   { height: 0; }
 }
 
 /* Smaller-screen tweaks for content surfaces inside the app shell.

@@ -19,6 +19,7 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
+  SidebarRail,
 } from "@/components/ui/sidebar"
 
 export interface AppSidebarProps extends React.ComponentProps<typeof Sidebar> {
@@ -26,7 +27,7 @@ export interface AppSidebarProps extends React.ComponentProps<typeof Sidebar> {
   activeUrl?: string
   user: NavUserProps["user"]
   onLogout?: () => void
-  brand?: { title: string; url: string }
+  brand?: { title: string; url: string; tagline?: string }
   /** Extra content rendered below the main nav (e.g. the
    *  SCOPE-PROJECTS §6 pin sidebar widget). */
   extraContent?: React.ReactNode
@@ -37,22 +38,38 @@ export function AppSidebar({
   activeUrl,
   user,
   onLogout,
-  brand = { title: "dev-pulse", url: "#/reports" },
+  brand = { title: "dev-pulse", url: "#/reports", tagline: "operator UI" },
   extraContent,
   ...props
 }: AppSidebarProps) {
   return (
-    <Sidebar collapsible="offcanvas" {...props}>
+    <Sidebar collapsible="icon" variant="floating" {...props}>
       <SidebarHeader>
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton
               asChild
-              className="data-[slot=sidebar-menu-button]:p-1.5!"
+              className="data-[slot=sidebar-menu-button]:p-1.5! h-auto"
             >
-              <a href={brand.url}>
-                <IconActivity className="size-5!" style={{ color: "var(--accent-reports)" }} />
-                <span className="text-base font-semibold">{brand.title}</span>
+              <a href={brand.url} className="flex items-center gap-2.5">
+                {/* Leaf-colored tile with sparkle, matching the rubix brand
+                 * mark. Uses --brand-leaf so it tracks the active palette. */}
+                <span
+                  aria-hidden
+                  className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-[var(--brand-leaf)] text-[var(--primary-foreground)] shadow-sm"
+                >
+                  <IconActivity className="size-4" strokeWidth={2.25} />
+                </span>
+                <span className="flex flex-col leading-tight">
+                  <span className="text-sm font-semibold tracking-tight">
+                    {brand.title}
+                  </span>
+                  {brand.tagline ? (
+                    <span className="text-[10px] uppercase tracking-[0.18em] text-[var(--subtle)]">
+                      {brand.tagline}
+                    </span>
+                  ) : null}
+                </span>
               </a>
             </SidebarMenuButton>
           </SidebarMenuItem>
@@ -65,6 +82,7 @@ export function AppSidebar({
       <SidebarFooter>
         <NavUser user={user} onLogout={onLogout} />
       </SidebarFooter>
+      <SidebarRail />
     </Sidebar>
   )
 }

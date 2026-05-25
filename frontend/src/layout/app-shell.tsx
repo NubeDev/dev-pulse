@@ -11,6 +11,7 @@
  */
 
 import { useMemo, type ReactNode } from "react"
+import { AnimatePresence, motion, useScroll, useSpring } from "motion/react"
 import {
   IconBuilding,
   IconBuildingSkyscraper,
@@ -63,6 +64,86 @@ import { useMyQueue } from "../workflow/use-workflow-data.js"
 import { useProjectCount } from "../projects/use-projects-data.js"
 import { Badge } from "@/components/ui/badge"
 const NAV_MAIN: NavMainItem[] = [
+  {
+    // `linear-projects-v2.md` §6.1 — top-level Projects section
+    // between Workflow and Directory. The four sub-items mirror the
+    // §6.1 mock: Active / Backlog / Done / Archived. Counts on the
+    // first three are wired live from `useProjectCount` (which fires
+    // `GET /projects?status=…&count_only=1`); Archived is collapsed
+    // and intentionally uncounted to keep the eye off it.
+    title: "Projects",
+    url: "#/projects",
+    icon: IconLayoutKanban,
+    accent: "var(--accent-reports)",
+    subTestId: "projects-subnav",
+    items: [
+      {
+        title: "Portfolio",
+        url: "#/reports/projects",
+        icon: IconChartBar,
+        description:
+          "Cross-org portfolio report: which projects are on track, slipping, or done. Table + Gantt.",
+      },
+      {
+        title: "Active",
+        url: "#/reports/projects?status=active",
+        icon: IconCircleDashed,
+        description:
+          "Portfolio filtered to projects currently being worked on.",
+      },
+      {
+        title: "Backlog",
+        url: "#/reports/projects?status=backlog",
+        icon: IconClipboardList,
+        description:
+          "Portfolio filtered to planned projects not yet started.",
+      },
+      {
+        title: "Done",
+        url: "#/reports/projects?status=done",
+        icon: IconCircleCheck,
+        description:
+          "Portfolio filtered to completed projects.",
+      },
+      {
+        title: "Archived",
+        url: "#/reports/projects?status=archived",
+        icon: IconArchive,
+        description:
+          "Portfolio filtered to archived projects (hidden by default; data preserved).",
+      },
+    ],
+  },
+  {
+    title: "Workflow",
+    url: "#/workflow",
+    icon: IconBriefcase,
+    accent: "var(--accent-reports)",
+    subTestId: "workflow-subnav",
+    items: [
+      {
+        title: "Triage",
+        url: "#/workflow/triage",
+        icon: IconInbox,
+        description:
+          "Your inbox of issues / PRs needing your attention: review requests, mentions, assigned work.",
+      },
+      {
+        title: "Repos",
+        url: "#/workflow/repos",
+        icon: IconBuilding,
+        description:
+          "Pick which repos dev-pulse tracks. Toggle visibility and refresh schedule per repo.",
+      },
+      {
+        title: "Issues",
+        url: "#/workflow/issues",
+        icon: IconBriefcase,
+        description:
+          "Cross-repo issue search. Filter by state, labels, assignee, and date — independent of projects.",
+      },
+    ],
+  },
   {
     title: "Reports",
     url: "#/reports",
@@ -118,86 +199,6 @@ const NAV_MAIN: NavMainItem[] = [
         icon: IconClockHour4,
         description:
           "When was each repo / user / org last refreshed from GitHub? Find stale data before reporting on it.",
-      },
-    ],
-  },
-  {
-    title: "Workflow",
-    url: "#/workflow",
-    icon: IconBriefcase,
-    accent: "var(--accent-reports)",
-    subTestId: "workflow-subnav",
-    items: [
-      {
-        title: "Triage",
-        url: "#/workflow/triage",
-        icon: IconInbox,
-        description:
-          "Your inbox of issues / PRs needing your attention: review requests, mentions, assigned work.",
-      },
-      {
-        title: "Repos",
-        url: "#/workflow/repos",
-        icon: IconBuilding,
-        description:
-          "Pick which repos dev-pulse tracks. Toggle visibility and refresh schedule per repo.",
-      },
-      {
-        title: "Issues",
-        url: "#/workflow/issues",
-        icon: IconBriefcase,
-        description:
-          "Cross-repo issue search. Filter by state, labels, assignee, and date — independent of projects.",
-      },
-    ],
-  },
-  {
-    // `linear-projects-v2.md` §6.1 — top-level Projects section
-    // between Workflow and Directory. The four sub-items mirror the
-    // §6.1 mock: Active / Backlog / Done / Archived. Counts on the
-    // first three are wired live from `useProjectCount` (which fires
-    // `GET /projects?status=…&count_only=1`); Archived is collapsed
-    // and intentionally uncounted to keep the eye off it.
-    title: "Projects",
-    url: "#/projects",
-    icon: IconLayoutKanban,
-    accent: "var(--accent-reports)",
-    subTestId: "projects-subnav",
-    items: [
-      {
-        title: "Portfolio",
-        url: "#/reports/projects",
-        icon: IconChartBar,
-        description:
-          "Cross-org portfolio report: which projects are on track, slipping, or done. Table + Gantt.",
-      },
-      {
-        title: "Active",
-        url: "#/reports/projects?status=active",
-        icon: IconCircleDashed,
-        description:
-          "Portfolio filtered to projects currently being worked on.",
-      },
-      {
-        title: "Backlog",
-        url: "#/reports/projects?status=backlog",
-        icon: IconClipboardList,
-        description:
-          "Portfolio filtered to planned projects not yet started.",
-      },
-      {
-        title: "Done",
-        url: "#/reports/projects?status=done",
-        icon: IconCircleCheck,
-        description:
-          "Portfolio filtered to completed projects.",
-      },
-      {
-        title: "Archived",
-        url: "#/reports/projects?status=archived",
-        icon: IconArchive,
-        description:
-          "Portfolio filtered to archived projects (hidden by default; data preserved).",
       },
     ],
   },
@@ -531,6 +532,7 @@ export function AppShell({ children }: AppShellProps): JSX.Element {
 
   return (
     <div data-testid="app-shell" className="min-h-dvh bg-background text-foreground">
+      <ScrollProgress />
       <SidebarProvider>
         <AppSidebar
           navMain={navMain}
@@ -559,18 +561,54 @@ export function AppShell({ children }: AppShellProps): JSX.Element {
               </>
             }
           />
-          <div className="flex flex-1 flex-col">
-            <div className="@container/main flex flex-1 flex-col gap-2">
-              <div className="flex flex-col gap-4 py-4 md:gap-6 md:py-6">
-                <div className="px-4 lg:px-6">
-                  <WritesBanner />
+          <AnimatePresence mode="wait">
+            <motion.div
+              // Key on the *path* portion of the hash route so the fade
+              // only fires for real page navigation. Without this strip,
+              // query-string state — open issue drawer, active tab, status
+              // filter — would re-key on every click and replay the
+              // intro animation, which felt jittery on busy pages.
+              key={route.split("?")[0]}
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -4 }}
+              transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
+              className="flex flex-1 flex-col"
+            >
+              <div className="@container/main flex flex-1 flex-col gap-2">
+                <div className="flex flex-col gap-4 py-4 md:gap-6 md:py-6">
+                  <div className="px-4 lg:px-6">
+                    <WritesBanner />
+                  </div>
+                  {children}
                 </div>
-                {children}
               </div>
-            </div>
-          </div>
+            </motion.div>
+          </AnimatePresence>
         </SidebarInset>
       </SidebarProvider>
     </div>
+  )
+}
+
+/**
+ * Gradient scroll-progress bar pinned to the top of the viewport.
+ * Tracks `useScroll()` and springs the scaleX. Hue arc:
+ * leaf → aqua → sun so the brand reads at every scroll depth.
+ */
+function ScrollProgress() {
+  const { scrollYProgress } = useScroll()
+  const scaleX = useSpring(scrollYProgress, { stiffness: 100, damping: 30 })
+  return (
+    <motion.div
+      aria-hidden
+      style={{
+        scaleX,
+        transformOrigin: "0% 50%",
+        background:
+          "linear-gradient(90deg, var(--brand-leaf), var(--brand-aqua), var(--brand-sun))",
+      }}
+      className="pointer-events-none fixed inset-x-0 top-0 z-[60] h-[2px]"
+    />
   )
 }
