@@ -50,6 +50,16 @@ pub const ADMIN_REFRESH: &str = "admin.refresh";
 pub const USER_ANONYMISE: &str = "user.anonymise";
 /// `user.export` — `GET /admin/users/:id/export`.
 pub const USER_EXPORT: &str = "user.export";
+/// `user.role_set` — `PUT /admin/users/:id/role`. Target carries
+/// `user:<id>;from:<role>;to:<role>` so a single query can answer
+/// "every role change this user has gone through".
+/// (DOCS/SCOPE-AUTHZ-USERS.md §3.2).
+pub const USER_ROLE_SET: &str = "user.role_set";
+/// `user.identities_read` — `GET /admin/users/:id/identities`.
+/// Read auditing is deliberate here: the operator inspecting a
+/// user's identity set is a signal worth keeping in the trail
+/// before any destructive action.
+pub const USER_IDENTITIES_READ: &str = "user.identities_read";
 /// `runs.list` — `GET /admin/runs`.
 pub const RUNS_LIST: &str = "runs.list";
 /// `auth.signed_in` — successful OAuth callback.

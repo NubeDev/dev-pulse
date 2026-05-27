@@ -27,18 +27,18 @@ export const MOCK_ORGS: ReadonlyArray<OrgDto> = [
  *  is canonical. */
 export const MOCK_USERS_BY_ORG: ReadonlyMap<string, ReadonlyArray<UserDto>> = new Map([
   ["00000000-0000-0000-0000-0000000000a1", [
-    { id: "00000000-0000-0000-0000-0000000000u1", github_id: 1, login: "alice",   name: "Alice Example",   email: "alice@example.com" },
-    { id: "00000000-0000-0000-0000-0000000000u2", github_id: 2, login: "bob",     name: "Bob Example",     email: "bob@example.com" },
-    { id: "00000000-0000-0000-0000-0000000000u3", github_id: 3, login: "carol",   name: "Carol Example",   email: "carol@example.com" },
+    { id: "00000000-0000-0000-0000-0000000000u1", github_id: 1, login: "alice",   name: "Alice Example",   email: "alice@example.com", role: "reader" },
+    { id: "00000000-0000-0000-0000-0000000000u2", github_id: 2, login: "bob",     name: "Bob Example",     email: "bob@example.com", role: "reader" },
+    { id: "00000000-0000-0000-0000-0000000000u3", github_id: 3, login: "carol",   name: "Carol Example",   email: "carol@example.com", role: "reader" },
   ]],
   ["00000000-0000-0000-0000-0000000000a2", [
-    { id: "00000000-0000-0000-0000-0000000000u2", github_id: 2, login: "bob",     name: "Bob Example",     email: "bob@example.com" },
-    { id: "00000000-0000-0000-0000-0000000000u4", github_id: 4, login: "dave",    name: "Dave Example",    email: "dave@example.com" },
+    { id: "00000000-0000-0000-0000-0000000000u2", github_id: 2, login: "bob",     name: "Bob Example",     email: "bob@example.com", role: "reader" },
+    { id: "00000000-0000-0000-0000-0000000000u4", github_id: 4, login: "dave",    name: "Dave Example",    email: "dave@example.com", role: "reader" },
   ]],
   ["00000000-0000-0000-0000-0000000000a3", [
-    { id: "00000000-0000-0000-0000-0000000000u3", github_id: 3, login: "carol",   name: "Carol Example",   email: "carol@example.com" },
-    { id: "00000000-0000-0000-0000-0000000000u5", github_id: 5, login: "eve",     name: "Eve Example",     email: "eve@example.com" },
-    { id: "00000000-0000-0000-0000-0000000000u6", github_id: 6, login: "frank",   name: "Frank Example",   email: "frank@example.com" },
+    { id: "00000000-0000-0000-0000-0000000000u3", github_id: 3, login: "carol",   name: "Carol Example",   email: "carol@example.com", role: "reader" },
+    { id: "00000000-0000-0000-0000-0000000000u5", github_id: 5, login: "eve",     name: "Eve Example",     email: "eve@example.com", role: "reader" },
+    { id: "00000000-0000-0000-0000-0000000000u6", github_id: 6, login: "frank",   name: "Frank Example",   email: "frank@example.com", role: "reader" },
   ]],
 ]);
 

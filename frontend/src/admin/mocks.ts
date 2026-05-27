@@ -9,11 +9,13 @@
  */
 
 import type {
+  AdminUserIdentitiesResponse,
   FetchRunDto,
   OrgDto,
   RefreshResponse,
   UserDto,
   UserExport,
+  UserRole,
 } from "../api/client.js";
 
 export const USE_MOCK = import.meta.env.VITE_USE_MOCK_REPORTS === "1";
@@ -81,11 +83,45 @@ export const MOCK_ORGS: ReadonlyArray<OrgDto> = [
   { id: "00000000-0000-0000-0000-0000000000a3", github_id: 103, login: "initech", name: "Initech" },
 ];
 
-export const MOCK_USERS: ReadonlyArray<UserDto> = [
-  { id: "00000000-0000-0000-0000-0000000000u1", github_id: 1, login: "alice", name: "Alice Example", email: "alice@example.com" },
-  { id: "00000000-0000-0000-0000-0000000000u2", github_id: 2, login: "bob",   name: "Bob Example",   email: "bob@example.com" },
-  { id: "00000000-0000-0000-0000-0000000000u3", github_id: 3, login: "carol", name: "Carol Example", email: "carol@example.com" },
+// Module-level mutable so `mockSetUserRole` lands its writes in the
+// same fixture `MOCK_USERS` reads from. The role field landed in
+// DOCS/SCOPE-AUTHZ-USERS.md §4.
+export const MOCK_USERS: Array<UserDto> = [
+  { id: "00000000-0000-0000-0000-0000000000u1", github_id: 1, login: "alice", name: "Alice Example", email: "alice@example.com", role: "admin" },
+  { id: "00000000-0000-0000-0000-0000000000u2", github_id: 2, login: "bob",   name: "Bob Example",   email: "bob@example.com", role: "writer" },
+  { id: "00000000-0000-0000-0000-0000000000u3", github_id: 3, login: "carol", name: "Carol Example", email: "carol@example.com", role: "reader" },
 ];
+
+export function mockSetUserRole(userId: string, role: UserRole): UserDto {
+  const row = MOCK_USERS.find((u) => u.id === userId);
+  if (!row) throw new Error(`unknown mock user: ${userId}`);
+  row.role = role;
+  return { ...row };
+}
+
+export function mockListUserIdentities(
+  userId: string,
+): AdminUserIdentitiesResponse {
+  // One synthetic primary login per user — enough to exercise the
+  // chip column without growing a fixture that has to round-trip a
+  // GitHub-shaped sub.
+  const user = MOCK_USERS.find((u) => u.id === userId);
+  if (!user) return { identities: [], primary_id: null };
+  const id = `github:mock-${user.login}`;
+  return {
+    identities: [
+      {
+        id,
+        provider: "github",
+        email: user.email ?? null,
+        display_name: user.login,
+        linked_at: new Date(MOCK_NOW - 365 * 24 * 60 * MIN).toISOString(),
+        is_primary: true,
+      },
+    ],
+    primary_id: id,
+  };
+}
 
 export function mockRefresh(): RefreshResponse {
   return { ran: true, items: 17, errors: 0, partial: false };

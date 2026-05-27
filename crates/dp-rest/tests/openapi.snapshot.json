@@ -216,6 +216,96 @@
         }
       }
     },
+    "/admin/users/{id}/identities": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "`GET /admin/users/{id}/identities` — admin-side probe of the\nlinked OAuth identities for any user\n(DOCS/SCOPE-AUTHZ-USERS.md §3, §4.3). Same wire shape as\n`GET /me/identities` so the frontend can reuse the projection.",
+        "description": "Audit: writes [`crate::audit::USER_IDENTITIES_READ`] *before*\nthe store read, matching the pre-stream auditing rule the\nneighbouring `/admin/users/:id/export` handler uses — the\naccess attempt is what we audit, not whether the row existed.",
+        "operationId": "list_user_identities_admin",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "User to inspect",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Linked OAuth identities for the target user",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeIdentitiesResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Identity store not wired in this deployment"
+          }
+        }
+      }
+    },
+    "/admin/users/{id}/role": {
+      "put": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "`PUT /admin/users/{id}/role` — operator-controlled role change\n(DOCS/SCOPE-AUTHZ-USERS.md §3).",
+        "description": "Self-demotion guard: an admin cannot drop their own role; the\nfrontend disables the select on the actor's own row but the\nserver is the authority, returning\n`409 { \"error\": \"cannot_self_demote\" }`.\n\nAudit: writes [`audit::USER_ROLE_SET`] after the row update lands,\nwith target `user:<id>;from:<role>;to:<role>` so a single query\ncan answer \"every role change this user has gone through\".",
+        "operationId": "set_user_role",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "User whose role to change",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetUserRoleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Updated user row",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unknown role string"
+          },
+          "404": {
+            "description": "No such user"
+          },
+          "409": {
+            "description": "Cannot self-demote"
+          }
+        }
+      }
+    },
     "/home-org": {
       "post": {
         "tags": [
@@ -8198,6 +8288,19 @@
           }
         }
       },
+      "SetUserRoleRequest": {
+        "type": "object",
+        "description": "Body for `PUT /admin/users/{id}/role`.",
+        "required": [
+          "role"
+        ],
+        "properties": {
+          "role": {
+            "type": "string",
+            "description": "New role tier — `\"reader\"`, `\"writer\"`, or `\"admin\"`."
+          }
+        }
+      },
       "SettingDto": {
         "type": "object",
         "description": "One setting on the wire. `value` is `null` for unset keys\nand for `is_secret` keys that have been set — the UI reads\n`has_value` to render the \"set\" affordance.",
@@ -8667,7 +8770,8 @@
         "required": [
           "id",
           "github_id",
-          "login"
+          "login",
+          "role"
         ],
         "properties": {
           "email": {
@@ -8697,6 +8801,10 @@
               "null"
             ],
             "description": "Display name, if known."
+          },
+          "role": {
+            "type": "string",
+            "description": "Operator-controlled role tier\n(DOCS/SCOPE-AUTHZ-USERS.md §3). Lowercase wire form\n(`\"reader\"` / `\"writer\"` / `\"admin\"`)."
           }
         }
       },

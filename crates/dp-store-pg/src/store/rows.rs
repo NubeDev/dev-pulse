@@ -81,12 +81,22 @@ pub(super) fn project_view_from_row(
 }
 
 pub(super) fn row_to_user(r: &sqlx::postgres::PgRow) -> Result<User, StoreError> {
+    // The `role` column landed in migration 0047 (DOCS/SCOPE-AUTHZ-USERS.md
+    // §2). Older callers that SELECT without `role` get the Reader default
+    // via the column's NOT NULL DEFAULT, so missing-column reads would only
+    // surface here as a try_get failure — they should be fixed at the call
+    // site, not papered over with `unwrap_or`.
+    let role_str: String = r.try_get("role").map_err(map_sqlx)?;
+    let role = dp_domain::user::Role::from_str(&role_str).ok_or_else(|| {
+        StoreError::Invalid(format!("unknown user role: {role_str}"))
+    })?;
     Ok(User {
         id: r.try_get("id").map_err(map_sqlx)?,
         github_id: r.try_get("github_id").map_err(map_sqlx)?,
         login: r.try_get("login").map_err(map_sqlx)?,
         email: r.try_get("email").map_err(map_sqlx)?,
         name: r.try_get("name").map_err(map_sqlx)?,
+        role,
         deleted_at: r.try_get("deleted_at").map_err(map_sqlx)?,
     })
 }

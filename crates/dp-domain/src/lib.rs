@@ -93,6 +93,6 @@ pub use store::{
 pub use tag::{Tag, TagScopeKind, TAG_LINK_WARN_THRESHOLD};
 pub use tag_link::{TagLink, TagLinkKind};
 pub use team::Team;
-pub use user::User;
+pub use user::{Role, User};
 pub use webhook::WebhookDelivery;
 pub use window::{Window, WindowAnchor};

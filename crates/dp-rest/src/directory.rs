@@ -57,6 +57,10 @@ pub struct UserDto {
     pub name: Option<String>,
     /// Email, if known.
     pub email: Option<String>,
+    /// Operator-controlled role tier
+    /// (DOCS/SCOPE-AUTHZ-USERS.md §3). Lowercase wire form
+    /// (`"reader"` / `"writer"` / `"admin"`).
+    pub role: String,
 }
 
 impl From<User> for UserDto {
@@ -67,6 +71,7 @@ impl From<User> for UserDto {
             login: u.login,
             name: u.name,
             email: u.email,
+            role: u.role.as_str().to_string(),
         }
     }
 }
@@ -401,6 +406,7 @@ mod tests {
                 login: login.into(),
                 name: None,
                 email: None,
+                role: dp_domain::Role::default(),
                 deleted_at: None,
             });
         }

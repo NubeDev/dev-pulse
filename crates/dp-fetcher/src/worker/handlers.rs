@@ -284,6 +284,7 @@ async fn upsert_user_obj(store: &dyn Store, v: &Value) -> Result<Option<Uuid>, H
                 .and_then(Value::as_str)
                 .map(str::to_string),
             name: v.get("name").and_then(Value::as_str).map(str::to_string),
+            role: dp_domain::Role::default(),
             deleted_at: None,
         })
         .await?;
@@ -328,6 +329,7 @@ async fn upsert_user_by_login(
             login: login.to_string(),
             email: email.map(str::to_string),
             name: name.map(str::to_string),
+            role: dp_domain::Role::default(),
             deleted_at: None,
         })
         .await?;

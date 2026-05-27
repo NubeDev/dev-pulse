@@ -120,6 +120,63 @@ async fn bridge_principal(
     next.run(req).await
 }
 
+/// Map the dp-domain operator role onto the starter SPI role the
+/// policy engine consumes. The starter Admin tier matches the
+/// dp-pulse Admin; Writer and Reader both map to `Role::Reader` on
+/// the starter side because the upstream engine has no Writer
+/// notion of its own — the Writer-tier checks happen in dp-rest's
+/// own `(<resource>, write)` decorations rather than via the SPI
+/// role enum. The mapping is intentionally narrow; the source of
+/// truth is the dp-pulse `dp_users.role` column and the
+/// `with_permission(...)` decorations on each route.
+fn dp_role_to_spi_role(role: dp_domain::user::Role) -> starter_spi::auth::Role {
+    use starter_spi::auth::Role as SpiRole;
+    match role {
+        dp_domain::user::Role::Admin => SpiRole::Admin,
+        // Writer and Reader both fall under the starter Reader tier:
+        // the writer-vs-reader split is enforced via the per-resource
+        // `(.., write)` permission lanes inside dp-rest, not via the
+        // SPI Role enum.
+        _ => SpiRole::Reader,
+    }
+}
+
+/// State the principal-role middleware closes over so it can look
+/// up the persisted operator role per request. Held in an `Arc` so
+/// the layer is cheap to apply.
+#[derive(Clone)]
+struct PrincipalRoleState {
+    store: Arc<dyn Store>,
+}
+
+/// Middleware: overrides `Principal.role` from the `dp_users.role`
+/// column (DOCS/SCOPE-AUTHZ-USERS.md §3 / §6). Runs after
+/// `with_principal` has populated the SPI `Principal` so we can
+/// observe the actor's subject UUID, then rewrites the in-request
+/// extension with a new `Principal` whose role reflects the
+/// operator-controlled tier.
+///
+/// On any lookup failure (subject not a UUID, row missing, store
+/// error) the principal is left untouched — fail-open here is
+/// acceptable because the downstream `require_permission` layer is
+/// still the authority, and a stale Reader role is the safe default.
+async fn principal_role_override(
+    axum::extract::State(state): axum::extract::State<PrincipalRoleState>,
+    mut req: axum::http::Request<axum::body::Body>,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    if let Some(spi_principal) = req.extensions().get::<Principal>().cloned() {
+        if let Ok(uuid) = Uuid::parse_str(&spi_principal.subject) {
+            if let Ok(user) = state.store.get_user(uuid).await {
+                let mut new_principal = spi_principal;
+                new_principal.role = dp_role_to_spi_role(user.role);
+                req.extensions_mut().insert(new_principal);
+            }
+        }
+    }
+    next.run(req).await
+}
+
 /// Value-level dependency bundle handed into [`build`].
 ///
 /// Held by the bin layer between construction and `build()`. Every
@@ -440,6 +497,20 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
     // (i.e. attached to the inner router before wrapping), so by the
     // time bridge runs, the SPI Principal is already in extensions.
     let protected = protected.layer(axum::middleware::from_fn(bridge_principal));
+    // Override `Principal.role` from `dp_users.role` (SCOPE-AUTHZ-USERS
+    // §3). Attached *outside* `bridge_principal` so the SPI Principal
+    // it rewrites is the same one `bridge_principal` later reads; both
+    // run after `with_principal` has populated the SPI Principal. The
+    // override is a no-op on routes the user doesn't yet have a
+    // `dp_users` row for (fail-open — the downstream `require_permission`
+    // remains the authority).
+    let role_state = PrincipalRoleState {
+        store: store.clone(),
+    };
+    let protected = protected.layer(axum::middleware::from_fn_with_state(
+        role_state,
+        principal_role_override,
+    ));
     let protected = with_principal(protected, boxed_auth);
 
     // -----------------------------------------------------------------

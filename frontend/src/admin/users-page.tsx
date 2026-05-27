@@ -1,37 +1,29 @@
 /**
- * Admin · Users page — GDPR controls.
+ * Admin · Users — operator user management
+ * (DOCS/SCOPE-AUTHZ-USERS.md §4.3).
  *
- *   - Export:    `GET /admin/users/:id/export` is fetched as the raw
- *                response body, wrapped in a `Blob`, and pushed
- *                through an anchor click so the browser saves it as
- *                `user-<login-or-id>-export.json`. We deliberately
- *                bypass `api.exportUser` (which would parse + zod-
- *                validate the whole envelope into memory) — the
- *                server already streams chunked JSON, and the user
- *                wants the bytes, not a typed object.
+ * Replaces the earlier single-user GDPR shell with a per-row table:
  *
- *                While the download is in flight we surface a shadcn
- *                `Progress` indicator next to the button. The dp-rest
- *                endpoint doesn't ship a content-length header, so
- *                the progress is a two-step "working / done" visual
- *                cue (33% on click → 100% on settle) rather than a
- *                byte-accurate readout.
+ *   - Login / Email columns from `GET /users`.
+ *   - Role <Select> per row; on change, optimistic
+ *     `PUT /admin/users/:id/role` with rollback on error.
+ *     Disabled when the row is the current admin (self-protection;
+ *     server-side guard is the authority).
+ *   - Linked GitHub logins as chips per row, fetched via a
+ *     React-Query fan-out keyed on the rendered slice of user ids.
+ *     For ≤50 users this is one render-pass batch; per-row laziness
+ *     is a follow-up if/when this gets noisy.
+ *   - Export / Anonymise actions per row — the existing AlertDialog
+ *     retype-to-confirm flow is preserved verbatim.
  *
- *   - Anonymise: `POST /admin/users/:id/anonymise` is irreversible
- *                (the server cascades scrubs across membership,
- *                event, and audit rows), so the button opens a
- *                shadcn `AlertDialog` (destructive variant) that
- *                requires the user to retype the login as
- *                confirmation. Cancelling closes the dialog without
- *                firing the request.
- *
- * Both actions read the list of users from the same `GET /users`
- * query the directory section uses — no per-page user fanout, the
- * admin tool is single-org-agnostic.
+ * A role filter (`All / Reader / Writer / Admin`) and login search
+ * narrow the list client-side. The login search matches both
+ * `login` and `name`.
  */
 
 import { useMemo, useState } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useAuth } from "@nube/starter-ui-core/auth";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -43,6 +35,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -53,7 +46,6 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Progress } from "@/components/ui/progress";
 import {
   Select,
   SelectContent,
@@ -61,33 +53,113 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 
 import { api, StarterError } from "../api/client.js";
-import type { UserDto } from "../api/client.js";
+import type { UserDto, UserRole } from "../api/client.js";
 import { PageHeading } from "../components/page-heading.jsx";
-import { MOCK_USERS, USE_MOCK, mockUserExport } from "./mocks.js";
+import {
+  MOCK_USERS,
+  USE_MOCK,
+  mockListUserIdentities,
+  mockSetUserRole,
+  mockUserExport,
+} from "./mocks.js";
 
 interface Feedback {
   kind: "ok" | "err";
   message: string;
 }
 
+type RoleFilter = "all" | UserRole;
+
 export function AdminUsersPage(): JSX.Element {
-  const [userId, setUserId] = useState<string | null>(null);
-  const [confirmOpen, setConfirmOpen] = useState(false);
-  const [typedLogin, setTypedLogin] = useState("");
+  const auth = useAuth();
+  const selfId = auth.user?.subject ?? null;
+  const queryClient = useQueryClient();
+
+  const [search, setSearch] = useState("");
+  const [roleFilter, setRoleFilter] = useState<RoleFilter>("all");
   const [feedback, setFeedback] = useState<Feedback | null>(null);
+  const [confirmTarget, setConfirmTarget] = useState<UserDto | null>(null);
+  const [typedLogin, setTypedLogin] = useState("");
 
   const usersQuery = useQuery({
     queryKey: ["users"],
     queryFn: () => (USE_MOCK ? Promise.resolve([...MOCK_USERS]) : api.listUsers()),
   });
   const users = usersQuery.data ?? [];
-  const usersById = useMemo(
-    () => new Map(users.map((u) => [u.id, u])),
-    [users],
-  );
-  const selected = userId ? usersById.get(userId) ?? null : null;
+
+  // Identity fan-out per rendered user. Cached under
+  // `["admin-user-identities", id]` so a follow-up role mutation
+  // doesn't invalidate the (orthogonal) identities cache.
+  const identityQueries = useQueries({
+    queries: users.map((u) => ({
+      queryKey: ["admin-user-identities", u.id],
+      queryFn: () =>
+        USE_MOCK
+          ? Promise.resolve(mockListUserIdentities(u.id))
+          : api.listUserIdentities(u.id),
+      // Identities don't churn — a 5-minute stale window keeps the
+      // fan-out cheap on subsequent renders.
+      staleTime: 5 * 60 * 1000,
+    })),
+  });
+
+  // `useMutation` per row would be cleaner but blows the rules-of-hooks
+  // budget; one mutation that takes `(user, role)` and updates the
+  // shared cache is the in-bounds shape.
+  const roleMut = useMutation({
+    mutationFn: async ({ user, role }: { user: UserDto; role: UserRole }) => {
+      if (USE_MOCK) {
+        await new Promise((r) => setTimeout(r, 30));
+        return mockSetUserRole(user.id, role);
+      }
+      return api.setUserRole(user.id, role);
+    },
+    onMutate: async ({ user, role }) => {
+      // Optimistic write into the `["users"]` cache so the Select
+      // reflects the change immediately; the rollback path restores
+      // the snapshot on error.
+      await queryClient.cancelQueries({ queryKey: ["users"] });
+      const prev = queryClient.getQueryData<UserDto[]>(["users"]);
+      if (prev) {
+        queryClient.setQueryData<UserDto[]>(
+          ["users"],
+          prev.map((u) => (u.id === user.id ? { ...u, role } : u)),
+        );
+      }
+      return { prev };
+    },
+    onError: (err, _vars, ctx) => {
+      if (ctx?.prev) queryClient.setQueryData(["users"], ctx.prev);
+      setFeedback({
+        kind: "err",
+        message: err instanceof Error ? err.message : String(err),
+      });
+    },
+    onSuccess: (updated) => {
+      // Server is the source of truth — fold the canonical row in.
+      const cur = queryClient.getQueryData<UserDto[]>(["users"]);
+      if (cur) {
+        queryClient.setQueryData<UserDto[]>(
+          ["users"],
+          cur.map((u) => (u.id === updated.id ? updated : u)),
+        );
+      }
+      setFeedback({
+        kind: "ok",
+        message: `${updated.login} is now ${updated.role}.`,
+      });
+    },
+  });
 
   const exportMut = useMutation({
     mutationFn: async (user: UserDto) => {
@@ -136,12 +208,11 @@ export function AdminUsersPage(): JSX.Element {
     onSuccess: (_data, user) => {
       setFeedback({
         kind: "ok",
-        message: `Anonymised ${user.login}. Subsequent reads of this user will return the redacted sentinel.`,
+        message: `Anonymised ${user.login}. Subsequent reads return the redacted sentinel.`,
       });
-      setConfirmOpen(false);
+      setConfirmTarget(null);
       setTypedLogin("");
-      // The user row still exists, just scrubbed — leave the
-      // selection in place so the operator can confirm via export.
+      void queryClient.invalidateQueries({ queryKey: ["users"] });
     },
     onError: (err) => {
       setFeedback({
@@ -151,179 +222,265 @@ export function AdminUsersPage(): JSX.Element {
     },
   });
 
-  const canConfirmAnonymise =
-    selected !== null &&
-    typedLogin.trim() === selected.login &&
-    !anonymiseMut.isPending;
+  const filtered = useMemo(() => {
+    const needle = search.trim().toLowerCase();
+    return users.filter((u) => {
+      if (roleFilter !== "all" && u.role !== roleFilter) return false;
+      if (!needle) return true;
+      return (
+        u.login.toLowerCase().includes(needle) ||
+        (u.name ?? "").toLowerCase().includes(needle) ||
+        (u.email ?? "").toLowerCase().includes(needle)
+      );
+    });
+  }, [users, search, roleFilter]);
 
-  // The export endpoint doesn't ship a content-length header, so the
-  // Progress bar is a two-step "working / done" affordance rather
-  // than a true byte-accurate readout. 33% while in flight, 100% on
-  // success, hidden again on the next interaction.
-  const exportProgress = exportMut.isPending
-    ? 33
-    : exportMut.isSuccess
-      ? 100
-      : null;
+  const canConfirmAnonymise =
+    confirmTarget !== null &&
+    typedLogin.trim() === confirmTarget.login &&
+    !anonymiseMut.isPending;
 
   return (
     <div className="flex flex-col gap-4 px-4 md:gap-6 lg:px-6">
       <PageHeading
-        title="User GDPR controls"
+        title="Users"
         description={
           <>
-            Export or anonymise a single user.{" "}
-            <code className="font-mono text-xs">POST /admin/users/:id/anonymise</code>{" "}
-            is irreversible — confirmation required.
+            Operator role management plus GDPR export / anonymise.{" "}
+            <code className="font-mono text-xs">PUT /admin/users/:id/role</code>
+            {" "}is gated on <code className="font-mono text-xs">users:admin</code>.
           </>
         }
       />
 
       <Card>
-      <CardHeader>
-        <CardTitle className="text-lg font-medium">Pick a user</CardTitle>
-        <CardDescription>
-          Export streams the user's full record as JSON; anonymise scrubs
-          identifying fields and cascades the redaction.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="grid gap-4">
-        <div className="grid max-w-lg gap-1.5">
-          <Label htmlFor="admin-user">User</Label>
-          <Select
-            value={userId ?? undefined}
-            onValueChange={(v) => {
-              setUserId(v);
-              setFeedback(null);
-            }}
-          >
-            <SelectTrigger id="admin-user" data-testid="admin-user-select">
-              <SelectValue
-                placeholder={usersQuery.isPending ? "Loading users…" : "Select a user"}
+        <CardHeader>
+          <CardTitle className="text-lg font-medium">Directory</CardTitle>
+          <CardDescription>
+            One row per dev-pulse user. Role changes apply immediately; the
+            server refuses self-demotion (you cannot drop your own admin tier).
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-4">
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="grid gap-1.5">
+              <Label htmlFor="admin-users-search">Search</Label>
+              <Input
+                id="admin-users-search"
+                data-testid="admin-users-search"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="login, name, or email"
+                className="w-64"
               />
-            </SelectTrigger>
-            <SelectContent>
-              {users.map((u) => (
-                <SelectItem key={u.id} value={u.id}>
-                  {u.login}{u.name ? ` — ${u.name}` : ""}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-
-        <div className="grid gap-2">
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              data-testid="admin-export"
-              disabled={selected === null || exportMut.isPending}
-              onClick={() => {
-                if (selected) {
-                  setFeedback(null);
-                  exportMut.mutate(selected);
-                }
-              }}
-            >
-              {exportMut.isPending ? "Preparing download…" : "Export user data"}
-            </Button>
-            <Button
-              data-testid="admin-anonymise"
-              variant="destructive"
-              disabled={selected === null}
-              onClick={() => {
-                if (selected) {
-                  setFeedback(null);
-                  setTypedLogin("");
-                  setConfirmOpen(true);
-                }
-              }}
-            >
-              Anonymise user…
-            </Button>
+            </div>
+            <div className="grid gap-1.5">
+              <Label htmlFor="admin-users-role-filter">Role</Label>
+              <Select
+                value={roleFilter}
+                onValueChange={(v) => setRoleFilter(v as RoleFilter)}
+              >
+                <SelectTrigger
+                  id="admin-users-role-filter"
+                  data-testid="admin-users-role-filter"
+                  className="w-40"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All</SelectItem>
+                  <SelectItem value="reader">Reader</SelectItem>
+                  <SelectItem value="writer">Writer</SelectItem>
+                  <SelectItem value="admin">Admin</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
           </div>
-          {exportProgress !== null ? (
-            <Progress
-              value={exportProgress}
-              data-testid="admin-export-progress"
-              className="h-2 max-w-[18rem]"
-            />
+
+          {feedback ? (
+            <Alert
+              variant={feedback.kind === "ok" ? "default" : "destructive"}
+              data-testid="admin-users-feedback"
+              data-kind={feedback.kind}
+              aria-live="polite"
+            >
+              <AlertTitle>
+                {feedback.kind === "ok" ? "Done" : "Action failed"}
+              </AlertTitle>
+              <AlertDescription>{feedback.message}</AlertDescription>
+            </Alert>
           ) : null}
-        </div>
 
-        {feedback ? (
-          <Alert
-            variant={feedback.kind === "ok" ? "default" : "destructive"}
-            data-testid="admin-users-feedback"
-            data-kind={feedback.kind}
-            aria-live="polite"
-          >
-            <AlertTitle>
-              {feedback.kind === "ok" ? "Done" : "Action failed"}
-            </AlertTitle>
-            <AlertDescription>{feedback.message}</AlertDescription>
-          </Alert>
-        ) : null}
-      </CardContent>
-
-      <AlertDialog
-        open={confirmOpen}
-        onOpenChange={(open) => {
-          if (!open && !anonymiseMut.isPending) {
-            setConfirmOpen(false);
-            setTypedLogin("");
-          }
-        }}
-      >
-        <AlertDialogContent data-testid="anonymise-confirm">
-          <AlertDialogHeader>
-            <AlertDialogTitle>Anonymise this user?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This is irreversible. <code>POST /admin/users/:id/anonymise</code>{" "}
-              scrubs the user's identifying fields and cascades the redaction
-              through every membership, event, and audit row referencing them.
-              {selected ? (
-                <>
-                  {" "}Type <strong>{selected.login}</strong> below to confirm.
-                </>
-              ) : null}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <div className="grid gap-1.5 py-1">
-            <Label htmlFor="anonymise-confirm-login">Confirm login</Label>
-            <Input
-              id="anonymise-confirm-login"
-              data-testid="anonymise-confirm-login"
-              value={typedLogin}
-              onChange={(e) => setTypedLogin(e.target.value)}
-              placeholder={selected?.login ?? ""}
-              autoComplete="off"
-            />
+          <div className="overflow-x-auto">
+            <Table data-testid="admin-users-table">
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Login</TableHead>
+                  <TableHead>Email</TableHead>
+                  <TableHead>Role</TableHead>
+                  <TableHead>Linked GitHub logins</TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {filtered.map((u) => {
+                  const idQ = identityQueries[users.indexOf(u)];
+                  const identities = idQ?.data?.identities ?? [];
+                  const isSelf = selfId !== null && u.id === selfId;
+                  return (
+                    <TableRow key={u.id} data-testid={`admin-users-row-${u.id}`}>
+                      <TableCell className="font-mono">{u.login}</TableCell>
+                      <TableCell className="text-muted-foreground">
+                        {u.email ?? "—"}
+                      </TableCell>
+                      <TableCell>
+                        <Select
+                          value={u.role}
+                          onValueChange={(v) =>
+                            roleMut.mutate({ user: u, role: v as UserRole })
+                          }
+                          disabled={isSelf || roleMut.isPending}
+                        >
+                          <SelectTrigger
+                            data-testid={`admin-users-role-${u.id}`}
+                            className="w-32"
+                          >
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="reader">Reader</SelectItem>
+                            <SelectItem value="writer">Writer</SelectItem>
+                            <SelectItem value="admin">Admin</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </TableCell>
+                      <TableCell>
+                        {idQ?.isPending ? (
+                          <span className="text-xs text-muted-foreground">
+                            …
+                          </span>
+                        ) : identities.length === 0 ? (
+                          <span className="text-xs text-muted-foreground">
+                            —
+                          </span>
+                        ) : (
+                          <div className="flex flex-wrap gap-1">
+                            {identities.map((i) => (
+                              <Badge
+                                key={i.id}
+                                variant={i.is_primary ? "default" : "secondary"}
+                                title={`${i.provider} · linked ${i.linked_at}`}
+                              >
+                                {i.display_name ?? i.id}
+                              </Badge>
+                            ))}
+                          </div>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <div className="inline-flex gap-1">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            data-testid={`admin-users-export-${u.id}`}
+                            disabled={exportMut.isPending}
+                            onClick={() => exportMut.mutate(u)}
+                          >
+                            Export
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="destructive"
+                            data-testid={`admin-users-anonymise-${u.id}`}
+                            onClick={() => {
+                              setFeedback(null);
+                              setTypedLogin("");
+                              setConfirmTarget(u);
+                            }}
+                          >
+                            Anonymise
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+                {filtered.length === 0 ? (
+                  <TableRow>
+                    <TableCell
+                      colSpan={5}
+                      className="text-center text-sm text-muted-foreground"
+                    >
+                      {usersQuery.isPending ? "Loading users…" : "No users match."}
+                    </TableCell>
+                  </TableRow>
+                ) : null}
+              </TableBody>
+            </Table>
           </div>
-          <AlertDialogFooter>
-            <AlertDialogCancel
-              data-testid="anonymise-cancel"
-              disabled={anonymiseMut.isPending}
-              onClick={() => {
-                setConfirmOpen(false);
-                setTypedLogin("");
-              }}
-            >
-              Cancel
-            </AlertDialogCancel>
-            <AlertDialogAction
-              data-testid="anonymise-confirm-submit"
-              variant="destructive"
-              disabled={!canConfirmAnonymise}
-              onClick={(e) => {
-                e.preventDefault();
-                if (selected && canConfirmAnonymise) anonymiseMut.mutate(selected);
-              }}
-            >
-              {anonymiseMut.isPending ? "Anonymising…" : "Anonymise"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+        </CardContent>
+
+        <AlertDialog
+          open={confirmTarget !== null}
+          onOpenChange={(open) => {
+            if (!open && !anonymiseMut.isPending) {
+              setConfirmTarget(null);
+              setTypedLogin("");
+            }
+          }}
+        >
+          <AlertDialogContent data-testid="anonymise-confirm">
+            <AlertDialogHeader>
+              <AlertDialogTitle>Anonymise this user?</AlertDialogTitle>
+              <AlertDialogDescription>
+                This is irreversible. <code>POST /admin/users/:id/anonymise</code>{" "}
+                scrubs identifying fields and cascades the redaction through every
+                membership, event, and audit row referencing them.
+                {confirmTarget ? (
+                  <>
+                    {" "}Type <strong>{confirmTarget.login}</strong> below to confirm.
+                  </>
+                ) : null}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <div className="grid gap-1.5 py-1">
+              <Label htmlFor="anonymise-confirm-login">Confirm login</Label>
+              <Input
+                id="anonymise-confirm-login"
+                data-testid="anonymise-confirm-login"
+                value={typedLogin}
+                onChange={(e) => setTypedLogin(e.target.value)}
+                placeholder={confirmTarget?.login ?? ""}
+                autoComplete="off"
+              />
+            </div>
+            <AlertDialogFooter>
+              <AlertDialogCancel
+                data-testid="anonymise-cancel"
+                disabled={anonymiseMut.isPending}
+                onClick={() => {
+                  setConfirmTarget(null);
+                  setTypedLogin("");
+                }}
+              >
+                Cancel
+              </AlertDialogCancel>
+              <AlertDialogAction
+                data-testid="anonymise-confirm-submit"
+                variant="destructive"
+                disabled={!canConfirmAnonymise}
+                onClick={(e) => {
+                  e.preventDefault();
+                  if (confirmTarget && canConfirmAnonymise) {
+                    anonymiseMut.mutate(confirmTarget);
+                  }
+                }}
+              >
+                {anonymiseMut.isPending ? "Anonymising…" : "Anonymise"}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </Card>
     </div>
   );
@@ -334,9 +491,6 @@ function downloadName(user: UserDto): string {
   return `dev-pulse-user-${safe}-export.json`;
 }
 
-/** Stash the bytes in a Blob URL, click a hidden anchor, revoke the
- *  URL on the next tick.  Works in every modern browser without
- *  pulling in a third-party file-saver lib. */
 function triggerDownload(blob: Blob, filename: string): void {
   if (typeof document === "undefined" || typeof URL === "undefined") return;
   const url = URL.createObjectURL(blob);
@@ -348,6 +502,5 @@ function triggerDownload(blob: Blob, filename: string): void {
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
-  // Defer revoke so Safari has time to start the download.
   setTimeout(() => URL.revokeObjectURL(url), 1_000);
 }

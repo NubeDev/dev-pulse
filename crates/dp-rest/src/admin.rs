@@ -785,6 +785,85 @@ pub async fn import_repo(
 }
 
 // ---------------------------------------------------------------------------
+// PUT /admin/users/:id/role
+// ---------------------------------------------------------------------------
+
+/// Body for `PUT /admin/users/{id}/role`.
+#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
+pub struct SetUserRoleRequest {
+    /// New role tier — `"reader"`, `"writer"`, or `"admin"`.
+    pub role: String,
+}
+
+/// `PUT /admin/users/{id}/role` — operator-controlled role change
+/// (DOCS/SCOPE-AUTHZ-USERS.md §3).
+///
+/// Self-demotion guard: an admin cannot drop their own role; the
+/// frontend disables the select on the actor's own row but the
+/// server is the authority, returning
+/// `409 { "error": "cannot_self_demote" }`.
+///
+/// Audit: writes [`audit::USER_ROLE_SET`] after the row update lands,
+/// with target `user:<id>;from:<role>;to:<role>` so a single query
+/// can answer "every role change this user has gone through".
+#[utoipa::path(
+    put,
+    path = "/admin/users/{id}/role",
+    params(
+        ("id" = Uuid, Path, description = "User whose role to change")
+    ),
+    request_body = SetUserRoleRequest,
+    responses(
+        (status = 200, description = "Updated user row", body = UserDto),
+        (status = 400, description = "Unknown role string"),
+        (status = 404, description = "No such user"),
+        (status = 409, description = "Cannot self-demote"),
+    ),
+    tag = "admin",
+)]
+pub async fn set_user_role(
+    State(state): State<Arc<AdminState>>,
+    Extension(principal): Extension<Principal>,
+    Path(user_id): Path<Uuid>,
+    Json(req): Json<SetUserRoleRequest>,
+) -> Result<Json<UserDto>, ApiError> {
+    let new_role = dp_domain::Role::from_str(&req.role).ok_or_else(|| ApiError::BadRequest {
+        code: "invalid_role",
+        message: format!(
+            "role must be one of reader|writer|admin; got {:?}",
+            req.role
+        ),
+    })?;
+    let current = state.store.get_user(user_id).await?;
+    // Self-demotion guard (SCOPE §3.1). Server is the authority;
+    // the frontend disables the select on the actor's own row but
+    // the API still refuses if a stale client sends it.
+    if user_id == principal.actor_user_id
+        && current.role == dp_domain::Role::Admin
+        && new_role != dp_domain::Role::Admin
+    {
+        return Err(ApiError::Conflict {
+            code: "cannot_self_demote",
+            message: "an admin cannot demote themselves".into(),
+        });
+    }
+    let from_role = current.role;
+    let updated = state.store.set_user_role(user_id, new_role).await?;
+    audit::record(
+        state.store.as_ref(),
+        principal.actor_user_id,
+        audit::USER_ROLE_SET,
+        format!(
+            "user:{user_id};from:{};to:{}",
+            from_role.as_str(),
+            new_role.as_str()
+        ),
+    )
+    .await?;
+    Ok(Json(UserDto::from(updated)))
+}
+
+// ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
 
@@ -826,6 +905,17 @@ pub fn admin_router(state: Arc<AdminState>) -> Router {
             Router::new().route("/admin/users/{id}/export", get(export_user)),
             "admin",
             "export",
+        ))
+        .merge(with_permission(
+            // Operator-controlled role mutation
+            // (DOCS/SCOPE-AUTHZ-USERS.md §3). Gated on `(users, admin)`
+            // — a new action on the existing `users` resource.
+            Router::new().route(
+                "/admin/users/{id}/role",
+                axum::routing::put(set_user_role),
+            ),
+            "users",
+            "admin",
         ))
         .with_state(state)
 }
@@ -878,6 +968,7 @@ mod tests {
                 login: login.into(),
                 name: None,
                 email: None,
+                role: dp_domain::Role::Admin,
                 deleted_at: None,
             });
         }
@@ -1103,6 +1194,18 @@ mod tests {
         async fn record_audit_log(&self, entry: &AuditEntry) -> Result<(), StoreError> {
             self.audit.lock().unwrap().push(entry.clone());
             Ok(())
+        }
+        async fn set_user_role(
+            &self,
+            id: Uuid,
+            role: dp_domain::Role,
+        ) -> Result<User, StoreError> {
+            let mut users = self.users.lock().unwrap();
+            let row = users.iter_mut().find(|u| u.id == id).ok_or_else(|| {
+                StoreError::NotFound { entity: "user", id: id.to_string() }
+            })?;
+            row.role = role;
+            Ok(row.clone())
         }
     }
 
@@ -1490,6 +1593,7 @@ mod tests {
                         login: "ada".into(),
                         name: None,
                         email: None,
+                        role: dp_domain::Role::default(),
                         deleted_at: None,
                     })
                 } else {
@@ -1815,5 +1919,128 @@ mod tests {
         let carry = carry.unwrap();
         assert_eq!(carry.event_id, e2);
         assert_eq!(carry.roles, vec![ActorRole::Author]);
+    }
+
+    // -----------------------------------------------------------------
+    // PUT /admin/users/:id/role — DOCS/SCOPE-AUTHZ-USERS.md §5
+    // -----------------------------------------------------------------
+
+    /// Helper to fire a PUT /admin/users/:id/role.
+    async fn put_role(
+        router: &Router,
+        target: Uuid,
+        role: &str,
+    ) -> axum::response::Response {
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/admin/users/{target}/role"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!("{{\"role\":\"{role}\"}}")))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn admin_can_set_other_user_role_and_audit_lands() {
+        // Admin → PUT /admin/users/{other}/role → 200; the
+        // updated UserDto reflects the new role and an audit row
+        // is written. (SCOPE §5 case 3.)
+        let store = Arc::new(MemStore::default());
+        let actor = Uuid::new_v4();
+        store.seed_user(actor, "actor"); // seeded admin
+        let target = Uuid::new_v4();
+        store.users.lock().unwrap().push(User {
+            id: target,
+            github_id: 2,
+            login: "target".into(),
+            name: None,
+            email: None,
+            role: dp_domain::Role::Reader,
+            deleted_at: None,
+        });
+        let app = build_app(
+            store.clone(),
+            Principal { actor_user_id: actor },
+        );
+
+        let resp = put_role(&app, target, "writer").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), 4096).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["role"], "writer");
+
+        // The store row reflects the change.
+        let updated = store
+            .users
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|u| u.id == target)
+            .cloned()
+            .unwrap();
+        assert_eq!(updated.role, dp_domain::Role::Writer);
+
+        // Audit row landed with the SCOPE §3.2 target shape.
+        let rows = store.audit_rows();
+        let row = rows
+            .iter()
+            .find(|r| r.action == audit::USER_ROLE_SET)
+            .expect("audit row present");
+        assert_eq!(row.actor_user_id, actor);
+        assert!(row.target.contains(&target.to_string()));
+        assert!(row.target.contains("from:reader"));
+        assert!(row.target.contains("to:writer"));
+    }
+
+    #[tokio::test]
+    async fn admin_self_demote_returns_409_cannot_self_demote() {
+        // SCOPE §3.1: an admin cannot demote themselves; the
+        // server is the authority. (SCOPE §5 case 2.)
+        let store = Arc::new(MemStore::default());
+        let actor = Uuid::new_v4();
+        store.seed_user(actor, "actor"); // seeded admin
+        let app = build_app(
+            store.clone(),
+            Principal { actor_user_id: actor },
+        );
+
+        let resp = put_role(&app, actor, "reader").await;
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        let body = to_bytes(resp.into_body(), 4096).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        // ApiError::Conflict serialises as `{error: <msg>, code: <code>}`.
+        assert_eq!(v["code"], "cannot_self_demote");
+
+        // Row stayed at Admin — the guard runs before the update.
+        let row = store
+            .users
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|u| u.id == actor)
+            .cloned()
+            .unwrap();
+        assert_eq!(row.role, dp_domain::Role::Admin);
+    }
+
+    #[tokio::test]
+    async fn admin_self_to_admin_is_a_noop_not_a_conflict() {
+        // Setting your own role to admin while already admin is
+        // not self-demotion — keep the path open so a re-stamp
+        // doesn't 409.
+        let store = Arc::new(MemStore::default());
+        let actor = Uuid::new_v4();
+        store.seed_user(actor, "actor"); // seeded admin
+        let app = build_app(
+            store.clone(),
+            Principal { actor_user_id: actor },
+        );
+        let resp = put_role(&app, actor, "admin").await;
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 }

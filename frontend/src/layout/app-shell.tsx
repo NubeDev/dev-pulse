@@ -116,6 +116,7 @@ const NAV_MAIN: NavMainItem[] = [
   },
   {
     title: "Workflow",
+    minRole: "writer",
     url: "#/workflow",
     icon: IconBriefcase,
     accent: "var(--accent-reports)",
@@ -241,6 +242,7 @@ const NAV_MAIN: NavMainItem[] = [
   },
   {
     title: "Admin",
+    minRole: "admin",
     url: "#/admin",
     icon: IconShieldLock,
     accent: "var(--accent-admin)",
@@ -459,9 +461,28 @@ export function AppShell({ children }: AppShellProps): JSX.Element {
   const backlogProjects = useProjectCount("backlog")
   const doneProjects = useProjectCount("done")
 
+  // Role tier comparison: section is visible iff
+  // `auth.user.role >= item.minRole`. Unauthenticated users see the
+  // reader-tier sections only (the unauthed shell never actually
+  // renders nav past the login flow, but the guard is cheap).
+  // DOCS/SCOPE-AUTHZ-USERS.md §4.1.
+  const userRole = (auth.user?.role ?? "reader") as
+    | "reader"
+    | "writer"
+    | "admin"
+  const ROLE_RANK: Record<"reader" | "writer" | "admin", number> = {
+    reader: 0,
+    writer: 1,
+    admin: 2,
+  }
+  const roleAtLeast = (
+    have: "reader" | "writer" | "admin",
+    need?: "reader" | "writer" | "admin",
+  ): boolean => ROLE_RANK[have] >= ROLE_RANK[need ?? "reader"]
+
   const navMain = useMemo<NavMainItem[]>(
     () =>
-      NAV_MAIN.map((item) => {
+      NAV_MAIN.filter((item) => roleAtLeast(userRole, item.minRole)).map((item) => {
         if (item.title === "Workflow") {
           return {
             ...item,
@@ -527,6 +548,7 @@ export function AppShell({ children }: AppShellProps): JSX.Element {
       activeProjects.count,
       backlogProjects.count,
       doneProjects.count,
+      userRole,
     ],
   )
 

@@ -194,6 +194,7 @@ async fn seed_user(s: &PgStore, github_id: i64, login: &str) -> User {
         login: login.into(),
         email: Some(format!("{login}@example.com")),
         name: Some(login.to_string()),
+        role: dp_domain::Role::default(),
         deleted_at: None,
     })
     .await
@@ -223,6 +224,7 @@ async fn upsert_user_and_lookups() {
             login: "alice2".into(),
             email: Some("alice2@example.com".into()),
             name: Some("Alice".into()),
+            role: dp_domain::Role::default(),
             deleted_at: None,
         })
         .await

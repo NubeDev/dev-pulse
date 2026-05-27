@@ -68,10 +68,14 @@ pub fn register_dev_pulse_resources(registry: &StaticRegistry) {
     ));
     registry.register_spec(ResourceSpec::from_static(
         "users",
-        &["read"],
+        // `admin` powers PUT /admin/users/{id}/role and the per-user
+        // identities probe (DOCS/SCOPE-AUTHZ-USERS.md §3). The built-in
+        // `Admin` role's blanket allow (`default_policy = true`) covers
+        // it; Reader / Writer do not.
+        &["read", "admin"],
         Ownership::None,
         "Users",
-        "User directory listing.",
+        "User directory listing and operator-only role / identities surface.",
     ));
     registry.register_spec(ResourceSpec::from_static(
         "orgs",
@@ -272,6 +276,8 @@ mod tests {
             subject: "u1".into(),
             role: Role::Reader,
             scopes: Vec::new(),
+            tenant_id: None,
+            teams: Vec::new(),
             extra: json!({
                 "oauth": {
                     "github_orgs": if in_allowed { vec!["NubeIO"] } else { vec![] },
@@ -341,6 +347,38 @@ mod tests {
                 "repos.{action} must be registered + allowed in-org; got {d:?}"
             );
         }
+    }
+
+    // NOTE on `reader_is_denied_users_admin`: the dev-pulse policy
+    // file ships an `org-gate-allow-in-org-everything` rule that
+    // grants any in-org principal `(resource=*, actions=*)`. As long
+    // as that rule stays, Reader / Writer also clear `(users, admin)`
+    // — the role-tier restriction the §3 SCOPE intends only kicks in
+    // once the operator narrows that wide allow. The principal-role
+    // override middleware (`dp_server::principal_role_override`) is
+    // still wired so a deployment whose policy *does* narrow the
+    // allow-all rule will see the dp_users.role drive the decision.
+
+    #[tokio::test]
+    async fn admin_is_allowed_users_admin() {
+        // The built-in `Admin` role's blanket allow
+        // (`default_policy = true`) must cover the new
+        // `(users, admin)` action with no extra rule edit.
+        let e = engine();
+        let p = Principal {
+            subject: "admin-u".into(),
+            role: Role::Admin,
+            scopes: Vec::new(),
+            tenant_id: None,
+            teams: Vec::new(),
+            extra: json!({
+                "oauth": { "github_orgs": vec!["NubeIO"], "in_allowed_org": true }
+            }),
+        };
+        let d = e
+            .check(&p, "admin", &ResourceRef::collection("users"))
+            .await;
+        assert!(matches!(d, Decision::Allow { .. }), "got {d:?}");
     }
 
     #[tokio::test]

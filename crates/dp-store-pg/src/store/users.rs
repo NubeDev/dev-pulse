@@ -2,7 +2,7 @@
 use chrono::{DateTime, Utc};
 use dp_domain::identity::{IdentityLinkPending, UserIdentity};
 use dp_domain::store::StoreError;
-use dp_domain::user::User;
+use dp_domain::user::{Role, User};
 use uuid::Uuid;
 
 
@@ -13,21 +13,26 @@ use super::rows::*;
 impl PgStore {
 
     pub(super) async fn upsert_user_impl(&self, user: &User) -> Result<User, StoreError> {
+        // `role` is intentionally NOT part of `ON CONFLICT DO UPDATE`:
+        // the fetcher upserts on every GitHub-side change, and we don't
+        // want a re-stamp to clobber the operator-chosen tier.
+        // Role mutations go through `set_user_role` only.
         let row = sqlx::query(
-            "INSERT INTO dp_users (id, github_id, login, email, name, deleted_at) \
-             VALUES ($1, $2, $3, $4, $5, $6) \
+            "INSERT INTO dp_users (id, github_id, login, email, name, role, deleted_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7) \
              ON CONFLICT (github_id) DO UPDATE SET \
                  login      = EXCLUDED.login, \
                  email      = EXCLUDED.email, \
                  name       = EXCLUDED.name, \
                  deleted_at = EXCLUDED.deleted_at \
-             RETURNING id, github_id, login, email, name, deleted_at",
+             RETURNING id, github_id, login, email, name, role, deleted_at",
         )
         .bind(user.id)
         .bind(user.github_id)
         .bind(&user.login)
         .bind(&user.email)
         .bind(&user.name)
+        .bind(user.role.as_str())
         .bind(user.deleted_at)
         .fetch_one(self.pool.sqlx())
         .await
@@ -37,7 +42,7 @@ impl PgStore {
 
     pub(super) async fn get_user_impl(&self, id: Uuid) -> Result<User, StoreError> {
         let row = sqlx::query(
-            "SELECT id, github_id, login, email, name, deleted_at \
+            "SELECT id, github_id, login, email, name, role, deleted_at \
              FROM dp_users WHERE id = $1",
         )
         .bind(id)
@@ -52,7 +57,7 @@ impl PgStore {
 
     pub(super) async fn get_user_by_github_id_impl(&self, github_id: i64) -> Result<User, StoreError> {
         let row = sqlx::query(
-            "SELECT id, github_id, login, email, name, deleted_at \
+            "SELECT id, github_id, login, email, name, role, deleted_at \
              FROM dp_users WHERE github_id = $1",
         )
         .bind(github_id)
@@ -67,7 +72,7 @@ impl PgStore {
 
     pub(super) async fn list_users_impl(&self) -> Result<Vec<User>, StoreError> {
         let rows = sqlx::query(
-            "SELECT id, github_id, login, email, name, deleted_at \
+            "SELECT id, github_id, login, email, name, role, deleted_at \
              FROM dp_users WHERE deleted_at IS NULL ORDER BY login",
         )
         .fetch_all(self.pool.sqlx())
@@ -85,7 +90,7 @@ impl PgStore {
         // (oldest real GitHub account) so this agrees with the
         // canonical-row rule in migration 0003.
         let row = sqlx::query(
-            "SELECT id, github_id, login, email, name, deleted_at \
+            "SELECT id, github_id, login, email, name, role, deleted_at \
              FROM dp_users \
              WHERE lower(login) = lower($1) AND deleted_at IS NULL \
              ORDER BY (github_id >= 0) DESC, github_id ASC \
@@ -153,7 +158,7 @@ impl PgStore {
         github_user_id: i64,
     ) -> Result<Option<User>, StoreError> {
         let row = sqlx::query(
-            "SELECT u.id, u.github_id, u.login, u.email, u.name, u.deleted_at \
+            "SELECT u.id, u.github_id, u.login, u.email, u.name, u.role, u.deleted_at \
              FROM dp_user_identities i \
              JOIN dp_users u ON u.id = i.user_id \
              WHERE i.github_user_id = $1 AND u.deleted_at IS NULL",
@@ -391,6 +396,31 @@ impl PgStore {
 
         tx.commit().await.map_err(map_sqlx)?;
         Ok(())
+    }
+
+    pub(super) async fn set_user_role_impl(
+        &self,
+        id: Uuid,
+        role: Role,
+    ) -> Result<User, StoreError> {
+        // The CHECK constraint on dp_users.role enforces the
+        // closed enum, so we don't double-validate here — the
+        // typed `Role` parameter already does that work at the
+        // call site.
+        let row = sqlx::query(
+            "UPDATE dp_users SET role = $2 \
+             WHERE id = $1 AND deleted_at IS NULL \
+             RETURNING id, github_id, login, email, name, role, deleted_at",
+        )
+        .bind(id)
+        .bind(role.as_str())
+        .fetch_optional(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        match row {
+            Some(r) => row_to_user(&r),
+            None => Err(not_found("user", id)),
+        }
     }
 
     pub(super) async fn set_primary_identity_impl(

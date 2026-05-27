@@ -334,6 +334,32 @@ async fn main() -> Result<()> {
                 ),
         )
         .subcommand(
+            Command::new("set-role")
+                .about(
+                    "Set the operator role on a dp_users row by email \
+                     (DOCS/SCOPE-AUTHZ-USERS.md §0). Use to promote / \
+                     demote operators outside the admin UI — e.g. to \
+                     bootstrap the first admin when the OAuth path \
+                     auto-provisioned a reader.",
+                )
+                .arg(
+                    Arg::new("config")
+                        .long("config")
+                        .required(true)
+                        .help("Path to the dev-pulse TOML config."),
+                )
+                .arg(
+                    Arg::new("email")
+                        .required(true)
+                        .help("Operator email (matches dp_users.email)."),
+                )
+                .arg(
+                    Arg::new("role")
+                        .required(true)
+                        .help("New role: reader | writer | admin."),
+                ),
+        )
+        .subcommand(
             Command::new("fetch-now")
                 .about(
                     "Run one reconciler tick against the registered \
@@ -538,6 +564,7 @@ async fn main() -> Result<()> {
         Some(("add-org", sub)) => run_add_org(sub).await,
         Some(("add-repo", sub)) => run_add_repo(sub).await,
         Some(("create-admin", sub)) => run_create_admin(sub).await,
+        Some(("set-role", sub)) => run_set_role(sub).await,
         Some(("import-my-orgs", sub)) => run_import_my_orgs(sub).await,
         Some(("import-my-repos", sub)) => run_import_my_repos(sub).await,
         Some(("backfill-issues", sub)) => run_backfill_issues(sub).await,
@@ -1860,10 +1887,16 @@ async fn run_create_admin(matches: &ArgMatches) -> Result<()> {
         if acc > 0 { -acc } else if acc == 0 { -1 } else { acc }
     };
     let login = format!("local:{email}");
+    // CLI-seeded operators get the `admin` role on dp_users so
+    // `Principal.role` after the principal-role middleware
+    // resolves to Admin (DOCS/SCOPE-AUTHZ-USERS.md §0). Existing
+    // rows (operator re-runs `create-admin` after upgrade) are
+    // bumped to admin here too so the break-glass path keeps
+    // working — `ON CONFLICT (id) DO UPDATE SET role = 'admin'`.
     sqlx::query(
-        "INSERT INTO dp_users (id, github_id, login, email, name) \
-         VALUES ($1, $2, $3, $4, $5) \
-         ON CONFLICT (id) DO NOTHING",
+        "INSERT INTO dp_users (id, github_id, login, email, name, role) \
+         VALUES ($1, $2, $3, $4, $5, 'admin') \
+         ON CONFLICT (id) DO UPDATE SET role = 'admin'",
     )
     .bind(user_uuid)
     .bind(synth_github_id)
@@ -1873,7 +1906,32 @@ async fn run_create_admin(matches: &ArgMatches) -> Result<()> {
     .execute(pool.sqlx())
     .await
     .context("mirror admin into dp_users")?;
-    println!("  mirrored into dp_users (login={login}, synthetic github_id={synth_github_id})");
+    println!("  mirrored into dp_users (login={login}, synthetic github_id={synth_github_id}, role=admin)");
+    Ok(())
+}
+
+async fn run_set_role(matches: &ArgMatches) -> Result<()> {
+    let cfg_path = matches.get_one::<String>("config").unwrap();
+    let email = matches.get_one::<String>("email").unwrap();
+    let role = matches.get_one::<String>("role").unwrap();
+    // Sanity-check against the closed enum before we touch the DB
+    // so a typo doesn't get caught by the CHECK constraint as a
+    // mid-sentence sqlx error.
+    let _ = dp_domain::Role::from_str(role)
+        .ok_or_else(|| anyhow!("role must be one of reader|writer|admin; got {role:?}"))?;
+    let (_cfg, pool) = load_cfg_and_pool(cfg_path).await?;
+    let res = sqlx::query(
+        "UPDATE dp_users SET role = $1 WHERE email = $2 AND deleted_at IS NULL",
+    )
+    .bind(role)
+    .bind(email)
+    .execute(pool.sqlx())
+    .await
+    .with_context(|| format!("UPDATE dp_users role={role} for email={email}"))?;
+    if res.rows_affected() == 0 {
+        return Err(anyhow!("no live dp_users row matched email={email}"));
+    }
+    println!("set-role: {email} → {role} ({} row(s))", res.rows_affected());
     Ok(())
 }
 

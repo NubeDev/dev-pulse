@@ -38,12 +38,13 @@
 use std::sync::Arc;
 
 use axum::{
-    extract::{Extension, State},
+    extract::{Extension, Path, State},
     http::StatusCode,
     response::{IntoResponse, Json, Response},
     routing::get,
     Router,
 };
+use uuid::Uuid;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use starter_auth_oauth::OAuthIdentity;
@@ -183,6 +184,71 @@ pub async fn list_me_identities(
     Ok(Json(project(rows)))
 }
 
+/// `GET /admin/users/{id}/identities` — admin-side probe of the
+/// linked OAuth identities for any user
+/// (DOCS/SCOPE-AUTHZ-USERS.md §3, §4.3). Same wire shape as
+/// `GET /me/identities` so the frontend can reuse the projection.
+///
+/// Audit: writes [`crate::audit::USER_IDENTITIES_READ`] *before*
+/// the store read, matching the pre-stream auditing rule the
+/// neighbouring `/admin/users/:id/export` handler uses — the
+/// access attempt is what we audit, not whether the row existed.
+#[utoipa::path(
+    get,
+    path = "/admin/users/{id}/identities",
+    params(
+        ("id" = Uuid, Path, description = "User to inspect")
+    ),
+    responses(
+        (status = 200, description = "Linked OAuth identities for the target user", body = MeIdentitiesResponse),
+        (status = 503, description = "Identity store not wired in this deployment"),
+    ),
+    tag = "admin",
+)]
+pub async fn list_user_identities_admin(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    Path(user_id): Path<Uuid>,
+) -> Result<Json<MeIdentitiesResponse>, Response> {
+    let Some(store) = state.identity_store.clone() else {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "identity store not configured",
+        )
+            .into_response());
+    };
+    // Audit before the read so the access attempt is durable
+    // even if the identity-store call fails downstream.
+    if let Err(e) = crate::audit::record(
+        state.store.as_ref(),
+        principal.actor_user_id,
+        crate::audit::USER_IDENTITIES_READ,
+        format!("user:{user_id}"),
+    )
+    .await
+    {
+        tracing::warn!(
+            target: "dp_rest::me_identities",
+            error = %e,
+            "audit record failed for user.identities_read",
+        );
+    }
+    let rows = store.list_for_user(&user_id.to_string()).await.map_err(|e| {
+        tracing::warn!(
+            target: "dp_rest::me_identities",
+            user_id = %user_id,
+            error = %e,
+            "identity_store.list_for_user failed (admin probe)",
+        );
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "identity store read failed",
+        )
+            .into_response()
+    })?;
+    Ok(Json(project(rows)))
+}
+
 /// Build the `/me/identities` router fragment. Gated by
 /// `(identities, read)` — the resource is registered in
 /// `dp_server::auth::policy::register_dev_pulse_resources`.
@@ -194,6 +260,15 @@ pub fn me_identities_router(state: Arc<AppState>) -> Router {
             Router::new().route("/me/identities", get(list_me_identities)),
             "identities",
             "read",
+        ))
+        .merge(with_permission(
+            // Admin-side identity probe (SCOPE-AUTHZ-USERS §3).
+            // Same `(users, admin)` lane as PUT /admin/users/:id/role
+            // so role + identity surface ride one permission edit.
+            Router::new()
+                .route("/admin/users/{id}/identities", get(list_user_identities_admin)),
+            "users",
+            "admin",
         ))
         .with_state(inner)
 }

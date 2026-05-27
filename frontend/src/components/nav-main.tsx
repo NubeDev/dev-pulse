@@ -66,6 +66,13 @@ export interface NavMainItem {
   /** Optional test id stamped on the SidebarMenuSub wrapper (used
    *  by the Playwright smoke suite to pin section sub-navs). */
   subTestId?: string
+  /**
+   * Minimum operator role required to see this section
+   * (DOCS/SCOPE-AUTHZ-USERS.md §4.1). Defaults to `"reader"` when
+   * unset. The server is the authority — this is a UX gate that
+   * keeps Readers from seeing entries that would 403 on click.
+   */
+  minRole?: "reader" | "writer" | "admin"
 }
 
 export function NavMain({

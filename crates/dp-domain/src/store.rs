@@ -347,6 +347,22 @@ pub trait Store: Send + Sync {
     /// List all non-deleted users.
     async fn list_users(&self) -> Result<Vec<User>, StoreError>;
 
+    /// Set the operator-controlled role on a user
+    /// (DOCS/SCOPE-AUTHZ-USERS.md §3). Returns the post-update row.
+    ///
+    /// Default impl returns `StoreError::Backend` so test fakes that
+    /// don't need the surface keep compiling; production behavior
+    /// lives on `PgStore`.
+    async fn set_user_role(
+        &self,
+        _id: Uuid,
+        _role: crate::user::Role,
+    ) -> Result<User, StoreError> {
+        Err(StoreError::Backend(
+            "set_user_role not implemented by this backend".into(),
+        ))
+    }
+
     /// Soft-delete + pseudonymise (TODO §0.5). Rewrites
     /// `login`/`email`/`name` to `deleted-user-<hash>` form, sets
     /// `deleted_at`, leaves the row id stable so referential

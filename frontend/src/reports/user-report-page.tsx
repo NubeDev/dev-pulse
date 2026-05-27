@@ -68,8 +68,8 @@ function mockResponse(kind: string): ReportResponse<CountRow[]> {
 
 function mockUsers(): UserDto[] {
   return [
-    { id: "11111111-1111-1111-1111-111111111111", github_id: 1, login: "alice", name: "Alice Example", email: "alice@example.com" },
-    { id: "22222222-2222-2222-2222-222222222222", github_id: 2, login: "bob", name: "Bob Example", email: "bob@example.com" },
+    { id: "11111111-1111-1111-1111-111111111111", github_id: 1, login: "alice", name: "Alice Example", email: "alice@example.com", role: "reader" },
+    { id: "22222222-2222-2222-2222-222222222222", github_id: 2, login: "bob", name: "Bob Example", email: "bob@example.com", role: "reader" },
   ];
 }
 

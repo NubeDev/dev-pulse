@@ -200,6 +200,14 @@ impl Store for PgStore {
         self.pseudonymise_user_impl(id).await
     }
 
+    async fn set_user_role(
+        &self,
+        id: Uuid,
+        role: dp_domain::user::Role,
+    ) -> Result<User, StoreError> {
+        self.set_user_role_impl(id, role).await
+    }
+
     // ---- identities (users.md §4 Slice A) --------------------------
 
     async fn list_identities_for_user(

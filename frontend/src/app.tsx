@@ -97,6 +97,50 @@ function Router(): JSX.Element {
 
   const section = sectionOf(route);
   const protectedSection = section === "login" ? "reports" : section;
+
+  // Role-tier guard (DOCS/SCOPE-AUTHZ-USERS.md §4.2). The backend
+  // already 403s these routes; this redirect is purely UX so a typed
+  // URL or stale link doesn't render a permission-denied flash. The
+  // tiers mirror the sidebar gating in `app-shell.tsx`.
+  const SECTION_MIN_ROLE: Record<typeof protectedSection, "reader" | "writer" | "admin"> = {
+    reports: "reader",
+    directory: "reader",
+    account: "reader",
+    projects: "reader",
+    workflow: "writer",
+    admin: "admin",
+  };
+  const ROLE_RANK_ROUTER: Record<"reader" | "writer" | "admin", number> = {
+    reader: 0,
+    writer: 1,
+    admin: 2,
+  };
+  const userRole = (auth.user?.role ?? "reader") as
+    | "reader"
+    | "writer"
+    | "admin";
+  const needed = SECTION_MIN_ROLE[protectedSection];
+  if (
+    auth.status === "authenticated" &&
+    ROLE_RANK_ROUTER[userRole] < ROLE_RANK_ROUTER[needed]
+  ) {
+    // Redirect to the universal landing — back-end is the authority
+    // on every page, so a flash to `#/reports` is enough to keep the
+    // shell coherent without rendering an empty 403.
+    if (typeof window !== "undefined" && window.location.hash !== "#/reports") {
+      window.location.hash = "#/reports";
+    }
+    return (
+      <ProtectedRoute>
+        <AppShell>
+          <ErrorBoundary scope="reports" resetKey="redirect">
+            <SectionPane section="reports" route="#/reports" />
+          </ErrorBoundary>
+        </AppShell>
+      </ProtectedRoute>
+    );
+  }
+
   return (
     <ProtectedRoute>
       <AppShell>

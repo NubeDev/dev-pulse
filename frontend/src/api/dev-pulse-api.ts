@@ -16,10 +16,15 @@ import {
   TeamDtoSchema,
   UserDtoSchema,
   SetHomeOrgRequestSchema,
+  SetUserRoleRequestSchema,
+  AdminUserIdentitiesResponseSchema,
   type OrgDto,
   type TeamDto,
   type UserDto,
+  type UserRole,
   type SetHomeOrgRequest,
+  type SetUserRoleRequest,
+  type AdminUserIdentitiesResponse,
 } from "./schemas/directory.js";
 import {
   FetchRunDtoSchema,
@@ -334,6 +339,27 @@ export class DevPulseApi {
 
   async exportUser(userId: string): Promise<UserExport> {
     return this.getJson(`/admin/users/${encodeURIComponent(userId)}/export`, UserExportSchema);
+  }
+
+  // -- operator role management (DOCS/SCOPE-AUTHZ-USERS.md §3) -------------
+
+  async setUserRole(userId: string, role: UserRole): Promise<UserDto> {
+    const body: SetUserRoleRequest = { role };
+    return this.sendJson(
+      "PUT",
+      `/admin/users/${encodeURIComponent(userId)}/role`,
+      SetUserRoleRequestSchema.parse(body),
+      UserDtoSchema,
+    );
+  }
+
+  async listUserIdentities(
+    userId: string,
+  ): Promise<AdminUserIdentitiesResponse> {
+    return this.getJson(
+      `/admin/users/${encodeURIComponent(userId)}/identities`,
+      AdminUserIdentitiesResponseSchema,
+    );
   }
 
   // -- pins (SCOPE-PROJECTS §6.4) -------------------------------------------
