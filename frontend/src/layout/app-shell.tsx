@@ -349,7 +349,7 @@ const DIRECTORY_TITLE: Record<string, string> = {
 const ADMIN_TITLE: Record<string, string> = {
   runs: "Runs",
   refresh: "Refresh",
-  users: "User GDPR",
+  users: "Users",
 }
 
 /** Normalise the hash route to the closest `NavMain` url so the

@@ -13,20 +13,17 @@
  * section can be added without touching the page wiring.
  */
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 
-import type {
-  ExecSummarySectionId,
-  ProjectDto,
-} from "../../api/client.js";
+import type { ProjectDto } from "../../api/client.js";
 
 import { ExecSummaryHeader } from "./exec-summary-header.js";
-import { ExecSummaryNav } from "./exec-summary-nav.js";
+import { ExecSummaryNav, type ExecSummaryNavId } from "./exec-summary-nav.js";
 import {
   useExecSummary,
   useExecSummaryInlineImageUploader,
@@ -40,12 +37,14 @@ import { HardwareSection } from "./sections/hardware-section.js";
 import { RequirementsSection } from "./sections/requirements-section.js";
 import { ScopeSection } from "./sections/scope-section.js";
 import { SummarySection } from "./sections/summary-section.js";
+import { ValidateSection } from "./sections/validate-section.js";
 import { SectionNaToggle } from "./section-na-toggle.js";
 import {
   ExecSummaryImageUploaderContext,
   SECTIONS,
   type ExecSummaryPermissions,
 } from "./shared.js";
+import { computeMissingFields } from "./validation.js";
 
 export interface ProjectExecSummaryPageProps {
   project: ProjectDto;
@@ -60,21 +59,63 @@ export function ProjectExecSummaryPage({
   const query = useExecSummary(project.id);
   const patchMutation = usePatchExecSummary(project.id);
   const inlineImageUpload = useExecSummaryInlineImageUploader(project.id);
-  const [active, setActive] = useState<ExecSummarySectionId>("summary");
+  const [active, setActive] = useState<ExecSummaryNavId>("summary");
+  /** When the user clicks a "Fix" / "Open section" button on the
+   *  Validate tab we stash the target field key here, then a layout
+   *  effect post-render scrolls the matching input into view and
+   *  focuses it. Cleared on apply so a later tab switch doesn't
+   *  re-scroll. */
+  const pendingFocus = useRef<string | null>(null);
 
   const permissions = useMemo<ExecSummaryPermissions>(() => {
-    const isLead =
-      viewerUserId !== null &&
-      project.lead_user_id !== null &&
-      project.lead_user_id !== undefined &&
-      project.lead_user_id === viewerUserId;
+    // Approve/Revert were lead-only, but if no lead is set the
+    // summary becomes un-approvable forever. Open it up to anyone
+    // who can edit so the workflow isn't blocked by missing
+    // lead assignment — server still records the actor in audit.
     return {
       canEdit: true,
       canSubmit: true,
-      canApprove: isLead,
-      canRevert: isLead,
+      canApprove: true,
+      canRevert: true,
     };
-  }, [project.lead_user_id, viewerUserId]);
+  }, []);
+
+  // Hooks below must stay above any early-return so the call order
+  // is stable between renders (React's Rules of Hooks). They guard
+  // on `query.data` being undefined while still loading.
+  const data = query.data;
+  const missingCount = useMemo(
+    () => (data ? computeMissingFields(data).length : 0),
+    [data],
+  );
+  // If everything is now complete, snap off the (hidden) Validate
+  // tab so we don't render an empty active page.
+  useEffect(() => {
+    if (active === "validate" && missingCount === 0) {
+      setActive("summary");
+    }
+  }, [active, missingCount]);
+
+  // Post-render: scroll-and-focus a deferred jump target.
+  useEffect(() => {
+    const key = pendingFocus.current;
+    if (key === null || active === "validate") return;
+    pendingFocus.current = null;
+    // Defer one frame so the freshly-rendered section's inputs are
+    // in the DOM before we look them up.
+    const raf = requestAnimationFrame(() => {
+      const el = document.querySelector<HTMLElement>(
+        `[data-validation-key="${CSS.escape(key)}"]`,
+      );
+      if (!el) return;
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      const focusable = el.querySelector<HTMLElement>(
+        "input, textarea, select, button",
+      );
+      (focusable ?? el).focus();
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [active]);
 
   if (query.isPending) {
     return (
@@ -87,17 +128,35 @@ export function ProjectExecSummaryPage({
     );
   }
 
-  if (query.isError) {
+  if (query.isError || !data) {
     return (
       <Alert variant="destructive" data-testid="exec-summary-error">
         <AlertTitle>Couldn't load exec summary</AlertTitle>
-        <AlertDescription>{query.error.message}</AlertDescription>
+        <AlertDescription>
+          {query.error?.message ?? "Unknown error"}
+        </AlertDescription>
       </Alert>
     );
   }
 
-  const data = query.data;
-  const activeMeta = SECTIONS.find((s) => s.id === active) ?? SECTIONS[0]!;
+  const handleJumpTo = (
+    sectionId: import("../../api/client.js").ExecSummarySectionId,
+    fieldKey: string,
+  ): void => {
+    pendingFocus.current = fieldKey;
+    setActive(sectionId);
+  };
+
+  const isValidate = active === "validate";
+  const activeMeta = isValidate
+    ? {
+        id: "validate" as const,
+        label: "Validate",
+        description:
+          "Every required field that's still missing, across all sections.",
+        step: 0,
+      }
+    : SECTIONS.find((s) => s.id === active) ?? SECTIONS[0]!;
 
   return (
     <ExecSummaryImageUploaderContext.Provider value={inlineImageUpload}>
@@ -116,6 +175,7 @@ export function ProjectExecSummaryPage({
             onSelect={setActive}
             completion={data.completion.sections}
             skipped={data.skipped_sections}
+            missingCount={missingCount}
           />
         </aside>
 
@@ -129,19 +189,29 @@ export function ProjectExecSummaryPage({
                     {activeMeta.description}
                   </p>
                 </div>
-                <SectionNaToggle
-                  projectId={project.id}
-                  data={data}
-                  sectionId={active}
-                />
+                {active !== "validate" && (
+                  <SectionNaToggle
+                    projectId={project.id}
+                    data={data}
+                    sectionId={active}
+                  />
+                )}
               </div>
             </CardHeader>
             <CardContent
               className={cn(
-                data.skipped_sections.includes(active) &&
+                !isValidate &&
+                  data.skipped_sections.includes(active) &&
                   "opacity-60",
               )}
             >
+              {active === "validate" && (
+                <ValidateSection
+                  projectId={project.id}
+                  data={data}
+                  onJumpTo={handleJumpTo}
+                />
+              )}
               {active === "summary" && (
                 <SummarySection projectId={project.id} data={data} />
               )}

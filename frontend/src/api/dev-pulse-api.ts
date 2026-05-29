@@ -800,10 +800,14 @@ export class DevPulseApi {
     );
   }
 
-  async submitProjectExecSummary(projectId: string): Promise<ExecSummaryDto> {
+  async submitProjectExecSummary(
+    projectId: string,
+    opts: { force?: boolean } = {},
+  ): Promise<ExecSummaryDto> {
+    const qs = opts.force ? "?force=true" : "";
     return this.sendJson(
       "POST",
-      `/projects/${encodeURIComponent(projectId)}/exec-summary/submit`,
+      `/projects/${encodeURIComponent(projectId)}/exec-summary/submit${qs}`,
       undefined,
       ExecSummaryDtoSchema,
     );

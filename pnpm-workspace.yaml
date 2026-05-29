@@ -4,4 +4,11 @@ packages:
   # protocol references resolve. The starter checkout lives next to
   # dev-pulse (sibling clone), matching Cargo.toml's path = "../starter/..."
   # convention (see workspace.dependencies block).
-  - "../starter/packages/*"
+  - "../starter/packages/starter-client-ts"
+  - "../starter/packages/starter-client-react"
+  - "../starter/packages/starter-ui-core"
+  - "../starter/packages/starter-ui-kit"
+  - "../starter/packages/starter-ui-export"
+  - "../starter/packages/starter-ui-ir"
+  - "../starter/packages/starter-ui-sdui-react"
+  - "../starter/packages/starter-theme-tokens"

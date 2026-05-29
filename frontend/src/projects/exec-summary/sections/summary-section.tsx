@@ -18,13 +18,15 @@ export function SummarySection({
   return (
     <div className="flex flex-col gap-6">
       <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-        <TextField
-          id="es-product-name"
-          label="Product name"
-          value={s.product_name}
-          onCommit={(product_name) => patch({ summary: { product_name } })}
-          placeholder="e.g. Edge Controller 8X"
-        />
+        <div data-validation-key="summary.product_name">
+          <TextField
+            id="es-product-name"
+            label="Product name"
+            value={s.product_name}
+            onCommit={(product_name) => patch({ summary: { product_name } })}
+            placeholder="e.g. Edge Controller 8X"
+          />
+        </div>
         <TextField
           id="es-part-number"
           label="Part number"
@@ -41,12 +43,14 @@ export function SummarySection({
           }
         />
       </div>
-      <MarkdownField
-        label="Objective"
-        value={s.objective}
-        onCommit={(objective) => patch({ summary: { objective } })}
-        hint="What this product is and the headline goal it serves."
-      />
+      <div data-validation-key="summary.objective">
+        <MarkdownField
+          label="Objective"
+          value={s.objective}
+          onCommit={(objective) => patch({ summary: { objective } })}
+          hint="What this product is and the headline goal it serves."
+        />
+      </div>
       <MarkdownField
         label="Problem"
         value={s.problem}
@@ -63,14 +67,16 @@ export function SummarySection({
         value={s.differentiators}
         onCommit={(differentiators) => patch({ summary: { differentiators } })}
       />
-      <MarkdownField
-        label="Success criteria"
-        value={s.success_criteria}
-        onCommit={(success_criteria) =>
-          patch({ summary: { success_criteria } })
-        }
-        hint="Measurable outcomes — pricing, shipped units, attach rate, NPS, etc."
-      />
+      <div data-validation-key="summary.success_criteria">
+        <MarkdownField
+          label="Success criteria"
+          value={s.success_criteria}
+          onCommit={(success_criteria) =>
+            patch({ summary: { success_criteria } })
+          }
+          hint="Measurable outcomes — pricing, shipped units, attach rate, NPS, etc."
+        />
+      </div>
     </div>
   );
 }

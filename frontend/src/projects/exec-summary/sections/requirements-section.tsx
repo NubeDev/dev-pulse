@@ -14,11 +14,13 @@ export function RequirementsSection({
   const r = data.requirements;
   return (
     <div className="flex flex-col gap-6">
-      <MarkdownField
-        label="Must have"
-        value={r.must_have}
-        onCommit={(must_have) => patch({ requirements: { must_have } })}
-      />
+      <div data-validation-key="requirements.must_have">
+        <MarkdownField
+          label="Must have"
+          value={r.must_have}
+          onCommit={(must_have) => patch({ requirements: { must_have } })}
+        />
+      </div>
       <MarkdownField
         label="Optional"
         value={r.optional}
@@ -36,13 +38,15 @@ export function RequirementsSection({
         value={r.architecture}
         onCommit={(architecture) => patch({ requirements: { architecture } })}
       />
-      <CheckboxGroup
-        label="Protocols"
-        options={PROTOCOL_OPTIONS}
-        value={r.protocols ?? []}
-        onCommit={(protocols) => patch({ requirements: { protocols } })}
-        hint="Field protocols the product must support."
-      />
+      <div data-validation-key="requirements.protocols">
+        <CheckboxGroup
+          label="Protocols"
+          options={PROTOCOL_OPTIONS}
+          value={r.protocols ?? []}
+          onCommit={(protocols) => patch({ requirements: { protocols } })}
+          hint="Field protocols the product must support."
+        />
+      </div>
       <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
         <TextField
           id="es-power"

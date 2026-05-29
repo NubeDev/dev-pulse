@@ -640,6 +640,13 @@ async fn run_serve(matches: &ArgMatches) -> Result<()> {
         .with_context(|| format!("connect sqlite: {}", cfg.auth_sqlite.url))?;
     apply_auth_sqlite_migrations(&sqlite_pool).await?;
 
+    // Mirror every starter_auth_users admin into dp_users on every
+    // boot so an upgrade (or a fresh DB after the role migration)
+    // doesn't strand the operator as a Reader. Idempotent: the upsert
+    // bumps the role to 'admin' and leaves the synthetic github_id
+    // alone if the dp_users row already exists.
+    reconcile_local_admin_dp_users(&sqlite_pool, store.pool()).await?;
+
     let users = Arc::new(starter_auth_users::store::SqliteUserStore::new(
         sqlite_pool.clone(),
     ));
@@ -1142,6 +1149,67 @@ async fn apply_auth_sqlite_migrations(
 /// empty and org-scoped tag creation is impossible from a local
 /// `create-admin` session. Runs on every `serve` boot so it
 /// survives DB resets and picks up newly-synced orgs.
+/// Pull every starter_auth_users admin out of sqlite and ensure a
+/// matching `dp_users` row exists with `role='admin'`. Idempotent and
+/// safe to run on every boot — the upsert leaves any synthetic
+/// github_id / login already chosen by `run_create_admin` untouched
+/// and only forces the role column to `'admin'`.
+///
+/// This is the long-term fix for the "fresh upgrade left the seeded
+/// admin as Reader" footgun: after a deploy, the operator does not
+/// need to re-run `create-admin` or `set-role` for the existing
+/// password-auth admin to keep working.
+async fn reconcile_local_admin_dp_users(
+    sqlite: &starter_store_sqlite::Pool,
+    pg: &starter_store_postgres::Pool,
+) -> Result<()> {
+    // starter_auth_users stores `role` as plain text (one of
+    // reader/writer/admin). We only care about admins here — readers
+    // and writers get whatever role the OAuth provisioning path sets
+    // on their dp_users row, or stay at the migration default.
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT id, email FROM starter_auth_users_users WHERE role = 'admin'",
+    )
+    .fetch_all(sqlite.sqlx())
+    .await
+    .context("read starter_auth_users admins")?;
+
+    for (id, email) in rows {
+        let user_uuid = match Uuid::parse_str(&id) {
+            Ok(u) => u,
+            Err(e) => {
+                tracing::warn!(id, error = %e, "skip admin reconcile: bad UUID");
+                continue;
+            }
+        };
+        // Derive the same synthetic github_id `run_create_admin`
+        // would have used, so the row stays consistent whether the
+        // operator boots fresh or re-runs `create-admin`.
+        let synth_github_id: i64 = {
+            let bytes = user_uuid.as_bytes();
+            let mut acc: i64 = 0;
+            for &b in bytes {
+                acc = acc.wrapping_mul(131).wrapping_add(b as i64);
+            }
+            if acc > 0 { -acc } else if acc == 0 { -1 } else { acc }
+        };
+        let login = format!("local:{email}");
+        sqlx::query(
+            "INSERT INTO dp_users (id, github_id, login, email, name, role) \
+             VALUES ($1, $2, $3, $4, NULL, 'admin') \
+             ON CONFLICT (id) DO UPDATE SET role = 'admin'",
+        )
+        .bind(user_uuid)
+        .bind(synth_github_id)
+        .bind(&login)
+        .bind(&email)
+        .execute(pg.sqlx())
+        .await
+        .with_context(|| format!("reconcile dp_users for admin {email}"))?;
+    }
+    Ok(())
+}
+
 async fn stamp_local_admin_memberships(
     pool: &starter_store_postgres::Pool,
 ) -> Result<()> {

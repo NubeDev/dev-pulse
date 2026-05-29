@@ -155,7 +155,7 @@ pub use project_exec_summary::{
     ExecSummaryHardwarePatch, ExecSummaryImageDto, ExecSummaryPatchBody,
     ExecSummaryRequirementsDto, ExecSummaryRequirementsPatch, ExecSummaryScopeDto,
     ExecSummaryScopePatch, ExecSummaryStatusDto, ExecSummarySummaryDto,
-    ExecSummarySummaryPatch, SubmitIncompleteBody,
+    ExecSummarySubmitQuery, ExecSummarySummaryPatch, SubmitIncompleteBody,
 };
 pub use project_milestones::{
     adopt_milestone, create_project_milestone, delete_project_milestone,

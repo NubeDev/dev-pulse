@@ -125,6 +125,24 @@ pub enum ApiError {
         current_version: i64,
     },
 
+    /// Exec-summary submit gate: the row is not complete enough to
+    /// move to `in_review`. The response body carries the same
+    /// structured fields the UI needs to tell the user *exactly*
+    /// what's missing (`percent`, `threshold`, `missing`) — so the
+    /// frontend can render "Completion is 75% — needs 90% to submit.
+    /// Missing: Documents, Approval." without parsing free-form text.
+    /// Mapped to `400` with code `"incomplete"`.
+    #[error("incomplete: {percent}% < {threshold}%")]
+    Incomplete {
+        /// Computed percent at submit time.
+        percent: u8,
+        /// Threshold required.
+        threshold: u8,
+        /// Section ids that are not complete (stable wire identifiers
+        /// the UI maps to display labels).
+        missing: Vec<&'static str>,
+    },
+
     /// Per-item validation failure inside a batch request. Used by
     /// the `POST /tags/{id}/links` / `DELETE /tags/{id}/links`
     /// transactional batch path (SCOPE-PROJECTS §7.5): the whole
@@ -186,6 +204,15 @@ impl From<ResolveError> for ApiError {
 struct ErrorBody<'a> {
     error: &'a str,
     code: &'a str,
+}
+
+#[derive(Serialize)]
+struct IncompleteBody<'a> {
+    error: &'a str,
+    code: &'a str,
+    percent: u8,
+    threshold: u8,
+    missing: &'a [&'static str],
 }
 
 #[derive(Serialize)]
@@ -292,6 +319,21 @@ impl IntoResponse for ApiError {
                     code: "stale_local_version",
                     issue_id: *issue_id,
                     current_version: *current_version,
+                }),
+            )
+                .into_response(),
+            ApiError::Incomplete {
+                percent,
+                threshold,
+                missing,
+            } => (
+                StatusCode::BAD_REQUEST,
+                Json(IncompleteBody {
+                    error: "incomplete",
+                    code: "incomplete",
+                    percent: *percent,
+                    threshold: *threshold,
+                    missing,
                 }),
             )
                 .into_response(),

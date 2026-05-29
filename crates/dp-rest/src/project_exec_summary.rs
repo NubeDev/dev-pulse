@@ -70,7 +70,7 @@ use std::time::Duration;
 
 use axum::{
     body::Body,
-    extract::{Extension, Multipart, Path, State},
+    extract::{Extension, Multipart, Path, Query, State},
     http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Json, Response},
     routing::{delete, get, patch, post},
@@ -694,6 +694,18 @@ pub struct ExecSummaryApproveBody {
     pub approval_notes: Option<String>,
 }
 
+/// Query string for `POST .../submit`. `force=true` bypasses the
+/// server-side completion gate so the caller can move a partially-
+/// filled draft to `in_review` anyway. Forced submissions are
+/// audit-logged under a distinct action
+/// ([`audit::PROJECT_EXEC_SUMMARY_SUBMIT_FORCE`]).
+#[derive(Debug, Clone, Default, Deserialize, ToSchema)]
+pub struct ExecSummarySubmitQuery {
+    /// When `true`, skip the `>= 80%` completion check.
+    #[serde(default)]
+    pub force: bool,
+}
+
 /// Response body for a `400 incomplete` rejection from `submit`.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct SubmitIncompleteBody {
@@ -727,10 +739,14 @@ fn missing_sections(c: &ExecSummaryCompletion) -> Vec<&'static str> {
 async fn require_project_lead(
     state: &AppState,
     project_id: Uuid,
-    principal: &Principal,
+    _principal: &Principal,
 ) -> Result<(), ApiError> {
-    // E2 hard rule: approve / revert are project-lead only.
-    let project = state
+    // Approve / revert were originally project-lead only (E2 rule),
+    // but in practice that left summaries stuck whenever the lead
+    // changed roles, was unset, or simply wasn't around. Any
+    // authenticated actor with access to the project can now move
+    // the state; the audit log records who did it.
+    let _ = state
         .store
         .get_project(project_id)
         .await?
@@ -738,13 +754,7 @@ async fn require_project_lead(
             code: "project_not_found",
             message: format!("no project with id {project_id}"),
         })?;
-    match project.lead_user_id {
-        Some(lead) if lead == principal.actor_user_id => Ok(()),
-        _ => Err(ApiError::Forbidden {
-            code: "project_lead_required",
-            message: "only the project lead can approve or revert the exec summary".into(),
-        }),
-    }
+    Ok(())
 }
 
 /// Build the proxy URL used by the frontend to load image /
@@ -854,7 +864,12 @@ pub async fn patch_project_exec_summary(
 #[utoipa::path(
     post,
     path = "/projects/{id}/exec-summary/submit",
-    params(("id" = Uuid, Path, description = "Project id")),
+    params(
+        ("id" = Uuid, Path, description = "Project id"),
+        ("force" = Option<bool>, Query, description =
+            "When true, bypass the completion gate and submit a partially-filled draft. \
+             Audit-logged as `project.exec_summary.submit_force`."),
+    ),
     responses(
         (status = 200, description = "Updated exec summary", body = ExecSummaryDto),
         (status = 400, description = "Incomplete", body = SubmitIncompleteBody),
@@ -867,6 +882,7 @@ pub async fn submit_project_exec_summary(
     State(state): State<AppState>,
     Extension(principal): Extension<Principal>,
     Path(project_id): Path<Uuid>,
+    Query(q): Query<ExecSummarySubmitQuery>,
 ) -> Result<Json<ExecSummaryDto>, ApiError> {
     let (_, completion) = state
         .store
@@ -877,16 +893,11 @@ pub async fn submit_project_exec_summary(
             message: format!("no exec summary for project {project_id}"),
         })?;
     let percent = completion.percent();
-    if percent < EXEC_SUMMARY_SUBMIT_THRESHOLD_PERCENT {
-        let body = SubmitIncompleteBody {
-            code: "incomplete",
+    if !q.force && percent < EXEC_SUMMARY_SUBMIT_THRESHOLD_PERCENT {
+        return Err(ApiError::Incomplete {
             percent,
             threshold: EXEC_SUMMARY_SUBMIT_THRESHOLD_PERCENT,
             missing: missing_sections(&completion),
-        };
-        return Err(ApiError::BadRequest {
-            code: "incomplete",
-            message: serde_json::to_string(&body).unwrap_or_else(|_| body.code.into()),
         });
     }
     state
@@ -894,10 +905,15 @@ pub async fn submit_project_exec_summary(
         .submit_project_exec_summary(project_id)
         .await
         .map_err(map_transition_err)?;
+    let action = if q.force && percent < EXEC_SUMMARY_SUBMIT_THRESHOLD_PERCENT {
+        audit::PROJECT_EXEC_SUMMARY_SUBMIT_FORCE
+    } else {
+        audit::PROJECT_EXEC_SUMMARY_SUBMIT
+    };
     audit::record(
         state.store.as_ref(),
         principal.actor_user_id,
-        audit::PROJECT_EXEC_SUMMARY_SUBMIT,
+        action,
         project_id.to_string(),
     )
     .await

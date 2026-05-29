@@ -226,6 +226,13 @@ pub const PROJECT_EXEC_SUMMARY_PATCH: &str = "project.exec_summary.patch";
 /// Target carries `<project_id>`.
 pub const PROJECT_EXEC_SUMMARY_SUBMIT: &str = "project.exec_summary.submit";
 
+/// `project.exec_summary.submit_force` — same endpoint, but the
+/// caller bypassed the completion gate with `?force=true`. Logged
+/// distinctly so admins can audit forced submissions separately from
+/// normal ones. Target carries `<project_id>`.
+pub const PROJECT_EXEC_SUMMARY_SUBMIT_FORCE: &str =
+    "project.exec_summary.submit_force";
+
 /// `project.exec_summary.approve` — `POST /projects/{id}/exec-summary/approve`.
 /// Target carries `<project_id>`.
 pub const PROJECT_EXEC_SUMMARY_APPROVE: &str = "project.exec_summary.approve";

@@ -37,13 +37,15 @@ export function HardwareSection({
 
   return (
     <div className="flex flex-col gap-6">
-      <MarkdownField
-        label="Hardware features"
-        value={h.hardware_features}
-        onCommit={(hardware_features) =>
-          patch({ hardware: { hardware_features } })
-        }
-      />
+      <div data-validation-key="hardware.hardware_features">
+        <MarkdownField
+          label="Hardware features"
+          value={h.hardware_features}
+          onCommit={(hardware_features) =>
+            patch({ hardware: { hardware_features } })
+          }
+        />
+      </div>
       <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
         <TextField
           id="es-enclosure"

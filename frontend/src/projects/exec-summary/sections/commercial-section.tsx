@@ -18,17 +18,19 @@ export function CommercialSection({
   return (
     <div className="flex flex-col gap-6">
       <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-        <NumberField
-          id="es-rrp"
-          label="RRP"
-          value={c.rrp_cents}
-          onCommit={(rrp_cents) => patch({ commercial: { rrp_cents } })}
-          scale={100}
-          step={0.01}
-          prefix="$"
-          placeholder="0.00"
-          hint="Recommended retail price."
-        />
+        <div data-validation-key="commercial.rrp_cents">
+          <NumberField
+            id="es-rrp"
+            label="RRP"
+            value={c.rrp_cents}
+            onCommit={(rrp_cents) => patch({ commercial: { rrp_cents } })}
+            scale={100}
+            step={0.01}
+            prefix="$"
+            placeholder="0.00"
+            hint="Recommended retail price."
+          />
+        </div>
         <NumberField
           id="es-oem"
           label="OEM price"
@@ -41,17 +43,19 @@ export function CommercialSection({
           prefix="$"
           placeholder="0.00"
         />
-        <NumberField
-          id="es-gp"
-          label="Target GP"
-          value={c.target_gp_pct}
-          onCommit={(target_gp_pct) =>
-            patch({ commercial: { target_gp_pct } })
-          }
-          step={0.1}
-          suffix="%"
-          placeholder="0"
-        />
+        <div data-validation-key="commercial.target_gp_pct">
+          <NumberField
+            id="es-gp"
+            label="Target GP"
+            value={c.target_gp_pct}
+            onCommit={(target_gp_pct) =>
+              patch({ commercial: { target_gp_pct } })
+            }
+            step={0.1}
+            suffix="%"
+            placeholder="0"
+          />
+        </div>
       </div>
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
         <TextField

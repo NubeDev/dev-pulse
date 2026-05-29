@@ -13,16 +13,20 @@ export function ScopeSection({
   const s = data.scope;
   return (
     <div className="flex flex-col gap-6">
-      <MarkdownField
-        label="In scope"
-        value={s.in_scope}
-        onCommit={(in_scope) => patch({ scope: { in_scope } })}
-      />
-      <MarkdownField
-        label="Out of scope"
-        value={s.out_of_scope}
-        onCommit={(out_of_scope) => patch({ scope: { out_of_scope } })}
-      />
+      <div data-validation-key="scope.in_scope">
+        <MarkdownField
+          label="In scope"
+          value={s.in_scope}
+          onCommit={(in_scope) => patch({ scope: { in_scope } })}
+        />
+      </div>
+      <div data-validation-key="scope.out_of_scope">
+        <MarkdownField
+          label="Out of scope"
+          value={s.out_of_scope}
+          onCommit={(out_of_scope) => patch({ scope: { out_of_scope } })}
+        />
+      </div>
       <MarkdownField
         label="Assumptions"
         value={s.assumptions}

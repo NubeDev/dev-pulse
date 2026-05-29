@@ -69,7 +69,7 @@ export function ChangelogSection({
   };
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-6" data-validation-key="changelog.any">
       <form
         onSubmit={onSubmit}
         className="grid grid-cols-1 gap-3 rounded-md border bg-muted/20 p-3 md:grid-cols-[120px_140px_160px_1fr_auto]"

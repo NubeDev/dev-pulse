@@ -52,7 +52,7 @@ export function DocumentsSection({
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-4" data-validation-key="documents.any">
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-medium">
           Documents{" "}

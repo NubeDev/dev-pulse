@@ -1,10 +1,22 @@
 import {
+  AlertTriangleIcon,
   CheckCircle2Icon,
   RotateCcwIcon,
   SendIcon,
   Loader2Icon,
 } from "lucide-react";
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
@@ -17,7 +29,12 @@ import {
   useSubmitExecSummary,
 } from "./hooks/use-exec-summary.js";
 import { PrintPdfButton } from "./pdf/print-pdf-button.js";
-import { StatusBadge, type ExecSummaryPermissions } from "./shared.js";
+import { SECTIONS, StatusBadge, type ExecSummaryPermissions } from "./shared.js";
+
+/** Server-side gate in [`submit_project_exec_summary`]; kept in sync
+ *  manually so the proactive missing-sections hint can tell the user
+ *  what stands between them and being able to submit. */
+const SUBMIT_THRESHOLD_PERCENT = 80;
 
 export function ExecSummaryHeader({
   projectId,
@@ -35,6 +52,11 @@ export function ExecSummaryHeader({
   const revert = useRevertExecSummary(projectId);
   const pct = data.completion.percent;
   const status = data.approval.status;
+  const missingLabels = SECTIONS
+    .filter((s) => data.completion.sections[s.id] === false)
+    .map((s) => s.label);
+  const showHint = status === "draft" && missingLabels.length > 0;
+  const blocked = pct < SUBMIT_THRESHOLD_PERCENT;
 
   return (
     <Card
@@ -75,6 +97,62 @@ export function ExecSummaryHeader({
             <SendIcon className="mr-1.5 h-3.5 w-3.5" />
             Submit
           </Button>
+          {status === "draft" && blocked && permissions.canSubmit && (
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="border-amber-300 bg-amber-50 text-amber-900 hover:bg-amber-100"
+                  disabled={submit.isPending}
+                  data-testid="exec-summary-force-submit"
+                >
+                  <AlertTriangleIcon className="mr-1.5 h-3.5 w-3.5" />
+                  Force submit
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>
+                    Force submit this exec summary?
+                  </AlertDialogTitle>
+                  <AlertDialogDescription asChild>
+                    <div className="space-y-2">
+                      <p>
+                        The summary is{" "}
+                        <span className="font-semibold">{pct}%</span>{" "}
+                        complete — below the {SUBMIT_THRESHOLD_PERCENT}%
+                        threshold normally required to move to review.
+                      </p>
+                      {missingLabels.length > 0 && (
+                        <p>
+                          Still incomplete:{" "}
+                          <span className="font-medium">
+                            {missingLabels.join(", ")}
+                          </span>
+                          .
+                        </p>
+                      )}
+                      <p>
+                        This action will be audit-logged as a forced
+                        submission.
+                      </p>
+                    </div>
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                  <AlertDialogAction
+                    onClick={() => submit.mutate({ force: true })}
+                    className="bg-amber-600 text-white hover:bg-amber-700"
+                  >
+                    Submit anyway
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          )}
           <Button
             type="button"
             size="sm"
@@ -120,6 +198,33 @@ export function ExecSummaryHeader({
           {pct}%
         </span>
       </div>
+
+      {showHint && (
+        <div
+          className={cn(
+            "rounded-md border px-3 py-2 text-xs",
+            blocked
+              ? "border-amber-200 bg-amber-50 text-amber-900"
+              : "border-muted bg-muted/40 text-muted-foreground",
+          )}
+          data-testid="exec-summary-missing-hint"
+        >
+          {blocked ? (
+            <>
+              <span className="font-medium">
+                Needs {SUBMIT_THRESHOLD_PERCENT}% to submit.
+              </span>{" "}
+              Finish or mark N/A:{" "}
+              <span className="font-medium">{missingLabels.join(", ")}</span>.
+            </>
+          ) : (
+            <>
+              Still to fill in:{" "}
+              <span className="font-medium">{missingLabels.join(", ")}</span>.
+            </>
+          )}
+        </div>
+      )}
     </Card>
   );
 }

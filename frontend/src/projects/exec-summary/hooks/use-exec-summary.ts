@@ -143,10 +143,13 @@ function mergePatch(
 
 export function useSubmitExecSummary(
   projectId: string,
-): UseMutationResult<ExecSummaryDto, Error, void> {
+): UseMutationResult<ExecSummaryDto, Error, { force?: boolean } | void> {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: () => api.submitProjectExecSummary(projectId),
+    mutationFn: (vars) =>
+      api.submitProjectExecSummary(projectId, {
+        force: vars?.force === true,
+      }),
     onSuccess: (next) => qc.setQueryData(execSummaryKey(projectId), next),
   });
 }

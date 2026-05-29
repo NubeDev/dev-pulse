@@ -2192,6 +2192,15 @@
               "type": "string",
               "format": "uuid"
             }
+          },
+          {
+            "name": "force",
+            "in": "query",
+            "description": "When true, bypass the completion gate and submit a partially-filled draft. Audit-logged as `project.exec_summary.submit_force`.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
           }
         ],
         "responses": {

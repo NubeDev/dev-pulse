@@ -262,6 +262,16 @@ export function AdminUsersPage(): JSX.Element {
           </CardDescription>
         </CardHeader>
         <CardContent className="grid gap-4">
+          {usersQuery.error ? (
+            <Alert variant="destructive" data-testid="admin-users-load-error">
+              <AlertTitle>Failed to load users</AlertTitle>
+              <AlertDescription>
+                {usersQuery.error instanceof Error
+                  ? usersQuery.error.message
+                  : String(usersQuery.error)}
+              </AlertDescription>
+            </Alert>
+          ) : null}
           <div className="flex flex-wrap items-end gap-3">
             <div className="grid gap-1.5">
               <Label htmlFor="admin-users-search">Search</Label>
@@ -411,7 +421,11 @@ export function AdminUsersPage(): JSX.Element {
                       colSpan={5}
                       className="text-center text-sm text-muted-foreground"
                     >
-                      {usersQuery.isPending ? "Loading users…" : "No users match."}
+                      {usersQuery.isPending
+                        ? "Loading users…"
+                        : users.length === 0
+                          ? "No users in dp_users yet. Run a GitHub sync, or re-run `dev-pulse create-admin` to mirror the seeded admin row."
+                          : "No users match the current filter."}
                     </TableCell>
                   </TableRow>
                 ) : null}
