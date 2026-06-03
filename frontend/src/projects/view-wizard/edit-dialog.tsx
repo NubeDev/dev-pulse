@@ -50,8 +50,8 @@ import {
   categoriesToSlugList,
 } from "./categories-editor.js";
 import { CATEGORISED_GROUP_BY } from "./templates.js";
+import { DateDisplayPicker } from "./date-display-picker.js";
 import {
-  formatDateDisplay,
   weekOfMonthLabel,
   type DateDisplayMode,
 } from "./date-display.js";
@@ -256,58 +256,11 @@ export function EditViewDialog({
           ) : null}
 
           {onChangeDateDisplay ? (
-            <div className="flex flex-col gap-1.5">
-              <Label>
-                Date display
-                <span className="ml-1 text-xs font-normal text-muted-foreground">
-                  (how the due date appears on this tab)
-                </span>
-              </Label>
-              <div
-                role="radiogroup"
-                aria-label="Date display"
-                className="inline-flex w-fit overflow-hidden rounded-md border border-border"
-              >
-                {(
-                  [
-                    { value: "hide", label: "Hide" },
-                    { value: "week", label: "Week of month" },
-                    { value: "date", label: "Date (DD:Mon:YY)" },
-                  ] as Array<{ value: DateDisplayMode; label: string }>
-                ).map((opt, i) => {
-                  const selected = (dateDisplay ?? "week") === opt.value;
-                  return (
-                    <button
-                      key={opt.value}
-                      type="button"
-                      role="radio"
-                      aria-checked={selected}
-                      onClick={() => onChangeDateDisplay(opt.value)}
-                      className={[
-                        "px-3 py-1.5 text-xs font-medium transition-colors",
-                        i > 0 ? "border-l border-border" : "",
-                        selected
-                          ? "bg-foreground text-background"
-                          : "bg-background text-foreground/70 hover:bg-muted",
-                      ]
-                        .filter(Boolean)
-                        .join(" ")}
-                    >
-                      {opt.label}
-                    </button>
-                  );
-                })}
-              </div>
-              {dueDate ? (
-                <p className="text-xs text-muted-foreground">
-                  Preview:{" "}
-                  <span className="font-medium text-foreground">
-                    {formatDateDisplay(dueDate, dateDisplay ?? "week") ??
-                      "(hidden)"}
-                  </span>
-                </p>
-              ) : null}
-            </div>
+            <DateDisplayPicker
+              value={dateDisplay ?? "week"}
+              onChange={onChangeDateDisplay}
+              dueDate={dueDate || null}
+            />
           ) : null}
 
           {ensureError && (

@@ -2,6 +2,7 @@ import type {
   PortfolioSort,
   ProjectPortfolioRequest,
   ProjectStatusDto,
+  TagMatch,
 } from "../../api/client.js";
 import { PAGE_SIZE, VALID_SORTS, VALID_STATUSES } from "./portfolio-constants.js";
 
@@ -43,6 +44,15 @@ export function parseQuery(route: string): ProjectPortfolioRequest {
 
   const hide_overdue = params.get("hide_overdue") === "1";
 
+  const tagsCsv = params.get("tags");
+  const tag_ids: string[] = tagsCsv
+    ? tagsCsv
+        .split(",")
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0)
+    : [];
+  const tag_match: TagMatch = params.get("tag_match") === "all" ? "all" : "any";
+
   const pageRaw = params.get("page");
   const page = pageRaw ? Math.max(1, Number.parseInt(pageRaw, 10) || 1) : 1;
   const offset = (page - 1) * PAGE_SIZE;
@@ -51,6 +61,8 @@ export function parseQuery(route: string): ProjectPortfolioRequest {
     orgs: [],
     statuses,
     hide_overdue,
+    tag_ids,
+    tag_match,
     sort,
     limit: PAGE_SIZE,
     offset,

@@ -42,7 +42,8 @@ import {
   VIEW_TEMPLATES,
   type ViewTemplate,
 } from "./templates.js";
-import { weekOfMonthLabel } from "./date-display.js";
+import { DateDisplayPicker } from "./date-display-picker.js";
+import { weekOfMonthLabel, type DateDisplayMode } from "./date-display.js";
 
 export interface NewViewWizardProps {
   open: boolean;
@@ -65,8 +66,15 @@ export interface NewViewWizardProps {
   /** Called once per view to create. The wizard sequences the
    *  calls itself (the parent's mutation hook is the same one
    *  the rest of the strip uses). `single` and `custom`
-   *  templates produce exactly one call; `batch` produces N. */
-  onSubmit: (body: ProjectViewWriteBody) => void;
+   *  templates produce exactly one call; `batch` produces N.
+   *
+   *  `dateDisplay` is the machine-local tab badge preference — it
+   *  isn't part of the write body, so the parent persists it
+   *  against each freshly-created view id once the POST resolves. */
+  onSubmit: (
+    body: ProjectViewWriteBody,
+    dateDisplay: DateDisplayMode,
+  ) => void;
 }
 
 type Step = "template" | "details";
@@ -83,6 +91,7 @@ export function NewViewWizard({
   const [name, setName] = useState("");
   const [startDate, setStartDate] = useState("");
   const [dueDate, setDueDate] = useState("");
+  const [dateDisplay, setDateDisplay] = useState<DateDisplayMode>("week");
 
   // Reset every time the dialog re-opens so stale state from a
   // previous run doesn't leak.
@@ -93,6 +102,7 @@ export function NewViewWizard({
     setName("");
     setStartDate("");
     setDueDate("");
+    setDateDisplay("week");
   }, [open]);
 
   const pickTemplate = (t: ViewTemplate): void => {
@@ -131,41 +141,50 @@ export function NewViewWizard({
 
     if (template.kind === "batch" && template.batch) {
       for (const seed of template.batch) {
-        onSubmit({
-          name: seed.name,
-          group_by: seed.groupBy,
-          filter_clauses: seed.filterClauses,
-          sort: current.sort,
-          start_date: startDate || null,
-          due_date: dueDate || null,
-        });
+        onSubmit(
+          {
+            name: seed.name,
+            group_by: seed.groupBy,
+            filter_clauses: seed.filterClauses,
+            sort: current.sort,
+            start_date: startDate || null,
+            due_date: dueDate || null,
+          },
+          dateDisplay,
+        );
       }
       onCancel();
       return;
     }
 
     if (template.kind === "single" && template.seed) {
-      onSubmit({
-        name: trimmed || template.seed.name,
-        group_by: template.seed.groupBy,
-        filter_clauses: template.seed.filterClauses,
-        sort: current.sort,
-        start_date: startDate || null,
-        due_date: dueDate || null,
-      });
+      onSubmit(
+        {
+          name: trimmed || template.seed.name,
+          group_by: template.seed.groupBy,
+          filter_clauses: template.seed.filterClauses,
+          sort: current.sort,
+          start_date: startDate || null,
+          due_date: dueDate || null,
+        },
+        dateDisplay,
+      );
       onCancel();
       return;
     }
 
     // custom
-    onSubmit({
-      name: trimmed,
-      group_by: current.groupBy,
-      filter_clauses: current.filterClauses,
-      sort: current.sort,
-      start_date: startDate || null,
-      due_date: dueDate || null,
-    });
+    onSubmit(
+      {
+        name: trimmed,
+        group_by: current.groupBy,
+        filter_clauses: current.filterClauses,
+        sort: current.sort,
+        start_date: startDate || null,
+        due_date: dueDate || null,
+      },
+      dateDisplay,
+    );
     onCancel();
   };
 
@@ -201,6 +220,8 @@ export function NewViewWizard({
             onChangeStartDate={setStartDate}
             dueDate={dueDate}
             onChangeDueDate={setDueDate}
+            dateDisplay={dateDisplay}
+            onChangeDateDisplay={setDateDisplay}
           />
         )}
 
@@ -351,6 +372,8 @@ interface DetailsStepProps {
   onChangeStartDate: (v: string) => void;
   dueDate: string;
   onChangeDueDate: (v: string) => void;
+  dateDisplay: DateDisplayMode;
+  onChangeDateDisplay: (mode: DateDisplayMode) => void;
 }
 
 function DetailsStep({
@@ -361,6 +384,8 @@ function DetailsStep({
   onChangeStartDate,
   dueDate,
   onChangeDueDate,
+  dateDisplay,
+  onChangeDateDisplay,
 }: DetailsStepProps): JSX.Element {
   const isBatch = template.kind === "batch";
   const PreviewIcon = iconForName(name.trim() || "view");
@@ -432,6 +457,16 @@ function DetailsStep({
         </div>
       </div>
 
+      <DateDisplayPicker
+        value={dateDisplay}
+        onChange={onChangeDateDisplay}
+        dueDate={dueDate || null}
+        hint={
+          isBatch
+            ? "how the due date appears on every tab in this batch"
+            : "how the due date appears on this tab"
+        }
+      />
     </div>
   );
 }

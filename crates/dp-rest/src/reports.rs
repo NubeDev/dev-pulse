@@ -840,6 +840,8 @@ pub async fn project_portfolio_report(
         statuses,
         window: window_pair,
         hide_overdue: req.hide_overdue,
+        tag_ids: req.tag_ids.clone(),
+        tag_match_all: req.tag_match.is_all(),
         sort: req.sort,
         now,
         limit: i64::from(req.limit),
@@ -1459,6 +1461,7 @@ mod tests {
             target_issue_id: Some(Uuid::new_v4()),
             target_user_id: None,
             target_team_id: None,
+            target_project_id: None,
             added_by: Uuid::new_v4(),
             added_at: Utc::now(),
         }
@@ -1473,6 +1476,7 @@ mod tests {
             target_issue_id: None,
             target_user_id: None,
             target_team_id: None,
+            target_project_id: None,
             added_by: Uuid::new_v4(),
             added_at: Utc::now(),
         }

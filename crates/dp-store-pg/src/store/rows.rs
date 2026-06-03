@@ -443,6 +443,7 @@ pub(super) fn row_to_tag_link(r: &sqlx::postgres::PgRow) -> Result<TagLink, Stor
         target_issue_id: r.try_get("target_issue_id").map_err(map_sqlx)?,
         target_user_id: r.try_get("target_user_id").map_err(map_sqlx)?,
         target_team_id: r.try_get("target_team_id").map_err(map_sqlx)?,
+        target_project_id: r.try_get("target_project_id").map_err(map_sqlx)?,
         added_by: r.try_get("added_by").map_err(map_sqlx)?,
         added_at: r.try_get("added_at").map_err(map_sqlx)?,
     })
@@ -521,6 +522,9 @@ pub(super) fn row_to_portfolio_raw(r: &sqlx::postgres::PgRow) -> Result<Portfoli
         mirrored_to_github: r.try_get("mirrored_to_github").map_err(map_sqlx)?,
         version: r.try_get("version").map_err(map_sqlx)?,
         total: r.try_get("total").map_err(map_sqlx)?,
+        // Filled by a second query in `list_project_portfolio_impl`
+        // once the page's project ids are known.
+        tags: Vec::new(),
     })
 }
 

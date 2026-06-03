@@ -127,7 +127,7 @@ impl From<TagScopeKindDto> for TagScopeKind {
     }
 }
 
-/// Wire form of [`TagLinkKind`] — `repo | issue | user | team`.
+/// Wire form of [`TagLinkKind`] — `repo | issue | user | team | project`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum TagLinkKindDto {
@@ -139,6 +139,8 @@ pub enum TagLinkKindDto {
     User,
     /// Link to a team.
     Team,
+    /// Link to a project — the portfolio grouping surface.
+    Project,
 }
 
 impl From<TagLinkKind> for TagLinkKindDto {
@@ -148,6 +150,7 @@ impl From<TagLinkKind> for TagLinkKindDto {
             TagLinkKind::Issue => Self::Issue,
             TagLinkKind::User => Self::User,
             TagLinkKind::Team => Self::Team,
+            TagLinkKind::Project => Self::Project,
         }
     }
 }
@@ -159,6 +162,7 @@ impl From<TagLinkKindDto> for TagLinkKind {
             TagLinkKindDto::Issue => Self::Issue,
             TagLinkKindDto::User => Self::User,
             TagLinkKindDto::Team => Self::Team,
+            TagLinkKindDto::Project => Self::Project,
         }
     }
 }
@@ -466,6 +470,14 @@ fn filter_visible_links(
                 .target_team_id
                 .map(|t| visible_team_ids.contains(&t))
                 .unwrap_or(false),
+            TagLinkKind::Project => {
+                // v1: project links pass through unfiltered. The tag
+                // itself is org-scoped and already gated by
+                // `can_see`; a finer per-project visibility list
+                // (mirroring the repo allow-list) lands with the same
+                // §12 work that tightens the repo branch above.
+                true
+            }
         })
         .collect()
 }
@@ -939,6 +951,7 @@ pub async fn link_targets(
             target_issue_id: None,
             target_user_id: None,
             target_team_id: None,
+            target_project_id: None,
             added_by: viewer,
             added_at: Utc::now(),
         };
@@ -947,6 +960,7 @@ pub async fn link_targets(
             TagLinkKind::Issue => link.target_issue_id = Some(item.target_id),
             TagLinkKind::User => link.target_user_id = Some(item.target_id),
             TagLinkKind::Team => link.target_team_id = Some(item.target_id),
+            TagLinkKind::Project => link.target_project_id = Some(item.target_id),
         }
         to_insert.push(link);
     }
@@ -1165,6 +1179,57 @@ fn scope_member_required(tag: &Tag) -> ApiError {
     }
 }
 
+/// `GET /projects/{id}/tags` — the tags currently linked to a
+/// project (reverse lookup over `dp_tag_links` where
+/// `kind = 'project'`).
+///
+/// Convenience for the portfolio "Tags" column and the project
+/// detail tag editor. Returns the same [`TagDto`] shape as
+/// `GET /tags`; `visible_link_count` is reported as `0` here — the
+/// count is not load-bearing on the project surfaces (they render
+/// the chip, not the fan-out). Tags whose scope the caller can't
+/// see are filtered out, mirroring `GET /tags`.
+#[utoipa::path(
+    get,
+    path = "/projects/{id}/tags",
+    params(("id" = Uuid, Path, description = "Project id")),
+    responses(
+        (status = 200, description = "Tags linked to the project, visible to caller", body = Vec<TagDto>),
+    ),
+    tag = "tags",
+)]
+pub async fn list_project_tags(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Vec<TagDto>>, ApiError> {
+    let store = state.store.as_ref();
+    let visibility = ViewerVisibility::load(store, principal.actor_user_id).await?;
+    let team_ids = visibility.visible_team_ids(store).await?;
+
+    let links = store
+        .list_tag_links_for_targets(TagLinkKind::Project, &[id])
+        .await?;
+
+    let mut out = Vec::new();
+    let mut seen: HashSet<Uuid> = HashSet::new();
+    for l in links {
+        if !seen.insert(l.tag_id) {
+            continue;
+        }
+        match store.get_tag(l.tag_id).await {
+            Ok(tag) => {
+                if visibility.can_see(&tag, &team_ids) && tag.archived_at.is_none() {
+                    out.push(TagDto::from_with_count(tag, 0));
+                }
+            }
+            Err(StoreError::NotFound { .. }) => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(Json(out))
+}
+
 // ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
@@ -1182,7 +1247,8 @@ pub fn tags_router(state: Arc<AppState>) -> Router {
             Router::new()
                 .route("/tags", get(list_tags))
                 .route("/tags/{id}", get(get_tag))
-                .route("/me/tags", get(list_my_tags)),
+                .route("/me/tags", get(list_my_tags))
+                .route("/projects/{id}/tags", get(list_project_tags)),
             "tags",
             "read",
         ))
@@ -1587,6 +1653,7 @@ mod tests {
             target_issue_id: None,
             target_user_id: None,
             target_team_id: None,
+            target_project_id: None,
             added_by: actor,
             added_at: Utc::now(),
         };
@@ -1595,6 +1662,7 @@ mod tests {
             TagLinkKind::Issue => link.target_issue_id = Some(target),
             TagLinkKind::User => link.target_user_id = Some(target),
             TagLinkKind::Team => link.target_team_id = Some(target),
+            TagLinkKind::Project => link.target_project_id = Some(target),
         }
         store.links.lock().unwrap().push(link);
     }

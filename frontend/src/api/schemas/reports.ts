@@ -88,16 +88,30 @@ export const WindowSpecSchema = z
   .partial({ custom_start: true, custom_end: true });
 export type WindowSpec = z.infer<typeof WindowSpecSchema>;
 
+export const TagMatchSchema = z.enum(["any", "all"]);
+export type TagMatch = z.infer<typeof TagMatchSchema>;
+
 export const ProjectPortfolioRequestSchema = z.object({
   orgs: z.array(uuid).default([]),
   statuses: z.array(ProjectStatusDtoSchema).default([]),
   window: WindowSpecSchema.nullable().optional(),
   hide_overdue: z.boolean().default(false),
+  tag_ids: z.array(uuid).default([]),
+  tag_match: TagMatchSchema.default("any"),
   sort: PortfolioSortSchema.default("due_asc_nulls_last"),
   limit: z.number().int().min(1).max(200).default(50),
   offset: z.number().int().min(0).default(0),
 });
 export type ProjectPortfolioRequest = z.input<typeof ProjectPortfolioRequestSchema>;
+
+/** Minimal tag projection rendered as a chip in the portfolio
+ *  "Tags" column. Mirrors `dp_reports::project_portfolio::TagChip`. */
+export const TagChipSchema = z.object({
+  id: uuid,
+  name: z.string(),
+  color: z.string(),
+});
+export type TagChip = z.infer<typeof TagChipSchema>;
 
 export const UserChipSchema = z.object({
   id: uuid,
@@ -121,6 +135,7 @@ export const ProjectPortfolioRowSchema = z.object({
   lead: UserChipSchema.nullable().optional(),
   mirrored_to_github: z.boolean(),
   version: z.number().int(),
+  tags: z.array(TagChipSchema),
 });
 export type ProjectPortfolioRow = z.infer<typeof ProjectPortfolioRowSchema>;
 

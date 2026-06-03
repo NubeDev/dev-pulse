@@ -3436,6 +3436,7 @@ dependencies = [
  "starter-flow-spi",
  "starter-skills",
  "starter-spi",
+ "starter-windowed",
  "testcontainers",
  "testcontainers-modules",
  "thiserror 1.0.69",
@@ -3457,6 +3458,17 @@ dependencies = [
  "starter-spi",
  "thiserror 1.0.69",
  "tracing",
+]
+
+[[package]]
+name = "starter-windowed"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
 ]
 
 [[package]]

@@ -152,3 +152,48 @@ export function gateMetaForName(name: string): GateMeta | null {
   return GATE_META[key] ?? null;
 }
 
+/** Canonical gate index (1–8) when a view name *is* a gate
+ *  short-code (`G1` … `G8`, case-insensitive). Returns `null` for
+ *  every non-gate name. Used to hard-code the gate-progression tab
+ *  order in the frontend — the wizard fans out the eight create
+ *  POSTs back-to-back, so the server can persist them out of order
+ *  (e.g. G1, G7, G8, G2); this lets the strip re-impose G1→G8. */
+export function gateOrderForName(name: string): number | null {
+  const m = /^g([1-8])$/.exec(name.trim().toLowerCase());
+  return m ? Number(m[1]) : null;
+}
+
+/** Re-impose canonical gate order on a saved-views list without
+ *  disturbing non-gate tabs. Every gate view (`G1` … `G8`) is
+ *  sorted into ascending gate order *in place* — i.e. the slots the
+ *  gate tabs already occupy are refilled G1-first — while any
+ *  non-gate view keeps its exact stored position. A list with fewer
+ *  than two gate tabs is returned untouched (and the same reference,
+ *  so it's cheap to call on every render / memo-friendly).
+ *
+ *  This intentionally overrides drag-and-drop *for gate tabs*: their
+ *  order is derived from the name, not the persisted `position`, so
+ *  they always read G1→G8 regardless of how they were created or
+ *  dragged. Non-gate tabs remain freely reorderable. */
+export function orderGateViews<T extends { name: string }>(
+  views: readonly T[],
+): T[] {
+  const slots: number[] = [];
+  const gateViews: T[] = [];
+  views.forEach((v, i) => {
+    if (gateOrderForName(v.name) !== null) {
+      slots.push(i);
+      gateViews.push(v);
+    }
+  });
+  if (gateViews.length < 2) return views as T[];
+  gateViews.sort(
+    (a, b) => gateOrderForName(a.name)! - gateOrderForName(b.name)!,
+  );
+  const out = views.slice();
+  slots.forEach((slotIdx, k) => {
+    out[slotIdx] = gateViews[k]!;
+  });
+  return out;
+}
+

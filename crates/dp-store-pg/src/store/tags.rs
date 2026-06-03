@@ -168,7 +168,7 @@ impl PgStore {
         let all_kinds = kinds.is_empty();
         let rows = sqlx::query(
             "SELECT id, tag_id, kind, target_repo_id, target_issue_id, \
-                    target_user_id, target_team_id, added_by, added_at \
+                    target_user_id, target_team_id, target_project_id, added_by, added_at \
                FROM dp_tag_links \
               WHERE tag_id = $1 \
                 AND ($3 OR kind = ANY($2)) \
@@ -197,30 +197,37 @@ impl PgStore {
         let sql = match kind {
             TagLinkKind::Repo => {
                 "SELECT id, tag_id, kind, target_repo_id, target_issue_id, \
-                        target_user_id, target_team_id, added_by, added_at \
+                        target_user_id, target_team_id, target_project_id, added_by, added_at \
                    FROM dp_tag_links \
                   WHERE kind = 'repo' AND target_repo_id = ANY($1) \
                   ORDER BY added_at ASC, id ASC"
             }
             TagLinkKind::Issue => {
                 "SELECT id, tag_id, kind, target_repo_id, target_issue_id, \
-                        target_user_id, target_team_id, added_by, added_at \
+                        target_user_id, target_team_id, target_project_id, added_by, added_at \
                    FROM dp_tag_links \
                   WHERE kind = 'issue' AND target_issue_id = ANY($1) \
                   ORDER BY added_at ASC, id ASC"
             }
             TagLinkKind::User => {
                 "SELECT id, tag_id, kind, target_repo_id, target_issue_id, \
-                        target_user_id, target_team_id, added_by, added_at \
+                        target_user_id, target_team_id, target_project_id, added_by, added_at \
                    FROM dp_tag_links \
                   WHERE kind = 'user' AND target_user_id = ANY($1) \
                   ORDER BY added_at ASC, id ASC"
             }
             TagLinkKind::Team => {
                 "SELECT id, tag_id, kind, target_repo_id, target_issue_id, \
-                        target_user_id, target_team_id, added_by, added_at \
+                        target_user_id, target_team_id, target_project_id, added_by, added_at \
                    FROM dp_tag_links \
                   WHERE kind = 'team' AND target_team_id = ANY($1) \
+                  ORDER BY added_at ASC, id ASC"
+            }
+            TagLinkKind::Project => {
+                "SELECT id, tag_id, kind, target_repo_id, target_issue_id, \
+                        target_user_id, target_team_id, target_project_id, added_by, added_at \
+                   FROM dp_tag_links \
+                  WHERE kind = 'project' AND target_project_id = ANY($1) \
                   ORDER BY added_at ASC, id ASC"
             }
         };
@@ -249,10 +256,10 @@ impl PgStore {
             let row = sqlx::query(
                 "INSERT INTO dp_tag_links \
                      (id, tag_id, kind, target_repo_id, target_issue_id, \
-                      target_user_id, target_team_id, added_by, added_at) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
+                      target_user_id, target_team_id, target_project_id, added_by, added_at) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
                  RETURNING id, tag_id, kind, target_repo_id, target_issue_id, \
-                           target_user_id, target_team_id, added_by, added_at",
+                           target_user_id, target_team_id, target_project_id, added_by, added_at",
             )
             .bind(l.id)
             .bind(l.tag_id)
@@ -261,6 +268,7 @@ impl PgStore {
             .bind(l.target_issue_id)
             .bind(l.target_user_id)
             .bind(l.target_team_id)
+            .bind(l.target_project_id)
             .bind(l.added_by)
             .bind(l.added_at)
             .fetch_one(&mut *tx)
@@ -317,7 +325,7 @@ impl PgStore {
         }
         let rows = sqlx::query(
             "SELECT id, tag_id, kind, target_repo_id, target_issue_id, \
-                    target_user_id, target_team_id, added_by, added_at \
+                    target_user_id, target_team_id, target_project_id, added_by, added_at \
                FROM dp_tag_links \
               WHERE tag_id = ANY($1) \
                 AND ( \

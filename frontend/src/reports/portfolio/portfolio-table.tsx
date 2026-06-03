@@ -41,6 +41,7 @@ import {
   useArchiveProject,
   usePatchProject,
 } from "../../projects/use-projects-data.js";
+import { ProjectTagsControl } from "../../projects/project-tags.js";
 import { SORT_PAIRS, STATUS_TONE } from "./portfolio-constants.js";
 import { buildRoute, currentParams } from "./portfolio-url.js";
 import { relativeDue } from "./portfolio-kpis.js";
@@ -103,6 +104,9 @@ export function PortfolioTable({
   sort: PortfolioSort;
   route: string;
 }): JSX.Element {
+  const qc = useQueryClient();
+  const invalidatePortfolio = () =>
+    qc.invalidateQueries({ queryKey: ["report-project-portfolio"] });
   return (
     <Table data-testid="portfolio-table">
       <TableHeader>
@@ -122,6 +126,7 @@ export function PortfolioTable({
           <TableHead className="text-right">Open / Overdue</TableHead>
           <TableHead className="text-right">Tasks/Issues done</TableHead>
           <TableHead>Milestones</TableHead>
+          <TableHead>Tags</TableHead>
           <TableHead>Lead</TableHead>
           <TableHead className="w-[56px]" aria-label="Actions" />
         </TableRow>
@@ -197,6 +202,15 @@ export function PortfolioTable({
               </TableCell>
               <TableCell>
                 <MilestonesCell projectId={row.id} />
+              </TableCell>
+              <TableCell onClick={(e) => e.stopPropagation()}>
+                <ProjectTagsControl
+                  projectId={row.id}
+                  orgId={row.org_id}
+                  tags={row.tags}
+                  compact
+                  onChanged={invalidatePortfolio}
+                />
               </TableCell>
               <TableCell className="text-muted-foreground">
                 {row.lead ? row.lead.login : "—"}

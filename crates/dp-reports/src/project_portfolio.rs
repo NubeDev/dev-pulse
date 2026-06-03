@@ -84,6 +84,19 @@ pub struct ProjectPortfolioRequest {
     #[serde(default)]
     pub sort: PortfolioSort,
 
+    /// Restrict to projects carrying these tags (`dp_tag_links` of
+    /// `kind = 'project'`). Empty ⇒ no tag filter. The combination
+    /// rule is [`tag_match`](Self::tag_match).
+    #[serde(default)]
+    pub tag_ids: Vec<Uuid>,
+
+    /// How [`tag_ids`](Self::tag_ids) combine: `Any` (default) keeps a
+    /// project that carries *at least one* of the tags; `All` keeps
+    /// only projects carrying *every* listed tag. Ignored when
+    /// `tag_ids` is empty.
+    #[serde(default)]
+    pub tag_match: TagMatch,
+
     /// 1-based pagination — same envelope shape as `GET /projects`.
     #[serde(default = "default_limit")]
     pub limit: u32,
@@ -91,6 +104,27 @@ pub struct ProjectPortfolioRequest {
     /// Page offset; `0` ⇒ first page.
     #[serde(default)]
     pub offset: u32,
+}
+
+/// Combination rule for the [`ProjectPortfolioRequest::tag_ids`]
+/// filter. Mirrors the two modes the portfolio filter bar exposes
+/// ("Match any" / "Match all").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum TagMatch {
+    /// Keep a project carrying at least one of the listed tags (OR).
+    #[default]
+    Any,
+    /// Keep only projects carrying every listed tag (AND).
+    All,
+}
+
+impl TagMatch {
+    /// `true` for `All` — the boolean the SQL builder binds as the
+    /// match-mode flag (`$10`).
+    pub fn is_all(self) -> bool {
+        matches!(self, TagMatch::All)
+    }
 }
 
 impl Default for ProjectPortfolioRequest {
@@ -101,6 +135,8 @@ impl Default for ProjectPortfolioRequest {
             window: None,
             hide_overdue: false,
             sort: PortfolioSort::default(),
+            tag_ids: Vec::new(),
+            tag_match: TagMatch::Any,
             limit: PORTFOLIO_LIMIT_DEFAULT,
             offset: 0,
         }
@@ -186,6 +222,26 @@ pub struct ProjectPortfolioRow {
     /// CAS token — echoed through so a row click can deep-link into
     /// the §6.3 detail page without a fresh `GET /projects/{id}`.
     pub version: i64,
+
+    /// Tags linked to this project (`dp_tag_links` of
+    /// `kind = 'project'`), name-ordered. Drives the portfolio "Tags"
+    /// column. Empty when the project carries no tags.
+    #[serde(default)]
+    pub tags: Vec<TagChip>,
+}
+
+/// Minimal tag projection for the portfolio "Tags" column. Carries
+/// just what the chip renders — id (for the filter deep-link), name,
+/// and the semantic palette colour. Mirrors the §7.2 `TagDto` subset
+/// the frontend's `TagChip` schema expects.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TagChip {
+    /// `dp_tags.id`.
+    pub id: Uuid,
+    /// Display name.
+    pub name: String,
+    /// Semantic palette name (`indigo`, `red`, …).
+    pub color: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -324,6 +380,15 @@ impl From<PortfolioRawRow> for ProjectPortfolioRow {
             lead: raw.lead.map(|(id, login)| UserChip { id, login }),
             mirrored_to_github: raw.mirrored_to_github,
             version: raw.version,
+            tags: raw
+                .tags
+                .into_iter()
+                .map(|t| TagChip {
+                    id: t.id,
+                    name: t.name,
+                    color: t.color,
+                })
+                .collect(),
         }
     }
 }
@@ -350,6 +415,8 @@ pub const PROJECT_PORTFOLIO_BIND_ORDER: &[&str] = &[
     "$6 now (timestamptz; used for slip_days, issue_overdue_count, hide_overdue)",
     "$7 limit (int)",
     "$8 offset (int)",
+    "$9 tag_ids (uuid[]; cardinality 0 == no tag filter)",
+    "$10 tag_match_all (bool; true ⇒ project must carry every tag, false ⇒ any)",
 ];
 
 /// `ORDER BY` clause for a given sort. Whitelisted constants — no
@@ -402,6 +469,21 @@ pub fn build_project_portfolio_sql(sort: PortfolioSort) -> String {
                 AND ($3::timestamptz IS NULL OR p.start_at IS NULL OR p.start_at < $4) \
                 AND ($4::timestamptz IS NULL OR p.due_at   IS NULL OR p.due_at   >= $3) \
                 AND (NOT $5 OR NOT (p.status IN ('active','backlog') AND p.due_at < $6)) \
+                AND ( \
+                    cardinality($9::uuid[]) = 0 \
+                 OR (NOT $10 AND EXISTS ( \
+                        SELECT 1 FROM dp_tag_links tl \
+                         WHERE tl.kind = 'project' \
+                           AND tl.target_project_id = p.id \
+                           AND tl.tag_id = ANY($9) \
+                     )) \
+                 OR ($10 AND ( \
+                        SELECT COUNT(DISTINCT tl.tag_id) FROM dp_tag_links tl \
+                         WHERE tl.kind = 'project' \
+                           AND tl.target_project_id = p.id \
+                           AND tl.tag_id = ANY($9) \
+                     ) = cardinality($9::uuid[])) \
+                ) \
          ) \
          SELECT p.id, \
                 p.org_id, \
@@ -475,6 +557,7 @@ mod tests {
             lead: None,
             mirrored_to_github: false,
             version: 1,
+            tags: Vec::new(),
         }
     }
 
@@ -555,14 +638,16 @@ mod tests {
     // -----------------------------------------------------------------
 
     #[test]
-    fn bind_order_has_eight_slots() {
-        assert_eq!(PROJECT_PORTFOLIO_BIND_ORDER.len(), 8);
+    fn bind_order_has_ten_slots() {
+        // 8 original + $9 tag_ids + $10 tag_match_all (migration 0049
+        // project-tag filter).
+        assert_eq!(PROJECT_PORTFOLIO_BIND_ORDER.len(), 10);
     }
 
     #[test]
     fn sql_contains_every_param_placeholder() {
         let sql = build_project_portfolio_sql(PortfolioSort::DueAscNullsLast);
-        for n in 1..=8 {
+        for n in 1..=10 {
             let placeholder = format!("${n}");
             assert!(
                 sql.contains(&placeholder),

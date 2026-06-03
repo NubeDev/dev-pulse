@@ -23,6 +23,8 @@ export {
   type CategoryChip,
   type CategoryPack,
 } from "./templates.js";
+export { DateDisplayPicker } from "./date-display-picker.js";
+export type { DateDisplayPickerProps } from "./date-display-picker.js";
 export {
   formatAu,
   formatDateDisplay,

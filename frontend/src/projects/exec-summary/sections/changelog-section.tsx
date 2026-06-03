@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/alert-dialog";
 
 import type { ExecSummaryDto } from "../../../api/client.js";
+import { formatAu } from "../../view-wizard/date-display.js";
 import {
   useAddExecSummaryChangelog,
   useDeleteExecSummaryChangelog,
@@ -151,7 +152,7 @@ export function ChangelogSection({
                 {entry.version}
               </span>
               <span className="tabular-nums text-xs text-muted-foreground">
-                {entry.changed_at}
+                {formatAu(entry.changed_at)}
               </span>
               <span className="truncate text-xs text-muted-foreground">
                 {entry.changed_by}

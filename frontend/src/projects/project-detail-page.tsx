@@ -76,6 +76,7 @@ import { UserPicker } from "../components/user-picker.js";
 
 import { LinkBoardDialog } from "./link-board-dialog.js";
 import { MilestonesStrip } from "./milestones-strip.js";
+import { ProjectTagsControl } from "./project-tags.js";
 import { NewMilestoneDialog } from "./new-milestone-dialog.js";
 import { EditMilestoneDialog } from "./edit-milestone-dialog.js";
 import { ManageReposDialog } from "./project-repos-card.js";
@@ -201,6 +202,11 @@ function ProjectDetailBody({ project }: { project: ProjectDto }): JSX.Element {
   const projectViews = useProjectViews(project.id);
   const deleteProjectView = useDeleteProjectView(project.id);
   const milestones = useProjectMilestones(project.id);
+  const projectTags = useQuery({
+    queryKey: ["project-tags", project.id],
+    queryFn: () => api.listProjectTags(project.id),
+    staleTime: 30_000,
+  });
   const adoptMilestone = useAdoptProjectMilestone(project.id);
   const updateMilestone = useUpdateProjectMilestone(project.id);
   const deleteMilestone = useDeleteProjectMilestone(project.id);
@@ -369,6 +375,14 @@ function ProjectDetailBody({ project }: { project: ProjectDto }): JSX.Element {
                 {project.description}
               </span>
             ) : null}
+            <span className="flex items-center gap-1">
+              <ProjectTagsControl
+                projectId={project.id}
+                orgId={project.org_id}
+                tags={projectTags.data ?? []}
+                data-testid="project-detail-tags"
+              />
+            </span>
           </span>
         }
         trailing={

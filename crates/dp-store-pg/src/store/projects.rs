@@ -1,6 +1,6 @@
 use dp_domain::project::{
-    PortfolioQueryFilter, PortfolioRawRow, Project, ProjectIssueAddOutcome, ProjectIssueAddSkip,
-    ProjectListFilter, ProjectRepo, ProjectStatus, ProjectUpsert,
+    PortfolioQueryFilter, PortfolioRawRow, PortfolioTagRaw, Project, ProjectIssueAddOutcome,
+    ProjectIssueAddSkip, ProjectListFilter, ProjectRepo, ProjectStatus, ProjectUpsert,
 };
 use dp_domain::project_view::{
     ProjectView, ProjectViewUpsert,
@@ -106,10 +106,52 @@ impl PgStore {
             .bind(filter.now)
             .bind(filter.limit)
             .bind(filter.offset)
+            .bind(&filter.tag_ids)
+            .bind(filter.tag_match_all)
             .fetch_all(self.pool.sqlx())
             .await
             .map_err(map_sqlx)?;
-        rows.iter().map(row_to_portfolio_raw).collect()
+        let mut out: Vec<PortfolioRawRow> =
+            rows.iter().map(row_to_portfolio_raw).collect::<Result<_, _>>()?;
+
+        // Second query: load the project tags for the page in one
+        // round trip and stitch them onto the rows. The main CTE
+        // filters on tags but does not project them (keeps its scan
+        // lean); name-ordered so the chip row renders deterministically.
+        let project_ids: Vec<Uuid> = out.iter().map(|r| r.id).collect();
+        if !project_ids.is_empty() {
+            let tag_rows = sqlx::query(
+                "SELECT tl.target_project_id AS project_id, \
+                        t.id AS tag_id, t.name AS tag_name, t.color AS tag_color \
+                   FROM dp_tag_links tl \
+                   JOIN dp_tags t ON t.id = tl.tag_id \
+                  WHERE tl.kind = 'project' \
+                    AND tl.target_project_id = ANY($1) \
+                    AND t.archived_at IS NULL \
+                  ORDER BY lower(t.name) ASC",
+            )
+            .bind(&project_ids)
+            .fetch_all(self.pool.sqlx())
+            .await
+            .map_err(map_sqlx)?;
+
+            let mut by_project: std::collections::HashMap<Uuid, Vec<PortfolioTagRaw>> =
+                std::collections::HashMap::new();
+            for r in &tag_rows {
+                let pid: Uuid = r.try_get("project_id").map_err(map_sqlx)?;
+                by_project.entry(pid).or_default().push(PortfolioTagRaw {
+                    id: r.try_get("tag_id").map_err(map_sqlx)?,
+                    name: r.try_get("tag_name").map_err(map_sqlx)?,
+                    color: r.try_get("tag_color").map_err(map_sqlx)?,
+                });
+            }
+            for row in &mut out {
+                if let Some(tags) = by_project.remove(&row.id) {
+                    row.tags = tags;
+                }
+            }
+        }
+        Ok(out)
     }
 
     pub(super) async fn get_project_impl(&self, id: Uuid) -> Result<Option<Project>, StoreError> {

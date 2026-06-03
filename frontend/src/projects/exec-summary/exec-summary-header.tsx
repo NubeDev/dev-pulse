@@ -1,7 +1,9 @@
+import { useState } from "react";
 import {
   AlertTriangleIcon,
   CheckCircle2Icon,
   RotateCcwIcon,
+  SaveIcon,
   SendIcon,
   Loader2Icon,
 } from "lucide-react";
@@ -23,13 +25,16 @@ import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
 
 import type { ExecSummaryDto } from "../../api/client.js";
+import { formatAuDateTime } from "../view-wizard/date-display.js";
 import {
   useApproveExecSummary,
   useRevertExecSummary,
   useSubmitExecSummary,
 } from "./hooks/use-exec-summary.js";
 import { PrintPdfButton } from "./pdf/print-pdf-button.js";
+import { SaveVersionDialog } from "./save-version-dialog.js";
 import { SECTIONS, StatusBadge, type ExecSummaryPermissions } from "./shared.js";
+import { hasPendingChanges } from "./version.js";
 
 /** Server-side gate in [`submit_project_exec_summary`]; kept in sync
  *  manually so the proactive missing-sections hint can tell the user
@@ -50,6 +55,8 @@ export function ExecSummaryHeader({
   const submit = useSubmitExecSummary(projectId);
   const approve = useApproveExecSummary(projectId);
   const revert = useRevertExecSummary(projectId);
+  const [saveOpen, setSaveOpen] = useState(false);
+  const pending = hasPendingChanges(data);
   const pct = data.completion.percent;
   const status = data.approval.status;
   const missingLabels = SECTIONS
@@ -75,13 +82,31 @@ export function ExecSummaryHeader({
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <StatusBadge status={status} />
+            {pending && (
+              <span
+                className="inline-flex items-center rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] font-medium uppercase tracking-wide text-amber-900"
+                data-testid="exec-summary-pending-changes"
+              >
+                Pending changes
+              </span>
+            )}
             <span className="text-xs text-muted-foreground">
-              Updated {new Date(data.updated_at).toLocaleString()}
+              Updated {formatAuDateTime(data.updated_at)}
             </span>
           </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          <Button
+            type="button"
+            size="sm"
+            variant={pending ? "default" : "outline"}
+            onClick={() => setSaveOpen(true)}
+            data-testid="exec-summary-save-version"
+          >
+            <SaveIcon className="mr-1.5 h-3.5 w-3.5" />
+            Save
+          </Button>
           <PrintPdfButton projectId={projectId} data={data} />
           <Button
             type="button"
@@ -225,6 +250,13 @@ export function ExecSummaryHeader({
           )}
         </div>
       )}
+
+      <SaveVersionDialog
+        projectId={projectId}
+        data={data}
+        open={saveOpen}
+        onOpenChange={setSaveOpen}
+      />
     </Card>
   );
 }

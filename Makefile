@@ -6,8 +6,9 @@
 #   make logs    # tail both logs
 #   make status  # show whether each is running
 #
-# `make start` loads `.env` (gitignored, see .env.example) so the
-# `secret://github/pat` handle resolves to $GITHUB_PAT.
+# `make start` loads `.env` (gitignored) so the `secret://github/pat`
+# handle resolves to $GITHUB_PAT. If `.env` is missing it's seeded
+# from `.env.example` automatically — fill in GITHUB_PAT afterwards.
 #
 # Vite is run on port 5180 (non-default) to avoid clashing with any
 # other Vite project on the box. Both ports defined below; if you
@@ -26,13 +27,14 @@ FRONT_LOG  := $(LOG_DIR)/frontend.log
 
 CONFIG_SRC := $(ROOT)/crates/dev-pulse/config.example.toml
 CONFIG     := $(ROOT)/config.local.toml
+ENV_SRC    := $(ROOT)/.env.example
 ENV_FILE   := $(ROOT)/.env
 
 BACK_PORT  := 8731
 FRONT_PORT := 8732
 COMPOSE    := $(ROOT)/crates/dp-store-pg/docker-compose.yml
 
-.PHONY: build start kill stop restart status logs config seed-admin db migrate help \
+.PHONY: build start kill stop restart status logs config env seed-admin db migrate help \
         fly-deploy fly-logs fly-ssh fly-status fly-secrets-print \
         fly-local fly-local-down fly-local-reset fly-local-logs fly-local-build
 
@@ -66,12 +68,22 @@ $(CONFIG): $(CONFIG_SRC)
 	  echo "wrote $(CONFIG) — edit it if you need non-default values"; \
 	fi
 
+# ---------------------------------------------------------------- env
+
+env: $(ENV_FILE)
+
+$(ENV_FILE): $(ENV_SRC)
+	@if [ ! -f $(ENV_FILE) ]; then \
+	  cp $(ENV_SRC) $(ENV_FILE); \
+	  echo "wrote $(ENV_FILE) — fill in GITHUB_PAT (and other secrets) before fetching"; \
+	fi
+
 # ---------------------------------------------------------------- start
 
-start: config migrate $(RUN_DIR) $(LOG_DIR)
-	@if [ ! -f $(ENV_FILE) ]; then \
-	  echo "no .env — copy .env.example to .env and fill in GITHUB_PAT first"; \
-	  exit 1; \
+start: config env migrate $(RUN_DIR) $(LOG_DIR)
+	@if ! grep -q '^GITHUB_PAT=..*' $(ENV_FILE); then \
+	  echo "note: GITHUB_PAT is empty in $(ENV_FILE) — the GitHub fetcher"; \
+	  echo "      won't authenticate until you set it (the server still starts)."; \
 	fi
 	@if [ -f $(BACK_PID) ] && kill -0 $$(cat $(BACK_PID)) 2>/dev/null; then \
 	  echo "backend already running (pid $$(cat $(BACK_PID)))"; \

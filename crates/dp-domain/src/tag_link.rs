@@ -28,17 +28,25 @@ pub enum TagLinkKind {
     /// `target_team_id` set. Contributes to every metric (expands to
     /// team members at query time).
     Team,
+    /// `target_project_id` set. The cross-org grouping concept the
+    /// portfolio surface tags. Not an activity-attribution target —
+    /// project tags drive the portfolio column + filter, not the
+    /// §7.7 report metrics (see [`resolve_tag_targets`] passthrough).
+    ///
+    /// [`resolve_tag_targets`]: crate::store::Store::resolve_tag_targets
+    Project,
 }
 
 impl TagLinkKind {
     /// Lower-case wire form, matching the `dp_tag_links.kind` CHECK
-    /// constraint (`'repo' | 'issue' | 'user' | 'team'`).
+    /// constraint (`'repo' | 'issue' | 'user' | 'team' | 'project'`).
     pub fn as_str(self) -> &'static str {
         match self {
             TagLinkKind::Repo => "repo",
             TagLinkKind::Issue => "issue",
             TagLinkKind::User => "user",
             TagLinkKind::Team => "team",
+            TagLinkKind::Project => "project",
         }
     }
 
@@ -72,6 +80,8 @@ pub struct TagLink {
     pub target_user_id: Option<Uuid>,
     /// Set iff `kind == Team`.
     pub target_team_id: Option<Uuid>,
+    /// Set iff `kind == Project`.
+    pub target_project_id: Option<Uuid>,
     /// Who attached the link. Audited; survives pseudonymisation
     /// (the `dp_users.id` stays stable per §0.5).
     pub added_by: Uuid,
@@ -90,6 +100,7 @@ impl TagLink {
             TagLinkKind::Issue => self.target_issue_id,
             TagLinkKind::User => self.target_user_id,
             TagLinkKind::Team => self.target_team_id,
+            TagLinkKind::Project => self.target_project_id,
         }
     }
 }
@@ -108,6 +119,7 @@ mod tests {
             target_issue_id: None,
             target_user_id: None,
             target_team_id: None,
+            target_project_id: None,
             added_by: id,
             added_at: Utc::now(),
         };
@@ -116,6 +128,7 @@ mod tests {
             TagLinkKind::Issue => l.target_issue_id = Some(id),
             TagLinkKind::User => l.target_user_id = Some(id),
             TagLinkKind::Team => l.target_team_id = Some(id),
+            TagLinkKind::Project => l.target_project_id = Some(id),
         }
         l
     }
@@ -127,6 +140,7 @@ mod tests {
             TagLinkKind::Issue,
             TagLinkKind::User,
             TagLinkKind::Team,
+            TagLinkKind::Project,
         ] {
             assert_eq!(sample(k).target_id(), Some(Uuid::nil()));
         }
@@ -145,6 +159,7 @@ mod tests {
         assert_eq!(TagLinkKind::Issue.as_str(), "issue");
         assert_eq!(TagLinkKind::User.as_str(), "user");
         assert_eq!(TagLinkKind::Team.as_str(), "team");
+        assert_eq!(TagLinkKind::Project.as_str(), "project");
     }
 
     #[test]

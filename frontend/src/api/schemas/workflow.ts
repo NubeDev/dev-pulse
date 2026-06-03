@@ -45,7 +45,7 @@ export type ReorderRequest = z.infer<typeof ReorderRequestSchema>;
 export const TagScopeKindSchema = z.enum(["user", "team", "org"]);
 export type TagScopeKind = z.infer<typeof TagScopeKindSchema>;
 
-export const TagLinkKindSchema = z.enum(["repo", "issue", "user", "team"]);
+export const TagLinkKindSchema = z.enum(["repo", "issue", "user", "team", "project"]);
 export type TagLinkKind = z.infer<typeof TagLinkKindSchema>;
 
 export const TagDtoSchema = z.object({

@@ -69,6 +69,7 @@ import {
 
 import { AddIssuesDialog } from "./add-issues-dialog.js";
 import { CategoriesManagerDialog } from "./categories-manager-dialog.js";
+import { orderGateViews } from "./icon-for-name.js";
 import {
   FilterChipBar,
   parseFilterString,
@@ -91,6 +92,8 @@ import {
   CATEGORISED_GROUP_BY,
   CATEGORY_TAG_KEY,
   findCategoryTag,
+  writeDateDisplayMode,
+  type DateDisplayMode,
 } from "./view-wizard/index.js";
 import { useTags } from "../workflow/use-workflow-data.js";
 
@@ -126,7 +129,14 @@ export function ProjectWorkbench({
   // detection both depend on this list, so resolve `activeView`
   // *before* deriving the effective workbench shape below.
   const viewsQuery = useProjectViews(project.id);
-  const views = viewsQuery.data ?? [];
+  // Gate-progression tabs (`G1` … `G8`) are fanned out by the create
+  // wizard as eight back-to-back POSTs, so the server can persist
+  // them out of order (G1, G7, G8, G2 …). Re-impose canonical G1→G8
+  // order here; non-gate tabs keep their stored / dragged position.
+  const views = useMemo(
+    () => orderGateViews(viewsQuery.data ?? []),
+    [viewsQuery.data],
+  );
   const activeView =
     urlViewId !== null ? views.find((v) => v.id === urlViewId) ?? null : null;
 
@@ -320,9 +330,15 @@ export function ProjectWorkbench({
    *  the new tab pops into place on invalidation. */
   const handleCreateView = (
     body: Parameters<typeof createView.mutate>[0],
+    dateDisplay: DateDisplayMode,
   ): void => {
     createView.mutate(body, {
       onSuccess: (v) => {
+        // The tab badge preference is machine-local (keyed by view
+        // id), so it can only be persisted now that the POST has
+        // handed us a real id. `writeDateDisplayMode` no-ops for
+        // the "week" default, so the common case writes nothing.
+        writeDateDisplayMode(v.id, dateDisplay);
         patchUrl({ view: v.id, group: null, filter: null, sort: null });
       },
     });

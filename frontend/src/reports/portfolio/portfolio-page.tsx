@@ -83,12 +83,6 @@ export function ProjectPortfolioPage(): JSX.Element {
         }}
       />
 
-      <PortfolioFilterBar
-        statuses={request.statuses ?? []}
-        hideOverdue={!!request.hide_overdue}
-        route={route}
-      />
-
       {error ? (
         <Alert variant="destructive" data-testid="portfolio-error">
           <AlertDescription>
@@ -148,6 +142,14 @@ export function ProjectPortfolioPage(): JSX.Element {
       {resp && resp.kpis.total_projects > 0 ? (
         <PortfolioCharts kpis={resp.kpis} rows={resp.rows} />
       ) : null}
+
+      <PortfolioFilterBar
+        statuses={request.statuses ?? []}
+        hideOverdue={!!request.hide_overdue}
+        tagIds={request.tag_ids ?? []}
+        tagMatch={request.tag_match ?? "any"}
+        route={route}
+      />
 
       <Tabs defaultValue="table" className="gap-3">
         <TabsList>

@@ -176,6 +176,7 @@ pub(crate) fn tag_link_kind_from_text(s: &str) -> Result<TagLinkKind, String> {
         "issue" => TagLinkKind::Issue,
         "user" => TagLinkKind::User,
         "team" => TagLinkKind::Team,
+        "project" => TagLinkKind::Project,
         other => return Err(format!("unknown tag link kind: {other}")),
     })
 }

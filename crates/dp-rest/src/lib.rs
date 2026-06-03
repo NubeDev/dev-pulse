@@ -179,7 +179,8 @@ pub use me_identities::{
     list_me_identities, me_identities_router, MeIdentitiesResponse, MeIdentityDto,
 };
 pub use tags::{
-    create_tag, get_tag, link_targets, list_my_tags, list_tags, tags_router, unlink_targets,
+    create_tag, get_tag, link_targets, list_my_tags, list_project_tags, list_tags, tags_router,
+    unlink_targets,
     update_tag, CreateTagRequest, LinkBatchRequest, LinkBatchResponse, LinkRequestItem,
     ListTagsQuery, TagDetailQuery, TagDetailResponse, TagDto, TagLinkKindDto, TagScopeKindDto,
     UnlinkBatchRequest, UpdateTagRequest, LINKS_PAGE_SIZE,

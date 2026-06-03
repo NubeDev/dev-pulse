@@ -66,7 +66,10 @@ export interface ViewsTabStripProps {
    *  is loading — the dialog will fetch as a fallback. */
   existingTags: readonly TagDto[] | null;
   onSelectView: (viewId: string | null) => void;
-  onCreateView: (body: ProjectViewWriteBody) => void;
+  onCreateView: (
+    body: ProjectViewWriteBody,
+    dateDisplay: DateDisplayMode,
+  ) => void;
   onUpdateView: (viewId: string, body: ProjectViewWriteBody) => void;
   onDeleteView: (viewId: string) => void;
   onReorderViews: (orderedIds: string[]) => void;
@@ -327,8 +330,8 @@ export function ViewsTabStrip({
         current={current}
         busy={busy}
         onCancel={() => setDialog({ kind: "closed" })}
-        onSubmit={(body) => {
-          onCreateView(body);
+        onSubmit={(body, dateDisplay) => {
+          onCreateView(body, dateDisplay);
           // The wizard fires many onSubmits back-to-back for the
           // `batch` template (e.g. G1..G8); for `single`,
           // `custom`, and `categorised` it fires exactly once and

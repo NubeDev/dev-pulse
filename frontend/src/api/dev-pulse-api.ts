@@ -390,6 +390,14 @@ export class DevPulseApi {
     return this.getJson("/me/tags", z.array(TagDtoSchema));
   }
 
+  /** Tags currently linked to a project (`kind = 'project'`). */
+  async listProjectTags(projectId: string): Promise<TagDto[]> {
+    return this.getJson(
+      `/projects/${encodeURIComponent(projectId)}/tags`,
+      z.array(TagDtoSchema),
+    );
+  }
+
   async getTag(id: string, linksPage?: number): Promise<TagDetailResponse> {
     const q = linksPage !== undefined ? `?links_page=${linksPage}` : "";
     return this.getJson(`/tags/${encodeURIComponent(id)}${q}`, TagDetailResponseSchema);

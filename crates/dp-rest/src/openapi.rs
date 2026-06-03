@@ -153,6 +153,7 @@ async fn webhook_github_stub() {}
         crate::tags::update_tag,
         crate::tags::link_targets,
         crate::tags::unlink_targets,
+        crate::tags::list_project_tags,
         // GitHub App permission banner (SCOPE-PROJECTS §13.6).
         crate::app_permissions::list_app_install_banner,
         // Issue write surface (SCOPE §18 / SCOPE-PROJECTS §8).

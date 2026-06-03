@@ -44,6 +44,23 @@ export function formatAu(iso: string): string {
   return `${m[3]}/${m[2]}/${m[1]}`;
 }
 
+/** Render a full ISO timestamp as AU `dd/mm/yyyy, h:mm:ss am/pm`
+ *  (Australian locale), e.g. the "Updated …" line. Falls back to
+ *  the raw string if it can't be parsed. */
+export function formatAuDateTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString("en-AU", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: true,
+  });
+}
+
 export type DateDisplayMode = "hide" | "week" | "date";
 
 const DATE_DISPLAY_DEFAULT: DateDisplayMode = "week";

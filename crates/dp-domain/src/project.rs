@@ -248,6 +248,13 @@ pub struct PortfolioQueryFilter {
     pub window: Option<(DateTime<Utc>, DateTime<Utc>)>,
     /// `true` ⇒ drop `status IN (active,backlog) AND due_at < now`.
     pub hide_overdue: bool,
+    /// Restrict to projects linked to these tags. Empty ⇒ no tag
+    /// filter. Combined per [`tag_match_all`](Self::tag_match_all).
+    pub tag_ids: Vec<Uuid>,
+    /// `true` ⇒ a project must carry **every** tag in
+    /// [`tag_ids`](Self::tag_ids) (AND); `false` ⇒ at least one (OR).
+    /// Ignored when `tag_ids` is empty.
+    pub tag_match_all: bool,
     /// Sort key (whitelisted).
     pub sort: PortfolioSort,
     /// Server-resolved `now`, used by `slip_days` and
@@ -300,6 +307,25 @@ pub struct PortfolioRawRow {
     /// Total rows across pages (echoed via `COUNT(*) OVER ()` in the
     /// CTE — same value on every row of a given response).
     pub total: i64,
+    /// Tags linked to this project (`dp_tag_links` of
+    /// `kind = 'project'`), name-ordered. Filled by a second query in
+    /// the store after the page is fetched (the portfolio CTE filters
+    /// on tags but does not project them, to keep the main scan lean).
+    pub tags: Vec<PortfolioTagRaw>,
+}
+
+/// One project-tag projection used to populate
+/// [`PortfolioRawRow::tags`]. Kept in `dp-domain` (no `serde`) so the
+/// `Store` trait stays serde-free; the `dp-reports` layer maps it onto
+/// the wire-form `TagChip`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PortfolioTagRaw {
+    /// `dp_tags.id`.
+    pub id: Uuid,
+    /// Display name.
+    pub name: String,
+    /// Semantic palette name.
+    pub color: String,
 }
 
 /// One row from `dp_project_repos` — a soft association between a
