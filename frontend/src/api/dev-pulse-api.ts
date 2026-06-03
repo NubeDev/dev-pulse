@@ -130,6 +130,7 @@ import {
   EolReportDtoSchema,
   RunEolSummaryDtoSchema,
   RmaDtoSchema,
+  ProductReleaseDtoSchema,
   type RunDto,
   type CreateRunRequest,
   type PatchRunRequest,
@@ -166,6 +167,11 @@ import {
   type ListRmaQuery,
   type CreateRmaRequest,
   type PatchRmaRequest,
+  type ProductReleaseDto,
+  type ReleaseKind,
+  type CreateReleaseRequest,
+  type PatchReleaseRequest,
+  type ArchiveReleaseRequest,
 } from "./schemas/products.js";
 import {
   SettingDtoSchema,
@@ -202,6 +208,7 @@ import {
   type ExecSummaryChangelogEntry,
   type PatchExecSummaryRequest,
   type AddChangelogEntryRequest,
+  type RestoreChangelogEntryRequest,
   type ApproveExecSummaryRequest,
 } from "./schemas/exec-summary.js";
 
@@ -979,6 +986,22 @@ export class DevPulseApi {
     );
   }
 
+  /** Roll the summary back to the snapshot stored on `entryId`. The
+   *  body describes the new entry that records the restore; the
+   *  response is the refreshed full summary. */
+  async restoreProjectExecSummaryChangelog(
+    projectId: string,
+    entryId: string,
+    body: RestoreChangelogEntryRequest,
+  ): Promise<ExecSummaryDto> {
+    return this.sendJson(
+      "POST",
+      `/projects/${encodeURIComponent(projectId)}/exec-summary/changelog/${encodeURIComponent(entryId)}/restore`,
+      body,
+      ExecSummaryDtoSchema,
+    );
+  }
+
   // -- Product & Manufacturing — products -----------------------------------
 
   async listProducts(q: ListProductsQuery = {}): Promise<ProductListResponse> {
@@ -1271,6 +1294,53 @@ export class DevPulseApi {
 
   async patchRma(id: string, body: PatchRmaRequest): Promise<RmaDto> {
     return this.sendJson("PATCH", `/rma/${encodeURIComponent(id)}`, body, RmaDtoSchema);
+  }
+
+  // -- Product & Manufacturing — firmware/software releases ------------------
+
+  async listProductReleases(productId: string, kind?: ReleaseKind): Promise<ProductReleaseDto[]> {
+    const params = new URLSearchParams();
+    if (kind) params.set("kind", kind);
+    const qs = params.toString();
+    return this.getJson(
+      `/products/${encodeURIComponent(productId)}/releases${qs ? `?${qs}` : ""}`,
+      z.array(ProductReleaseDtoSchema),
+    );
+  }
+
+  async createProductRelease(productId: string, body: CreateReleaseRequest): Promise<ProductReleaseDto> {
+    return this.sendJson(
+      "POST",
+      `/products/${encodeURIComponent(productId)}/releases`,
+      body,
+      ProductReleaseDtoSchema,
+    );
+  }
+
+  async patchProductRelease(
+    productId: string,
+    releaseId: string,
+    body: PatchReleaseRequest,
+  ): Promise<ProductReleaseDto> {
+    return this.sendJson(
+      "PATCH",
+      `/products/${encodeURIComponent(productId)}/releases/${encodeURIComponent(releaseId)}`,
+      body,
+      ProductReleaseDtoSchema,
+    );
+  }
+
+  async archiveProductRelease(
+    productId: string,
+    releaseId: string,
+    body: ArchiveReleaseRequest,
+  ): Promise<ProductReleaseDto> {
+    return this.sendJson(
+      "DELETE",
+      `/products/${encodeURIComponent(productId)}/releases/${encodeURIComponent(releaseId)}`,
+      body,
+      ProductReleaseDtoSchema,
+    );
   }
 
   private async uploadMultipart<T>(

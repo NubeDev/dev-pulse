@@ -43,6 +43,7 @@ pub mod pin;
 pub mod product;
 pub mod product_doc;
 pub mod product_manual;
+pub mod product_release;
 pub mod project;
 pub mod project_exec_summary;
 pub mod project_view;
@@ -91,6 +92,9 @@ pub use product::{
 pub use product_doc::ProductDocument;
 pub use product_manual::{
     ManualRevision, ManualUpsert, ProductManual, RevisionStatus, RevisionUpsert,
+};
+pub use product_release::{
+    ProductRelease, ProductReleaseCreate, ProductReleaseUpdate, ReleaseKind, ReleaseLink,
 };
 pub use project::{
     Project, ProjectIssueAddOutcome, ProjectIssueAddSkip, ProjectListFilter, ProjectRepo,

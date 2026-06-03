@@ -306,6 +306,222 @@
         }
       }
     },
+    "/blobs/product/{kind}/{row_id}": {
+      "get": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`GET /blobs/product/{kind}/{row_id}` — proxy download.",
+        "operationId": "proxy_product_blob",
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "row_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/customers": {
+      "get": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`GET /customers`.",
+        "operationId": "list_customers",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CustomerListResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`POST /customers`.",
+        "operationId": "create_customer",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateCustomerRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CustomerDto"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/customers/{id}": {
+      "get": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`GET /customers/{id}`.",
+        "operationId": "get_customer",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CustomerDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`DELETE /customers/{id}` — archive.",
+        "operationId": "archive_customer",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArchivePartyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CustomerDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`PATCH /customers/{id}`.",
+        "operationId": "patch_customer",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchCustomerRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CustomerDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/home-org": {
       "post": {
         "tags": [
@@ -827,6 +1043,186 @@
           },
           "404": {
             "description": "No such issue"
+          }
+        }
+      }
+    },
+    "/manufacturers": {
+      "get": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`GET /manufacturers` — filtered, paginated list.",
+        "operationId": "list_manufacturers",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PartyListResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`POST /manufacturers`.",
+        "operationId": "create_manufacturer",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatePartyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PartyDto"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/manufacturers/{id}": {
+      "get": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`GET /manufacturers/{id}`.",
+        "operationId": "get_manufacturer",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PartyDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`DELETE /manufacturers/{id}` — archive (idempotent, CAS-gated).",
+        "operationId": "archive_manufacturer",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArchivePartyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PartyDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`PATCH /manufacturers/{id}`.",
+        "operationId": "patch_manufacturer",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchPartyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PartyDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
           }
         }
       }
@@ -1569,6 +1965,887 @@
         }
       }
     },
+    "/products": {
+      "get": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`GET /products` — filtered, paginated list.",
+        "operationId": "list_products",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductListResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`POST /products`.",
+        "operationId": "create_product",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateProductRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductDto"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/products/{id}": {
+      "get": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`GET /products/{id}`.",
+        "operationId": "get_product",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`DELETE /products/{id}` — archive (idempotent, CAS-gated).",
+        "operationId": "archive_product",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArchiveProductRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`PATCH /products/{id}`.",
+        "operationId": "patch_product",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchProductRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/products/{id}/documents": {
+      "get": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`GET /products/{id}/documents`.",
+        "operationId": "list_product_documents",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ProductDocumentDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`POST /products/{id}/documents` — multipart upload (`file` +\noptional `title`/`doc_type`/`notes`).",
+        "operationId": "upload_product_document",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductDocumentDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/products/{id}/documents/{doc_id}": {
+      "delete": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`DELETE /products/{id}/documents/{doc_id}`.",
+        "operationId": "delete_product_document",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "doc_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/products/{id}/manuals": {
+      "get": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`GET /products/{id}/manuals`.",
+        "operationId": "list_manuals",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ManualDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`POST /products/{id}/manuals`.",
+        "operationId": "create_manual",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateManualRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManualDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/products/{id}/manuals/{manual_id}/revisions": {
+      "get": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`GET /products/{id}/manuals/{manual_id}/revisions`.",
+        "operationId": "list_revisions",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "manual_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ManualRevisionDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`POST /products/{id}/manuals/{manual_id}/revisions` — new revision.",
+        "operationId": "create_revision",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "manual_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateRevisionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManualRevisionDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/products/{id}/manuals/{manual_id}/revisions/{rev_id}/publish": {
+      "post": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`POST /products/{id}/manuals/{manual_id}/revisions/{rev_id}/publish`.",
+        "operationId": "publish_revision",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "manual_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "rev_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManualRevisionDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/products/{id}/projects": {
+      "get": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`GET /products/{id}/projects` — projects linked to a product.",
+        "operationId": "list_product_projects",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ProjectDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/products/{id}/projects/{project_id}": {
+      "post": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`POST /products/{id}/projects/{project_id}` — link (idempotent).",
+        "operationId": "link_product_project",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`DELETE /products/{id}/projects/{project_id}` — unlink.",
+        "operationId": "unlink_product_project",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/products/{id}/releases": {
+      "get": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`GET /products/{id}/releases` — non-archived releases, optional kind.",
+        "operationId": "list_releases",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ProductReleaseDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`POST /products/{id}/releases`.",
+        "operationId": "create_release",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateReleaseRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductReleaseDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/products/{id}/releases/{rid}": {
+      "delete": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`DELETE /products/{id}/releases/{rid}` — archive (CAS, idempotent).",
+        "operationId": "archive_release",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "rid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArchiveReleaseRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductReleaseDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`PATCH /products/{id}/releases/{rid}` — CAS update.",
+        "operationId": "patch_release",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "rid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchReleaseRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductReleaseDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/products/{id}/runs": {
+      "get": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`GET /products/{id}/runs`.",
+        "operationId": "list_runs",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/RunDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`POST /products/{id}/runs`.",
+        "operationId": "create_run",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateRunRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunDto"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/projects": {
       "get": {
         "tags": [
@@ -2136,6 +3413,66 @@
         }
       }
     },
+    "/projects/{id}/exec-summary/changelog/{entry_id}/restore": {
+      "post": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "`POST /projects/{id}/exec-summary/changelog/{entry_id}/restore` —\nroll the live summary back to a previous revision's content.",
+        "description": "Append-only is preserved: the target entry is never touched. The\nsnapshot is applied to the live row and a *new* change-log entry is\nrecorded (carrying a fresh snapshot of the now-restored state, so\nit too can be rolled forward later). The approval state machine is\nleft alone — restore changes content, not sign-off.",
+        "operationId": "restore_exec_summary_changelog",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "entry_id",
+            "in": "path",
+            "description": "Change-log entry id to restore",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExecSummaryChangelogRestoreBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Updated exec summary",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecSummaryDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Entry has no restorable snapshot"
+          },
+          "404": {
+            "description": "No such project / summary / entry"
+          }
+        }
+      }
+    },
     "/projects/{id}/exec-summary/revert": {
       "post": {
         "tags": [
@@ -2681,6 +4018,41 @@
         }
       }
     },
+    "/projects/{id}/products": {
+      "get": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`GET /projects/{id}/products` — reverse view (products in project).",
+        "operationId": "list_project_products",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ProductDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/projects/{id}/repos": {
       "get": {
         "tags": [
@@ -2799,6 +4171,43 @@
         "responses": {
           "204": {
             "description": "Association removed (or already absent)"
+          }
+        }
+      }
+    },
+    "/projects/{id}/tags": {
+      "get": {
+        "tags": [
+          "tags"
+        ],
+        "summary": "`GET /projects/{id}/tags` — the tags currently linked to a\nproject (reverse lookup over `dp_tag_links` where\n`kind = 'project'`).",
+        "description": "Convenience for the portfolio \"Tags\" column and the project\ndetail tag editor. Returns the same [`TagDto`] shape as\n`GET /tags`; `visible_link_count` is reported as `0` here — the\ncount is not load-bearing on the project surfaces (they render\nthe chip, not the fan-out). Tags whose scope the caller can't\nsee are filtered out, mirroring `GET /tags`.",
+        "operationId": "list_project_tags",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Tags linked to the project, visible to caller",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TagDto"
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -3908,6 +5317,615 @@
         }
       }
     },
+    "/rma": {
+      "get": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`GET /rma`.",
+        "operationId": "list_rma",
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/RmaStatusDto"
+            }
+          },
+          {
+            "name": "product_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "customer_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "unit_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/RmaDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`POST /rma`.",
+        "operationId": "create_rma",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateRmaRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RmaDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/rma/{id}": {
+      "get": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`GET /rma/{id}`.",
+        "operationId": "get_rma",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RmaDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`PATCH /rma/{id}`.",
+        "operationId": "patch_rma",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchRmaRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RmaDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/runs/{run_id}": {
+      "get": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`GET /runs/{run_id}`.",
+        "operationId": "get_run",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`PATCH /runs/{run_id}`.",
+        "operationId": "patch_run",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchRunRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/runs/{run_id}/eol-summary": {
+      "get": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`GET /runs/{run_id}/eol-summary`.",
+        "operationId": "get_run_eol_summary",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunEolSummaryDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`POST /runs/{run_id}/eol-summary` — upsert/sign-off (snapshots the\nrun counters; stamps the operator when `sign_off`).",
+        "operationId": "upsert_run_eol_summary",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunEolSummaryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunEolSummaryDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/runs/{run_id}/units": {
+      "get": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`GET /runs/{run_id}/units`.",
+        "operationId": "list_run_units",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/UnitDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`POST /runs/{run_id}/units` — allocate N serialised units (§6).",
+        "operationId": "allocate_units",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AllocateUnitsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnitAllocationDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/suppliers": {
+      "get": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`GET /suppliers`.",
+        "operationId": "list_suppliers",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PartyListResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`POST /suppliers`.",
+        "operationId": "create_supplier",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatePartyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PartyDto"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/suppliers/{id}": {
+      "get": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`GET /suppliers/{id}`.",
+        "operationId": "get_supplier",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PartyDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`DELETE /suppliers/{id}` — archive.",
+        "operationId": "archive_supplier",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArchivePartyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PartyDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`PATCH /suppliers/{id}`.",
+        "operationId": "patch_supplier",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchPartyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PartyDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/tags": {
       "get": {
         "tags": [
@@ -4225,6 +6243,196 @@
         }
       }
     },
+    "/units/{unit_id}": {
+      "get": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`GET /units/{unit_id}`.",
+        "operationId": "get_unit",
+        "parameters": [
+          {
+            "name": "unit_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnitDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`PATCH /units/{unit_id}`.",
+        "operationId": "patch_unit",
+        "parameters": [
+          {
+            "name": "unit_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchUnitRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnitDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/units/{unit_id}/eol": {
+      "get": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`GET /units/{unit_id}/eol`.",
+        "operationId": "list_unit_eol",
+        "parameters": [
+          {
+            "name": "unit_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/EolReportDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`POST /units/{unit_id}/eol` — record a pass/fail report (maintains\nthe run's re-test-safe counters, §5.4).",
+        "operationId": "record_eol",
+        "parameters": [
+          {
+            "name": "unit_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordEolRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EolReportDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/units/{unit_id}/qr.svg": {
+      "get": {
+        "tags": [
+          "manufacturing"
+        ],
+        "summary": "`GET /units/{unit_id}/qr.svg` — crisp SVG QR for printable labels\n(§6). Composes the same `{base_url}/u/{id}?t=<token>` payload.",
+        "operationId": "unit_qr_svg",
+        "parameters": [
+          {
+            "name": "unit_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "SVG QR code"
+          },
+          "404": {
+            "description": ""
+          },
+          "503": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/users": {
       "get": {
         "tags": [
@@ -4370,6 +6578,20 @@
           }
         }
       },
+      "AllocateUnitsRequest": {
+        "type": "object",
+        "description": "Body for `POST /runs/{id}/units` — allocate N serialised units.",
+        "required": [
+          "count"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Number of units to allocate (1..=1000, §6)."
+          }
+        }
+      },
       "AppInstallBannerOrgDto": {
         "type": "object",
         "description": "One row in `GET /me/app-install-banner`.\n\n`writes_available` mirrors the write-gate verdict for the\n`(viewer, org)` pair so the frontend can render the §8.4\naffordance without re-querying. `admin_copy_text` is the\n§13.6 copy-able snippet; `manage_url` is the GitHub deep-link\n(omitted when no App slug is configured).",
@@ -4458,6 +6680,34 @@
           }
         }
       },
+      "ArchivePartyRequest": {
+        "type": "object",
+        "description": "Body for the archive routes — CAS-gated, idempotent.",
+        "required": [
+          "expected_version"
+        ],
+        "properties": {
+          "expected_version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Observed version for §8.2 CAS."
+          }
+        }
+      },
+      "ArchiveProductRequest": {
+        "type": "object",
+        "description": "Body for `DELETE /products/{id}` (archive).",
+        "required": [
+          "expected_version"
+        ],
+        "properties": {
+          "expected_version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Observed version for §8.2 CAS."
+          }
+        }
+      },
       "ArchiveProjectRequest": {
         "type": "object",
         "description": "Body for `POST /projects/{id}/archive`. CAS-gated on the\nproject's current `version` (§9.2). The handler is idempotent —\narchiving an already-archived project echoes the row back\nwithout bumping `version`.",
@@ -4469,6 +6719,20 @@
             "type": "integer",
             "format": "int64",
             "description": "The `version` the caller observed."
+          }
+        }
+      },
+      "ArchiveReleaseRequest": {
+        "type": "object",
+        "description": "Body for `DELETE /products/{id}/releases/{rid}` (archive).",
+        "required": [
+          "expected_version"
+        ],
+        "properties": {
+          "expected_version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Observed version for §8.2 CAS."
           }
         }
       },
@@ -4820,6 +7084,74 @@
           }
         }
       },
+      "CreateCustomerRequest": {
+        "type": "object",
+        "description": "Create body for a customer (adds `account_ref`).",
+        "required": [
+          "org_id",
+          "name"
+        ],
+        "properties": {
+          "account_ref": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional external CRM/ERP id."
+          },
+          "address": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional address."
+          },
+          "contact_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional contact name."
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional email."
+          },
+          "name": {
+            "type": "string",
+            "description": "Display name."
+          },
+          "notes": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional markdown notes."
+          },
+          "org_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Parent org."
+          },
+          "phone": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional phone."
+          },
+          "website": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional website."
+          }
+        }
+      },
       "CreateIssueRequest": {
         "type": "object",
         "description": "Body for `POST /issues`. The repo to mutate is named explicitly\n(there is no canonical row yet to derive it from). The optional\n`project_id` / `view_id` lanes let the handler attach the\nfreshly-created issue to a project (and optionally a saved\nview tab) in the same request, mirroring the bulk-add\nsemantics in [`crate::project_issues::BulkAddIssuesRequest`].",
@@ -4902,6 +7234,19 @@
           }
         }
       },
+      "CreateManualRequest": {
+        "type": "object",
+        "description": "Create body for a manual container.",
+        "required": [
+          "title"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Title."
+          }
+        }
+      },
       "CreateMilestoneRequest": {
         "type": "object",
         "description": "Body for [`create_project_milestone`].",
@@ -4933,6 +7278,131 @@
           "title": {
             "type": "string",
             "description": "Milestone title (GitHub validates length / uniqueness)."
+          }
+        }
+      },
+      "CreatePartyRequest": {
+        "type": "object",
+        "description": "Create body for a manufacturer / supplier.",
+        "required": [
+          "org_id",
+          "name"
+        ],
+        "properties": {
+          "address": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional address."
+          },
+          "contact_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional contact name."
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional email."
+          },
+          "name": {
+            "type": "string",
+            "description": "Display name."
+          },
+          "notes": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional markdown notes."
+          },
+          "org_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Parent org."
+          },
+          "phone": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional phone."
+          },
+          "website": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional website."
+          }
+        }
+      },
+      "CreateProductRequest": {
+        "type": "object",
+        "description": "Create body for `POST /products`.",
+        "required": [
+          "org_id",
+          "name",
+          "model_number"
+        ],
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional description."
+          },
+          "manufacturer_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Optional owning manufacturer."
+          },
+          "model_number": {
+            "type": "string",
+            "description": "Model number."
+          },
+          "name": {
+            "type": "string",
+            "description": "Name."
+          },
+          "org_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Parent org."
+          },
+          "serial_format": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional serial template."
+          },
+          "serial_prefix": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional serial prefix."
+          },
+          "status": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ProductStatusDto",
+                "description": "Optional status; defaults to `active`."
+              }
+            ]
           }
         }
       },
@@ -4997,6 +7467,180 @@
           }
         }
       },
+      "CreateReleaseRequest": {
+        "type": "object",
+        "description": "Create body for `POST /products/{id}/releases`.",
+        "required": [
+          "kind",
+          "major",
+          "minor"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/ReleaseKindDto",
+            "description": "Software or firmware."
+          },
+          "links": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReleaseLinkDto"
+            },
+            "description": "Build / download links."
+          },
+          "major": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Major version component."
+          },
+          "minor": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Minor version component."
+          },
+          "release_notes": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional release notes."
+          },
+          "released_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Optional release date."
+          }
+        }
+      },
+      "CreateRevisionRequest": {
+        "type": "object",
+        "description": "Create body for a new revision.",
+        "required": [
+          "revision",
+          "body_md"
+        ],
+        "properties": {
+          "body_md": {
+            "type": "string",
+            "description": "Markdown body."
+          },
+          "change_note": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional \"what changed\" note."
+          },
+          "revision": {
+            "type": "string",
+            "description": "Free-form revision string."
+          }
+        }
+      },
+      "CreateRmaRequest": {
+        "type": "object",
+        "description": "Create body for `POST /rma`. Status defaults to `open`.",
+        "required": [
+          "org_id",
+          "product_id",
+          "rma_number"
+        ],
+        "properties": {
+          "customer_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Optional customer."
+          },
+          "org_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Parent org."
+          },
+          "product_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Parent product."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Customer-reported reason."
+          },
+          "rma_number": {
+            "type": "string",
+            "description": "RMA number."
+          },
+          "under_warranty": {
+            "type": "boolean",
+            "description": "Warranty flag (defaults false)."
+          },
+          "unit_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Optional serialised unit."
+          }
+        }
+      },
+      "CreateRunRequest": {
+        "type": "object",
+        "description": "Create body for `POST /products/{id}/runs`.",
+        "required": [
+          "org_id",
+          "run_code"
+        ],
+        "properties": {
+          "manufacturer_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Optional builder."
+          },
+          "notes": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Markdown notes."
+          },
+          "org_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Parent org."
+          },
+          "qty_planned": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Planned quantity."
+          },
+          "run_code": {
+            "type": "string",
+            "description": "Batch / lot code."
+          },
+          "status": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RunStatusDto",
+                "description": "Optional status; defaults to `planned`."
+              }
+            ]
+          }
+        }
+      },
       "CreateTagRequest": {
         "type": "object",
         "description": "Body for `POST /tags`. Server picks `id`, `created_by`,\n`created_at`. `scope_id` is required; the caller must be a\nscope member or the request returns `403`.",
@@ -5030,6 +7674,140 @@
           "scope_kind": {
             "$ref": "#/components/schemas/TagScopeKindDto",
             "description": "Scope discriminator."
+          }
+        }
+      },
+      "CustomerDto": {
+        "type": "object",
+        "description": "Wire form of a customer (adds `account_ref`).",
+        "required": [
+          "id",
+          "org_id",
+          "name",
+          "version",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "account_ref": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional external CRM/ERP id."
+          },
+          "address": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional address."
+          },
+          "archived_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Soft-delete marker."
+          },
+          "contact_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional contact name."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When created."
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional email."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Primary key."
+          },
+          "name": {
+            "type": "string",
+            "description": "Display name."
+          },
+          "notes": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional markdown notes."
+          },
+          "org_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Parent org."
+          },
+          "phone": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional phone."
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When last mutated."
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "§8.2 CAS counter."
+          },
+          "website": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional website."
+          }
+        }
+      },
+      "CustomerListResponse": {
+        "type": "object",
+        "description": "Paginated customer list envelope.",
+        "required": [
+          "rows",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Echoed limit."
+          },
+          "offset": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Echoed offset."
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CustomerDto"
+            },
+            "description": "Rows on this page."
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Total matching the filter."
           }
         }
       },
@@ -5095,6 +7873,77 @@
             "description": "Field node id (`PVTF_…`)."
           }
         }
+      },
+      "EolReportDto": {
+        "type": "object",
+        "description": "An EOL report on the wire.",
+        "required": [
+          "id",
+          "unit_id",
+          "result",
+          "measurements",
+          "tested_at"
+        ],
+        "properties": {
+          "firmware": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Firmware under test."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Primary key."
+          },
+          "measurements": {
+            "description": "Structured measurements (opaque JSON)."
+          },
+          "notes": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Notes."
+          },
+          "result": {
+            "$ref": "#/components/schemas/EolResultDto",
+            "description": "Pass / fail."
+          },
+          "station": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Test rig / bench id."
+          },
+          "tested_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When tested."
+          },
+          "tested_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Free-text station operator."
+          },
+          "unit_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Parent unit."
+          }
+        }
+      },
+      "EolResultDto": {
+        "type": "string",
+        "description": "Wire form of [`EolResult`].",
+        "enum": [
+          "pass",
+          "fail"
+        ]
       },
       "ExecSummaryApprovalDto": {
         "type": "object",
@@ -5199,6 +8048,7 @@
           "changed_at",
           "changed_by",
           "summary",
+          "has_snapshot",
           "created_at"
         ],
         "properties": {
@@ -5212,6 +8062,10 @@
           "created_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "has_snapshot": {
+            "type": "boolean",
+            "description": "Whether this entry carries a content snapshot and can therefore\nbe restored. The snapshot bytes themselves stay server-side;\nthe UI only needs the boolean to decide whether to offer the\n\"Restore this version\" action."
           },
           "id": {
             "type": "string",
@@ -5232,6 +8086,31 @@
       "ExecSummaryChangelogInsertBody": {
         "type": "object",
         "description": "Body for `POST .../changelog`.",
+        "required": [
+          "version",
+          "changed_at",
+          "changed_by",
+          "summary"
+        ],
+        "properties": {
+          "changed_at": {
+            "type": "string",
+            "format": "date"
+          },
+          "changed_by": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      },
+      "ExecSummaryChangelogRestoreBody": {
+        "type": "object",
+        "description": "Body for `POST .../changelog/{entry_id}/restore`. Carries the\nmetadata for the *new* entry that records the restore — the\nfrontend derives `version` the same way the \"Save version\" dialog\ndoes (next minor/major) and fills `changed_by` from the signed-in\nuser.",
         "required": [
           "version",
           "changed_at",
@@ -6750,6 +9629,10 @@
           }
         }
       },
+      "LinkProjectRequest": {
+        "type": "object",
+        "description": "Body for linking a project (optional; link can also be path-only)."
+      },
       "LinkRequestItem": {
         "type": "object",
         "description": "One entry in a `POST /tags/{id}/links` request — what to\nattach.",
@@ -6766,6 +9649,162 @@
             "type": "string",
             "format": "uuid",
             "description": "Linked target id, per [`kind`](Self::kind)."
+          }
+        }
+      },
+      "ListRmaQuery": {
+        "type": "object",
+        "description": "Query for `GET /rma` — each present field narrows the result set.",
+        "properties": {
+          "customer_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Scope to a customer."
+          },
+          "org_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Scope to an org."
+          },
+          "product_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Scope to a product."
+          },
+          "status": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RmaStatusDto",
+                "description": "Scope to a status."
+              }
+            ]
+          },
+          "unit_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Scope to a unit."
+          }
+        }
+      },
+      "ManualDto": {
+        "type": "object",
+        "description": "A manual container on the wire.",
+        "required": [
+          "id",
+          "product_id",
+          "title",
+          "version",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When created."
+          },
+          "created_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Creator."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Primary key."
+          },
+          "product_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Parent product."
+          },
+          "title": {
+            "type": "string",
+            "description": "Title."
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When last mutated."
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "§8.2 CAS counter."
+          }
+        }
+      },
+      "ManualRevisionDto": {
+        "type": "object",
+        "description": "A manual revision on the wire.",
+        "required": [
+          "id",
+          "manual_id",
+          "revision",
+          "status",
+          "body_md",
+          "created_at"
+        ],
+        "properties": {
+          "authored_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Author."
+          },
+          "body_md": {
+            "type": "string",
+            "description": "Markdown body."
+          },
+          "change_note": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional \"what changed\" note."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When created."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Primary key."
+          },
+          "manual_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Parent manual."
+          },
+          "revision": {
+            "type": "string",
+            "description": "Free-form revision string."
+          },
+          "status": {
+            "$ref": "#/components/schemas/RevisionStatusDto",
+            "description": "Status."
           }
         }
       },
@@ -7028,6 +10067,201 @@
           }
         }
       },
+      "PartyDto": {
+        "type": "object",
+        "description": "Wire form of a manufacturer / supplier row (identical shape).",
+        "required": [
+          "id",
+          "org_id",
+          "name",
+          "version",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "address": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional address."
+          },
+          "archived_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Soft-delete marker."
+          },
+          "contact_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional contact name."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When created."
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional email."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Primary key."
+          },
+          "name": {
+            "type": "string",
+            "description": "Display name."
+          },
+          "notes": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional markdown notes."
+          },
+          "org_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Parent org."
+          },
+          "phone": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional phone."
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When last mutated."
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "§8.2 CAS counter."
+          },
+          "website": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional website."
+          }
+        }
+      },
+      "PartyListResponse": {
+        "type": "object",
+        "description": "Paginated party list envelope.",
+        "required": [
+          "rows",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Echoed limit."
+          },
+          "offset": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Echoed offset."
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PartyDto"
+            },
+            "description": "Rows on this page."
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Total matching the filter."
+          }
+        }
+      },
+      "PatchCustomerRequest": {
+        "type": "object",
+        "description": "Patch body for a customer (full upsert + CAS).",
+        "required": [
+          "expected_version",
+          "name"
+        ],
+        "properties": {
+          "account_ref": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional external CRM/ERP id."
+          },
+          "address": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional address."
+          },
+          "contact_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional contact name."
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional email."
+          },
+          "expected_version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Observed version for §8.2 CAS."
+          },
+          "name": {
+            "type": "string",
+            "description": "Display name."
+          },
+          "notes": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional markdown notes."
+          },
+          "phone": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional phone."
+          },
+          "website": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional website."
+          }
+        }
+      },
       "PatchIssueDatesRequest": {
         "type": "object",
         "description": "Body for `PATCH /issues/{id}/dates`. Both fields are optional —\n`null` (or omitted) clears that side. The schema CHECK guards\n`start_at <= due_at`; the handler surfaces violations as\n`400 invalid_date_window`.",
@@ -7107,6 +10341,125 @@
           }
         }
       },
+      "PatchPartyRequest": {
+        "type": "object",
+        "description": "Patch body for a manufacturer / supplier (full upsert + CAS).",
+        "required": [
+          "expected_version",
+          "name"
+        ],
+        "properties": {
+          "address": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional address."
+          },
+          "contact_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional contact name (null clears)."
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional email."
+          },
+          "expected_version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Observed version for §8.2 CAS."
+          },
+          "name": {
+            "type": "string",
+            "description": "Display name."
+          },
+          "notes": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional markdown notes."
+          },
+          "phone": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional phone."
+          },
+          "website": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional website."
+          }
+        }
+      },
+      "PatchProductRequest": {
+        "type": "object",
+        "description": "Patch body for `PATCH /products/{id}` (full upsert + CAS).",
+        "required": [
+          "expected_version",
+          "name",
+          "model_number",
+          "status"
+        ],
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional description."
+          },
+          "expected_version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Observed version for §8.2 CAS."
+          },
+          "manufacturer_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Optional owning manufacturer."
+          },
+          "model_number": {
+            "type": "string",
+            "description": "Model number."
+          },
+          "name": {
+            "type": "string",
+            "description": "Name."
+          },
+          "serial_format": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional serial template."
+          },
+          "serial_prefix": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional serial prefix."
+          },
+          "status": {
+            "$ref": "#/components/schemas/ProductStatusDto",
+            "description": "Status."
+          }
+        }
+      },
       "PatchProjectRequest": {
         "type": "object",
         "description": "Body for `PATCH /projects/{id}`. Carries the §8.2\n`expected_version` plus the merged-in field set. Fields that\nare omitted are left untouched — the store layer takes a full\nupsert payload, so the handler reads the current row and\noverlays the partial body. This keeps the wire shape narrow\nwithout leaking the upsert's \"all fields required\" shape.",
@@ -7167,6 +10520,240 @@
                 "description": "New status."
               }
             ]
+          }
+        }
+      },
+      "PatchReleaseRequest": {
+        "type": "object",
+        "description": "Patch body for `PATCH /products/{id}/releases/{rid}` (CAS).",
+        "required": [
+          "expected_version",
+          "kind",
+          "major",
+          "minor"
+        ],
+        "properties": {
+          "expected_version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Observed version for §8.2 CAS."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ReleaseKindDto",
+            "description": "Software or firmware."
+          },
+          "links": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReleaseLinkDto"
+            },
+            "description": "Build / download links."
+          },
+          "major": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Major version component."
+          },
+          "minor": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Minor version component."
+          },
+          "release_notes": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional release notes."
+          },
+          "released_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Optional release date."
+          }
+        }
+      },
+      "PatchRmaRequest": {
+        "type": "object",
+        "description": "Patch body for `PATCH /rma/{id}` (full upsert of editable fields + CAS).",
+        "required": [
+          "expected_version",
+          "under_warranty",
+          "status"
+        ],
+        "properties": {
+          "customer_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Optional customer."
+          },
+          "diagnosis": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Diagnosis notes."
+          },
+          "expected_version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Observed version."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Customer-reported reason."
+          },
+          "received_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When received."
+          },
+          "resolution": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Resolution notes."
+          },
+          "resolved_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When resolved."
+          },
+          "status": {
+            "$ref": "#/components/schemas/RmaStatusDto",
+            "description": "Status."
+          },
+          "under_warranty": {
+            "type": "boolean",
+            "description": "Warranty flag."
+          },
+          "unit_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Optional serialised unit."
+          }
+        }
+      },
+      "PatchRunRequest": {
+        "type": "object",
+        "description": "Patch body for `PATCH /runs/{id}` (full upsert of editable fields + CAS).",
+        "required": [
+          "expected_version",
+          "run_code",
+          "status",
+          "qty_planned"
+        ],
+        "properties": {
+          "completed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Completed."
+          },
+          "expected_version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Observed version."
+          },
+          "manufacturer_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Optional builder."
+          },
+          "notes": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Markdown notes."
+          },
+          "qty_planned": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Planned quantity."
+          },
+          "run_code": {
+            "type": "string",
+            "description": "Batch / lot code."
+          },
+          "started_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Started."
+          },
+          "status": {
+            "$ref": "#/components/schemas/RunStatusDto",
+            "description": "Status."
+          }
+        }
+      },
+      "PatchUnitRequest": {
+        "type": "object",
+        "description": "Patch body for `PATCH /units/{id}`.",
+        "required": [
+          "expected_version",
+          "status"
+        ],
+        "properties": {
+          "built_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When built."
+          },
+          "customer_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Shipped-to customer (null clears)."
+          },
+          "expected_version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Observed version."
+          },
+          "shipped_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When shipped."
+          },
+          "status": {
+            "$ref": "#/components/schemas/UnitStatusDto",
+            "description": "New status."
           }
         }
       },
@@ -7256,6 +10843,310 @@
         "enum": [
           "repo",
           "tag"
+        ]
+      },
+      "ProductDocumentDto": {
+        "type": "object",
+        "description": "A product document on the wire (adds a download `url`).",
+        "required": [
+          "id",
+          "product_id",
+          "url",
+          "title",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When created."
+          },
+          "doc_type": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional doc type."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Primary key."
+          },
+          "notes": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional notes."
+          },
+          "product_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Parent product."
+          },
+          "title": {
+            "type": "string",
+            "description": "Display title."
+          },
+          "uploaded_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Free-text uploader label."
+          },
+          "url": {
+            "type": "string",
+            "description": "Proxy download URL."
+          }
+        }
+      },
+      "ProductDto": {
+        "type": "object",
+        "description": "One product row on the wire.",
+        "required": [
+          "id",
+          "org_id",
+          "name",
+          "model_number",
+          "status",
+          "version",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "archived_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Soft-delete marker."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When created."
+          },
+          "created_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Creator."
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional markdown description."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Primary key."
+          },
+          "manufacturer_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Owning manufacturer."
+          },
+          "model_number": {
+            "type": "string",
+            "description": "Model number."
+          },
+          "name": {
+            "type": "string",
+            "description": "Name."
+          },
+          "org_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Parent org."
+          },
+          "serial_format": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Serial template."
+          },
+          "serial_prefix": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Serial prefix."
+          },
+          "status": {
+            "$ref": "#/components/schemas/ProductStatusDto",
+            "description": "Lifecycle status."
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When last mutated."
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "§8.2 CAS counter."
+          }
+        }
+      },
+      "ProductListResponse": {
+        "type": "object",
+        "description": "Paginated product list envelope.",
+        "required": [
+          "rows",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Echoed limit."
+          },
+          "offset": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Echoed offset."
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProductDto"
+            },
+            "description": "Rows on this page."
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Total matching the filter."
+          }
+        }
+      },
+      "ProductReleaseDto": {
+        "type": "object",
+        "description": "One product release on the wire.",
+        "required": [
+          "id",
+          "org_id",
+          "product_id",
+          "kind",
+          "major",
+          "minor",
+          "version_label",
+          "links",
+          "version",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "archived_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Soft-delete marker."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When created."
+          },
+          "created_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Creator."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Primary key."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ReleaseKindDto",
+            "description": "Software or firmware."
+          },
+          "links": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReleaseLinkDto"
+            },
+            "description": "Build / download links."
+          },
+          "major": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Major version component."
+          },
+          "minor": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Minor version component."
+          },
+          "org_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Parent org."
+          },
+          "product_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Parent product."
+          },
+          "release_notes": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional release notes."
+          },
+          "released_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Optional release date."
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When last mutated."
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "§8.2 CAS counter."
+          },
+          "version_label": {
+            "type": "string",
+            "description": "Derived `v{major}.{minor}` label for convenience."
+          }
+        }
+      },
+      "ProductStatusDto": {
+        "type": "string",
+        "description": "Wire form of [`ProductStatus`].",
+        "enum": [
+          "draft",
+          "active",
+          "eol",
+          "archived"
         ]
       },
       "ProjectDto": {
@@ -7645,6 +11536,60 @@
           }
         }
       },
+      "PublicManualRef": {
+        "type": "object",
+        "description": "A published-manual reference on the public landing.",
+        "required": [
+          "title",
+          "revision"
+        ],
+        "properties": {
+          "revision": {
+            "type": "string",
+            "description": "Published revision string."
+          },
+          "title": {
+            "type": "string",
+            "description": "Manual title."
+          }
+        }
+      },
+      "PublicUnitDto": {
+        "type": "object",
+        "description": "Lean public unit landing payload (`/u/{id}`, token-gated).",
+        "required": [
+          "serial_number",
+          "model_number",
+          "product_name",
+          "status",
+          "manuals"
+        ],
+        "properties": {
+          "manuals": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PublicManualRef"
+            },
+            "description": "Published manual titles + revision strings."
+          },
+          "model_number": {
+            "type": "string",
+            "description": "Model number (from the product)."
+          },
+          "product_name": {
+            "type": "string",
+            "description": "Product name."
+          },
+          "serial_number": {
+            "type": "string",
+            "description": "Serial number."
+          },
+          "status": {
+            "$ref": "#/components/schemas/UnitStatusDto",
+            "description": "Unit status."
+          }
+        }
+      },
       "PutSettingRequest": {
         "type": "object",
         "description": "Body for `PUT /me/settings/{key}`. `value` is the plaintext\nthe user typed (for secret keys, this is the only ingress\npath — the GET handlers never echo it back).",
@@ -7655,6 +11600,50 @@
           "value": {
             "type": "string",
             "description": "New value for the setting. Empty string is accepted and\ndistinguishable from \"no row\" — pass `DELETE` to remove\nthe row entirely."
+          }
+        }
+      },
+      "RecordEolRequest": {
+        "type": "object",
+        "description": "Body for `POST /units/{id}/eol`.",
+        "required": [
+          "result"
+        ],
+        "properties": {
+          "firmware": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Firmware under test."
+          },
+          "measurements": {
+            "description": "Structured measurements."
+          },
+          "notes": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Notes."
+          },
+          "result": {
+            "$ref": "#/components/schemas/EolResultDto",
+            "description": "Pass / fail."
+          },
+          "station": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Test rig / bench id."
+          },
+          "tested_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Free-text station operator."
           }
         }
       },
@@ -7705,6 +11694,32 @@
           }
         ],
         "description": "Response body for `POST /admin/refresh`. Variants are flattened\nso a coalesce comes out as `{ \"ran\": false }` and a real tick\nas `{ \"ran\": true, \"items\": …, \"errors\": …, \"partial\": … }`."
+      },
+      "ReleaseKindDto": {
+        "type": "string",
+        "description": "Wire form of [`ReleaseKind`].",
+        "enum": [
+          "software",
+          "firmware"
+        ]
+      },
+      "ReleaseLinkDto": {
+        "type": "object",
+        "description": "A labelled build / download link on a release.",
+        "required": [
+          "label",
+          "url"
+        ],
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "Human label, e.g. `Firmware binary (.bin)`."
+          },
+          "url": {
+            "type": "string",
+            "description": "The URL."
+          }
+        }
       },
       "ReorderRequest": {
         "type": "object",
@@ -8252,6 +12267,343 @@
           }
         }
       },
+      "RevisionStatusDto": {
+        "type": "string",
+        "description": "Wire form of [`RevisionStatus`].",
+        "enum": [
+          "draft",
+          "published",
+          "superseded"
+        ]
+      },
+      "RmaDto": {
+        "type": "object",
+        "description": "An RMA on the wire.",
+        "required": [
+          "id",
+          "org_id",
+          "product_id",
+          "rma_number",
+          "under_warranty",
+          "status",
+          "version",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When created."
+          },
+          "customer_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Optional customer."
+          },
+          "diagnosis": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Diagnosis notes."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Primary key."
+          },
+          "org_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Parent org."
+          },
+          "product_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Parent product."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Customer-reported reason."
+          },
+          "received_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When received."
+          },
+          "resolution": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Resolution notes."
+          },
+          "resolved_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When resolved."
+          },
+          "rma_number": {
+            "type": "string",
+            "description": "RMA number."
+          },
+          "status": {
+            "$ref": "#/components/schemas/RmaStatusDto",
+            "description": "Status."
+          },
+          "under_warranty": {
+            "type": "boolean",
+            "description": "Warranty flag."
+          },
+          "unit_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Optional serialised unit."
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When last mutated."
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "§8.2 CAS counter."
+          }
+        }
+      },
+      "RmaStatusDto": {
+        "type": "string",
+        "description": "Wire form of [`RmaStatus`].",
+        "enum": [
+          "open",
+          "received",
+          "diagnosed",
+          "repaired",
+          "replaced",
+          "rejected",
+          "closed"
+        ]
+      },
+      "RunDto": {
+        "type": "object",
+        "description": "A manufacturing run on the wire.",
+        "required": [
+          "id",
+          "org_id",
+          "product_id",
+          "run_code",
+          "status",
+          "qty_planned",
+          "qty_built",
+          "qty_passed",
+          "qty_failed",
+          "next_serial_seq",
+          "version",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "completed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Completed."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When created."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Primary key."
+          },
+          "manufacturer_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Builder."
+          },
+          "next_serial_seq": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Next serial sequence number."
+          },
+          "notes": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Markdown notes."
+          },
+          "org_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Parent org."
+          },
+          "product_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Parent product."
+          },
+          "qty_built": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Built quantity."
+          },
+          "qty_failed": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Failed (latest-outcome) quantity."
+          },
+          "qty_passed": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Passed (latest-outcome) quantity."
+          },
+          "qty_planned": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Planned quantity."
+          },
+          "run_code": {
+            "type": "string",
+            "description": "Batch / lot code."
+          },
+          "started_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Started."
+          },
+          "status": {
+            "$ref": "#/components/schemas/RunStatusDto",
+            "description": "Status."
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When last mutated."
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "§8.2 CAS counter."
+          }
+        }
+      },
+      "RunEolSummaryDto": {
+        "type": "object",
+        "description": "A run EOL sign-off summary on the wire.",
+        "required": [
+          "run_id",
+          "built_count",
+          "pass_count",
+          "fail_count",
+          "version"
+        ],
+        "properties": {
+          "built_count": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Built snapshot."
+          },
+          "fail_count": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Fail snapshot."
+          },
+          "notes_md": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Markdown notes."
+          },
+          "pass_count": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Pass snapshot."
+          },
+          "run_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Parent run."
+          },
+          "signed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When signed off."
+          },
+          "signed_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Operator who signed off."
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "§8.2 CAS counter."
+          }
+        }
+      },
+      "RunEolSummaryRequest": {
+        "type": "object",
+        "description": "Body for `POST /runs/{id}/eol-summary` (sign-off).",
+        "properties": {
+          "notes_md": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Markdown notes."
+          },
+          "sign_off": {
+            "type": "boolean",
+            "description": "When true, stamp the operator sign-off."
+          }
+        }
+      },
+      "RunStatusDto": {
+        "type": "string",
+        "description": "Wire form of [`RunStatus`].",
+        "enum": [
+          "planned",
+          "in_progress",
+          "completed",
+          "cancelled"
+        ]
+      },
       "SetHomeOrgRequest": {
         "type": "object",
         "description": "Body for `POST /home-org`.",
@@ -8542,12 +12894,13 @@
       },
       "TagLinkKindDto": {
         "type": "string",
-        "description": "Wire form of [`TagLinkKind`] — `repo | issue | user | team`.",
+        "description": "Wire form of [`TagLinkKind`] — `repo | issue | user | team | project`.",
         "enum": [
           "repo",
           "issue",
           "user",
-          "team"
+          "team",
+          "project"
         ]
       },
       "TagScopeKindDto": {
@@ -8722,6 +13075,138 @@
             "description": "Total matching the filter, ignoring pagination."
           }
         }
+      },
+      "UnitAllocationDto": {
+        "type": "object",
+        "description": "Allocation response: the new units + the reserved serial range.",
+        "required": [
+          "units",
+          "first_seq",
+          "count"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Count allocated."
+          },
+          "first_seq": {
+            "type": "integer",
+            "format": "int32",
+            "description": "First reserved sequence number."
+          },
+          "units": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UnitDto"
+            },
+            "description": "Newly created units."
+          }
+        }
+      },
+      "UnitDto": {
+        "type": "object",
+        "description": "A serialised unit on the wire. `qr_url` is the composed public QR\npayload (`{base_url}/u/{id}?t=<token>`) — `None` when no base URL /\nsecret is configured. The client renders the on-screen QR from it.",
+        "required": [
+          "id",
+          "org_id",
+          "product_id",
+          "serial_number",
+          "status",
+          "version",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "built_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When built."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When created."
+          },
+          "customer_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Shipped-to customer."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Primary key (the stable QR payload)."
+          },
+          "org_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Parent org."
+          },
+          "product_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Parent product."
+          },
+          "qr_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Composed public QR URL (client renders the QR from this)."
+          },
+          "run_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Parent run."
+          },
+          "serial_number": {
+            "type": "string",
+            "description": "Serial number."
+          },
+          "shipped_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When shipped."
+          },
+          "status": {
+            "$ref": "#/components/schemas/UnitStatusDto",
+            "description": "Status."
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When last mutated."
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "§8.2 CAS counter."
+          }
+        }
+      },
+      "UnitStatusDto": {
+        "type": "string",
+        "description": "Wire form of [`UnitStatus`].",
+        "enum": [
+          "built",
+          "tested",
+          "shipped",
+          "returned",
+          "scrapped"
+        ]
       },
       "UnlinkBatchRequest": {
         "type": "object",
@@ -8907,6 +13392,10 @@
     {
       "name": "projects",
       "description": "First-class projects surface (linear-projects-v2.md §7)."
+    },
+    {
+      "name": "manufacturing",
+      "description": "Product & Manufacturing surface — products, parties, manuals, runs, units, EOL, returns (DOCS/ideas/product-manufacturing.md)."
     },
     {
       "name": "tags",

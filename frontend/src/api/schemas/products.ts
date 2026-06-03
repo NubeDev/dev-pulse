@@ -390,3 +390,56 @@ export type PatchRmaRequest = {
   received_at?: string | null;
   resolved_at?: string | null;
 };
+
+// ---------------------------------------------------------------------------
+// Firmware & Software releases
+// ---------------------------------------------------------------------------
+
+export const ReleaseKindSchema = z.enum(["software", "firmware"]);
+export type ReleaseKind = z.infer<typeof ReleaseKindSchema>;
+
+export const ReleaseLinkSchema = z.object({
+  label: z.string(),
+  url: z.string(),
+});
+export type ReleaseLink = z.infer<typeof ReleaseLinkSchema>;
+
+export const ProductReleaseDtoSchema = z.object({
+  id: uuid,
+  org_id: uuid,
+  product_id: uuid,
+  kind: ReleaseKindSchema,
+  major: z.number(),
+  minor: z.number(),
+  version_label: z.string(),
+  release_notes: z.string().nullable().optional(),
+  released_at: isoDateTime.nullable().optional(),
+  links: z.array(ReleaseLinkSchema).optional(),
+  archived_at: isoDateTime.nullable().optional(),
+  created_by: uuid.nullable().optional(),
+  version: z.number(),
+  created_at: isoDateTime,
+  updated_at: isoDateTime,
+});
+export type ProductReleaseDto = z.infer<typeof ProductReleaseDtoSchema>;
+
+export type CreateReleaseRequest = {
+  kind: ReleaseKind;
+  major: number;
+  minor: number;
+  release_notes?: string | null;
+  released_at?: string | null;
+  links?: ReleaseLink[];
+};
+
+export type PatchReleaseRequest = {
+  expected_version: number;
+  kind: ReleaseKind;
+  major: number;
+  minor: number;
+  release_notes?: string | null;
+  released_at?: string | null;
+  links?: ReleaseLink[];
+};
+
+export type ArchiveReleaseRequest = { expected_version: number };

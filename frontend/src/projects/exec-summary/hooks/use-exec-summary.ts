@@ -27,6 +27,7 @@ import type {
   ExecSummaryDto,
   ExecSummaryImageDto,
   PatchExecSummaryRequest,
+  RestoreChangelogEntryRequest,
 } from "../../../api/client.js";
 
 const execSummaryKey = (projectId: string): readonly unknown[] => [
@@ -305,6 +306,29 @@ export function useDeleteExecSummaryChangelog(
       api.deleteProjectExecSummaryChangelog(projectId, entryId),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: execSummaryKey(projectId) });
+    },
+  });
+}
+
+/**
+ * Restore the summary to a previous revision's snapshot. Returns the
+ * full refreshed summary (the restore also appends a new change-log
+ * entry server-side), so we seed the cache directly rather than
+ * re-fetch.
+ */
+export function useRestoreExecSummaryChangelog(
+  projectId: string,
+): UseMutationResult<
+  ExecSummaryDto,
+  Error,
+  { entryId: string; body: RestoreChangelogEntryRequest }
+> {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ entryId, body }) =>
+      api.restoreProjectExecSummaryChangelog(projectId, entryId, body),
+    onSuccess: (next) => {
+      qc.setQueryData(execSummaryKey(projectId), next);
     },
   });
 }

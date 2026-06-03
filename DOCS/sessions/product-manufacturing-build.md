@@ -178,6 +178,41 @@ as vertical slices (migration → domain → store → REST → UI) per phase.
   via a unit picker fanned out over the product's runs (no serial-lookup endpoint added). `typecheck` +
   `build` GREEN. **All of P1–P3 now complete; P4 out of scope.**
 
+- **2026-06-03 — Manufacturer UX fix + latent product-PATCH bug.** User reported "no way to add a
+  manufacturer". Root cause: manufacturer creation existed only under the buried Products ▸ Parties ▸
+  Manufacturers tab; the product create dialog's manufacturer dropdown only listed existing ones (empty
+  for new orgs, no inline create); and the product detail/edit screens had NO manufacturer field at all
+  (so it couldn't be set/changed after creation). Added a reusable `frontend/src/products/manufacturer-field.tsx`
+  (Select + inline "New manufacturer" dialog via `useCreateParty("manufacturers")`, optimistic-merges the
+  new row so it's immediately selectable) and wired it into `new-product-dialog.tsx` and the product
+  Overview Details card (commits via CAS PATCH). **Also fixed a latent data-loss bug:** the product PATCH
+  is a full upsert (omitted field → NULL server-side), but `OverviewTab.commit`, `EditProductDialog`, and
+  the archive-restore path only re-sent name/model/status — so editing any one field silently wiped
+  description / manufacturer / serial config. Added a `fullPatchBody(product, overrides)` helper used by
+  all three sites to always re-send the complete product. `typecheck` + `build` green.
+
+- **2026-06-03 — Product software/firmware release history (new feature, beyond original spec).**
+  User asked for a per-product "software and firmware section with major and minor versions" — chose a
+  **release-history list** over single current-version fields. Full additive vertical slice.
+  **Backend:** migration `0055_product_releases.sql` (`dp_product_releases` — CASCADE child of product,
+  `kind IN ('software','firmware')`, `major`/`minor` int CHECK ≥0, `release_notes`, `released_at`,
+  `archived_at`, `version` CAS, partial-unique `(product,kind,major,minor) WHERE archived_at IS NULL`);
+  domain `product_release.rs` (`ReleaseKind`, `ProductRelease`, `…Create`, `…Update`) + Store-trait block
+  (list/get/create/update/archive) + lib exports; store `product_releases.rs` (list non-archived ordered
+  kind→major desc→minor desc, create with parent check + unique→Conflict, update CAS + miss
+  disambiguation, archive soft-delete CAS) + `row_to_product_release` + `release_kind` encode helper/test
+  + mod delegations; REST `product_releases.rs` (nested `/products/{id}/releases[/{rid}]`, §8 parent-child
+  verification, DTO with derived `version_label`, `(manufacturing, read|write)` authz, audit
+  `PRODUCT_RELEASE_CREATE`/`PRODUCT_RELEASE_UPDATE`) + lib/openapi registration + dp-server mount.
+  `cargo build --workspace` GREEN; `product_releases_crud` integration test **passes** (real PG).
+  **Frontend:** RMA-style — appended `ProductReleaseDto`/`ReleaseKind` Zod schemas + `dev-pulse-api.ts`
+  client (`listProductReleases/createProductRelease/patchProductRelease/archiveProductRelease`, DELETE
+  carries `expected_version`) + hooks in `use-products-data.ts` (`productsKeys.releases`); new
+  `products/releases/product-releases-section.tsx` (two groups Firmware/Software, version_label rows,
+  release date + markdown notes, New/Edit dialogs with live `v{major}.{minor}` preview + CAS PATCH,
+  archive confirm); wired a **"Firmware & Software"** product-detail tab (`routes.ts` `ProductDetailTab`
+  gains `releases`, `product-detail-page.tsx` tab). `typecheck` + `build` GREEN.
+
 ## Decisions & assumptions
 
 - **Public `/u/{id}` landing is BACKEND-served HTML** (not a SPA/React page). Rationale: the

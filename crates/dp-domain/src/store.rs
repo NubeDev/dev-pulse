@@ -1791,6 +1791,15 @@ pub trait Store: Send + Sync {
         ))
     }
 
+    /// Fetch one change-log entry by surrogate id — used by the
+    /// restore path to read the entry's content snapshot.
+    async fn get_exec_summary_changelog(
+        &self,
+        _entry_id: Uuid,
+    ) -> Result<Option<crate::project_exec_summary::ExecSummaryChangelogEntry>, StoreError> {
+        Ok(None)
+    }
+
     /// Delete a change-log entry. Reserved for the admin-only
     /// confirm path; the regular UI never reaches this.
     async fn delete_exec_summary_changelog(
@@ -3029,6 +3038,53 @@ pub trait Store: Send + Sync {
     ) -> Result<Vec<(crate::product_manual::ProductManual, crate::product_manual::ManualRevision)>, StoreError>
     {
         Ok(Vec::new())
+    }
+
+    // ---- product releases (software / firmware history) -----------
+
+    /// List a product's non-archived releases (optionally one kind),
+    /// ordered kind, major DESC, minor DESC. Default impl: empty.
+    async fn list_product_releases(
+        &self,
+        _product_id: Uuid,
+        _kind: Option<crate::product_release::ReleaseKind>,
+    ) -> Result<Vec<crate::product_release::ProductRelease>, StoreError> {
+        Ok(Vec::new())
+    }
+
+    /// Fetch one release (for §8 parent checks). Default impl: None.
+    async fn get_product_release(
+        &self,
+        _id: Uuid,
+    ) -> Result<Option<crate::product_release::ProductRelease>, StoreError> {
+        Ok(None)
+    }
+
+    /// Create a release.
+    async fn create_product_release(
+        &self,
+        _create: &crate::product_release::ProductReleaseCreate,
+    ) -> Result<crate::product_release::ProductRelease, StoreError> {
+        Err(StoreError::Invalid("product releases not supported".into()))
+    }
+
+    /// Update a release (CAS).
+    async fn update_product_release(
+        &self,
+        _id: Uuid,
+        _expected_version: i64,
+        _update: &crate::product_release::ProductReleaseUpdate,
+    ) -> Result<crate::product_release::ProductRelease, StoreError> {
+        Err(StoreError::Invalid("product releases not supported".into()))
+    }
+
+    /// Archive a release (set `archived_at`, CAS, idempotent-friendly).
+    async fn archive_product_release(
+        &self,
+        _id: Uuid,
+        _expected_version: i64,
+    ) -> Result<crate::product_release::ProductRelease, StoreError> {
+        Err(StoreError::Invalid("product releases not supported".into()))
     }
 
     // ===============================================================

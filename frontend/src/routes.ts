@@ -204,16 +204,23 @@ export function projectDetailRouteWithParams(
 }
 
 /** Sub-tab on `#/projects/{id}` — `workbench` (default issue list /
- *  KPIs / milestones) or `exec-summary` (the §4 Executive Summary
- *  surface). Persisted via `?tab=…` so deep links land on the right
- *  surface. */
-export type ProjectDetailTab = "workbench" | "exec-summary";
+ *  KPIs / milestones), `exec-summary` (the §4 Executive Summary
+ *  surface), or `schedule` (the saved-views Gantt timeline).
+ *  Persisted via `?tab=…` so deep links land on the right surface. */
+export type ProjectDetailTab = "workbench" | "exec-summary" | "schedule";
 
 export function projectDetailTab(route: string): ProjectDetailTab {
   const q = route.indexOf("?");
   if (q < 0) return "workbench";
   const params = new URLSearchParams(route.slice(q + 1));
-  return params.get("tab") === "exec-summary" ? "exec-summary" : "workbench";
+  switch (params.get("tab")) {
+    case "exec-summary":
+      return "exec-summary";
+    case "schedule":
+      return "schedule";
+    default:
+      return "workbench";
+  }
 }
 
 export function projectDetailTabRoute(
@@ -521,7 +528,8 @@ export type ProductDetailTab =
   | "units"
   | "manuals"
   | "documents"
-  | "returns";
+  | "returns"
+  | "releases";
 
 export function productDetailTab(route: string): ProductDetailTab {
   const q = route.indexOf("?");
@@ -534,6 +542,7 @@ export function productDetailTab(route: string): ProductDetailTab {
     case "manuals":
     case "documents":
     case "returns":
+    case "releases":
       return v;
     default:
       return "overview";

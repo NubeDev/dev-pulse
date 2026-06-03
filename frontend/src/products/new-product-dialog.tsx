@@ -37,6 +37,7 @@ import type { OrgDto } from "../api/client.js";
 import type { ProductDto, ProductStatus } from "../api/schemas/products.js";
 import { navigate, productDetailRoute } from "../routes.js";
 
+import { ManufacturerField } from "./manufacturer-field.js";
 import { useCreateProduct } from "./use-products-data.js";
 
 const STATUSES: ProductStatus[] = ["draft", "active", "eol", "archived"];
@@ -80,14 +81,6 @@ export function NewProductDialog({
   const [orgId, setOrgId] = useState("");
   const [manufacturerId, setManufacturerId] = useState<string>(NO_MFG);
   const [status, setStatus] = useState<ProductStatus>("draft");
-
-  // Manufacturer options scoped to the chosen org.
-  const manufacturersQ = useQuery({
-    queryKey: ["parties", "manufacturers", "list", { org_id: orgId, limit: 500 }],
-    queryFn: () => api.listManufacturers({ org_id: orgId, limit: 500 }),
-    enabled: open && orgId.length > 0,
-    staleTime: 60_000,
-  });
 
   useEffect(() => {
     if (!open) return;
@@ -202,25 +195,11 @@ export function NewProductDialog({
             )}
           </div>
 
-          <div className="flex flex-col gap-2">
-            <Label htmlFor="new-product-manufacturer">Manufacturer</Label>
-            <Select value={manufacturerId} onValueChange={setManufacturerId}>
-              <SelectTrigger
-                id="new-product-manufacturer"
-                data-testid="new-product-manufacturer"
-              >
-                <SelectValue placeholder="None" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={NO_MFG}>None</SelectItem>
-                {(manufacturersQ.data?.rows ?? []).map((m) => (
-                  <SelectItem key={m.id} value={m.id}>
-                    {m.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
+          <ManufacturerField
+            orgId={orgId}
+            value={manufacturerId === NO_MFG ? null : manufacturerId}
+            onChange={(id) => setManufacturerId(id ?? NO_MFG)}
+          />
 
           <div className="flex flex-col gap-2">
             <Label htmlFor="new-product-status">Status</Label>

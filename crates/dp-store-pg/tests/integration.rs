@@ -83,6 +83,7 @@ use dp_domain::manufacturing::{RunStatus, RunUpsert, UnitStatus};
 use dp_domain::party::{CustomerUpsert, ManufacturerUpsert, PartyListFilter, SupplierUpsert};
 use dp_domain::product::{ProductListFilter, ProductStatus, ProductUpsert};
 use dp_domain::product_manual::{ManualUpsert, RevisionStatus, RevisionUpsert};
+use dp_domain::product_release::{ProductReleaseCreate, ProductReleaseUpdate, ReleaseKind};
 use dp_domain::rma::{RmaCreate, RmaFilter, RmaStatus, RmaUpdate};
 use starter_store_postgres::migrate;
 use starter_store_postgres::pool::connect;
@@ -2823,6 +2824,168 @@ async fn manuals_publish_supersedes_prior() {
     let all = s.list_manual_revisions(manual.id).await.unwrap();
     let superseded = all.iter().filter(|r| r.status == RevisionStatus::Superseded).count();
     assert_eq!(superseded, 1);
+}
+
+/// Software / firmware release history: list ordering + kind filter,
+/// CAS update, duplicate `(product,kind,major,minor)` → Conflict, a
+/// release under the wrong product is rejected, archive drops it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Docker or DP_TEST_DATABASE_URL"]
+async fn product_releases_crud() {
+    let f = fixture().await;
+    let s = f.store();
+    let org = seed_org(s, 9350, "pm-releases").await;
+    let lead = seed_user(s, 9351, "pm-rel-lead").await;
+
+    let p = s
+        .create_product(&ProductUpsert {
+            org_id: org.id,
+            name: "Gateway".into(),
+            model_number: "NB-REL-1".into(),
+            description: None,
+            manufacturer_id: None,
+            status: ProductStatus::Active,
+            serial_prefix: None,
+            serial_format: None,
+            created_by: Some(lead.id),
+        })
+        .await
+        .unwrap();
+
+    // A software 1.0 and a firmware 2.3.
+    let sw = s
+        .create_product_release(&ProductReleaseCreate {
+            org_id: org.id,
+            product_id: p.id,
+            kind: ReleaseKind::Software,
+            major: 1,
+            minor: 0,
+            release_notes: Some("initial".into()),
+            released_at: None,
+            created_by: Some(lead.id),
+        })
+        .await
+        .unwrap();
+    assert_eq!(sw.version, 1);
+
+    s.create_product_release(&ProductReleaseCreate {
+        org_id: org.id,
+        product_id: p.id,
+        kind: ReleaseKind::Software,
+        major: 1,
+        minor: 2,
+        release_notes: None,
+        released_at: None,
+        created_by: None,
+    })
+    .await
+    .unwrap();
+
+    s.create_product_release(&ProductReleaseCreate {
+        org_id: org.id,
+        product_id: p.id,
+        kind: ReleaseKind::Firmware,
+        major: 2,
+        minor: 3,
+        release_notes: None,
+        released_at: None,
+        created_by: None,
+    })
+    .await
+    .unwrap();
+
+    // list (all): ordered by kind, major DESC, minor DESC.
+    let all = s.list_product_releases(p.id, None).await.unwrap();
+    assert_eq!(all.len(), 3);
+    assert_eq!(all[0].kind, ReleaseKind::Firmware);
+    assert_eq!((all[1].major, all[1].minor), (1, 2));
+    assert_eq!((all[2].major, all[2].minor), (1, 0));
+
+    // kind filter.
+    let sw_only = s.list_product_releases(p.id, Some(ReleaseKind::Software)).await.unwrap();
+    assert_eq!(sw_only.len(), 2);
+    assert!(sw_only.iter().all(|r| r.kind == ReleaseKind::Software));
+
+    // CAS update bumps version.
+    let updated = s
+        .update_product_release(sw.id, sw.version, &ProductReleaseUpdate {
+            kind: ReleaseKind::Software,
+            major: 1,
+            minor: 1,
+            release_notes: Some("patch".into()),
+            released_at: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(updated.version, 2);
+    assert_eq!((updated.major, updated.minor), (1, 1));
+
+    // stale CAS → Conflict.
+    let stale = s
+        .update_product_release(sw.id, sw.version, &ProductReleaseUpdate {
+            kind: ReleaseKind::Software,
+            major: 9,
+            minor: 9,
+            release_notes: None,
+            released_at: None,
+        })
+        .await;
+    assert!(matches!(stale, Err(StoreError::Conflict(_))));
+
+    // duplicate (product, kind, major, minor) → Conflict (1.2 already exists).
+    let dup = s
+        .create_product_release(&ProductReleaseCreate {
+            org_id: org.id,
+            product_id: p.id,
+            kind: ReleaseKind::Software,
+            major: 1,
+            minor: 2,
+            release_notes: None,
+            released_at: None,
+            created_by: None,
+        })
+        .await;
+    assert!(matches!(dup, Err(StoreError::Conflict(_))));
+
+    // a release under the WRONG product id is rejected (parent check).
+    let other = s
+        .create_product(&ProductUpsert {
+            org_id: org.id,
+            name: "Other".into(),
+            model_number: "NB-REL-2".into(),
+            description: None,
+            manufacturer_id: None,
+            status: ProductStatus::Active,
+            serial_prefix: None,
+            serial_format: None,
+            created_by: None,
+        })
+        .await
+        .unwrap();
+    let fetched = s.get_product_release(sw.id).await.unwrap().unwrap();
+    assert_ne!(fetched.product_id, other.id, "release belongs to its own product, not 'other'");
+
+    // create on a non-existent product → NotFound.
+    let orphan = s
+        .create_product_release(&ProductReleaseCreate {
+            org_id: org.id,
+            product_id: Uuid::new_v4(),
+            kind: ReleaseKind::Software,
+            major: 0,
+            minor: 1,
+            release_notes: None,
+            released_at: None,
+            created_by: None,
+        })
+        .await;
+    assert!(matches!(orphan, Err(StoreError::NotFound { .. })));
+
+    // archive the updated software release → drops from the list, slot freed.
+    let archived = s.archive_product_release(updated.id, updated.version).await.unwrap();
+    assert!(archived.archived_at.is_some());
+    let after = s.list_product_releases(p.id, None).await.unwrap();
+    assert_eq!(after.len(), 2);
+    assert!(after.iter().all(|r| r.id != updated.id));
 }
 
 // ===================================================================

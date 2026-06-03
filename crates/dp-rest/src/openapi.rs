@@ -141,6 +141,10 @@ async fn webhook_github_stub() {}
         crate::product_manuals::list_revisions,
         crate::product_manuals::create_revision,
         crate::product_manuals::publish_revision,
+        crate::product_releases::list_releases,
+        crate::product_releases::create_release,
+        crate::product_releases::patch_release,
+        crate::product_releases::archive_release,
         // P2 — runs / units / EOL / QR.
         crate::manufacturing::list_runs,
         crate::manufacturing::create_run,
@@ -198,6 +202,7 @@ async fn webhook_github_stub() {}
         crate::project_exec_summary::submit_project_exec_summary,
         crate::project_exec_summary::approve_project_exec_summary,
         crate::project_exec_summary::revert_project_exec_summary,
+        crate::project_exec_summary::restore_exec_summary_changelog,
         // Tags (SCOPE-PROJECTS §7).
         crate::tags::list_tags,
         crate::tags::list_my_tags,
@@ -311,6 +316,12 @@ async fn webhook_github_stub() {}
         crate::product_manuals::RevisionStatusDto,
         crate::product_manuals::CreateManualRequest,
         crate::product_manuals::CreateRevisionRequest,
+        crate::product_releases::ProductReleaseDto,
+        crate::product_releases::ReleaseKindDto,
+        crate::product_releases::ReleaseLinkDto,
+        crate::product_releases::CreateReleaseRequest,
+        crate::product_releases::PatchReleaseRequest,
+        crate::product_releases::ArchiveReleaseRequest,
         // P2 — runs / units / EOL DTOs.
         crate::manufacturing::RunDto,
         crate::manufacturing::RunStatusDto,
@@ -378,6 +389,7 @@ async fn webhook_github_stub() {}
         crate::project_exec_summary::ExecSummaryApprovalPatch,
         crate::project_exec_summary::ExecSummaryDocumentPatchBody,
         crate::project_exec_summary::ExecSummaryChangelogInsertBody,
+        crate::project_exec_summary::ExecSummaryChangelogRestoreBody,
         crate::project_exec_summary::ExecSummaryApproveBody,
         crate::project_exec_summary::SubmitIncompleteBody,
         // Tags.

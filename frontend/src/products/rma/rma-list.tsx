@@ -194,7 +194,7 @@ export function RmaListPage(): JSX.Element {
                     )}
                   </TableCell>
                   <TableCell className="text-muted-foreground">
-                    {new Date(r.created_at).toLocaleDateString()}
+                    {new Date(r.created_at).toLocaleDateString("en-AU")}
                   </TableCell>
                 </TableRow>
               ))}

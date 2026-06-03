@@ -53,6 +53,9 @@ use dp_domain::product_doc::{BlobRefJson as ProductBlobRefJson, ProductDocument}
 use dp_domain::product_manual::{
     ManualRevision, ManualUpsert, ProductManual, RevisionUpsert,
 };
+use dp_domain::product_release::{
+    ProductRelease, ProductReleaseCreate, ProductReleaseUpdate, ReleaseKind,
+};
 use dp_domain::rma::{Rma, RmaCreate, RmaFilter, RmaUpdate};
 use dp_domain::pin::{Pin, PinKind};
 use dp_domain::repo::Repo;
@@ -104,6 +107,7 @@ mod project_exec_summary;
 mod parties;
 mod products;
 mod product_manuals;
+mod product_releases;
 mod manufacturing;
 mod rma;
 
@@ -1397,6 +1401,13 @@ impl Store for PgStore {
         self.insert_exec_summary_changelog_impl(insert).await
     }
 
+    async fn get_exec_summary_changelog(
+        &self,
+        entry_id: Uuid,
+    ) -> Result<Option<dp_domain::project_exec_summary::ExecSummaryChangelogEntry>, StoreError> {
+        self.get_exec_summary_changelog_impl(entry_id).await
+    }
+
     async fn delete_exec_summary_changelog(
         &self,
         entry_id: Uuid,
@@ -1546,6 +1557,24 @@ impl Store for PgStore {
         product_id: Uuid,
     ) -> Result<Vec<(ProductManual, ManualRevision)>, StoreError> {
         self.list_published_manuals_for_product_impl(product_id).await
+    }
+
+    // ---- Product & Manufacturing P1: software/firmware releases ----
+
+    async fn list_product_releases(&self, product_id: Uuid, kind: Option<ReleaseKind>) -> Result<Vec<ProductRelease>, StoreError> {
+        self.list_product_releases_impl(product_id, kind).await
+    }
+    async fn get_product_release(&self, id: Uuid) -> Result<Option<ProductRelease>, StoreError> {
+        self.get_product_release_impl(id).await
+    }
+    async fn create_product_release(&self, c: &ProductReleaseCreate) -> Result<ProductRelease, StoreError> {
+        self.create_product_release_impl(c).await
+    }
+    async fn update_product_release(&self, id: Uuid, ev: i64, u: &ProductReleaseUpdate) -> Result<ProductRelease, StoreError> {
+        self.update_product_release_impl(id, ev, u).await
+    }
+    async fn archive_product_release(&self, id: Uuid, ev: i64) -> Result<ProductRelease, StoreError> {
+        self.archive_product_release_impl(id, ev).await
     }
 
     // ---- Product & Manufacturing P2: runs / units / EOL -----------

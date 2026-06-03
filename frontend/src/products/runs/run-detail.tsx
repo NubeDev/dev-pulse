@@ -526,7 +526,7 @@ function RunEolSignOffCard({ run }: { run: RunDto }): JSX.Element {
                 <AlertDescription>
                   {data?.signed_by ? `By ${data.signed_by} · ` : ""}
                   {data?.signed_at
-                    ? new Date(data.signed_at).toLocaleString()
+                    ? new Date(data.signed_at).toLocaleString("en-AU")
                     : ""}
                 </AlertDescription>
               </Alert>

@@ -266,6 +266,10 @@ pub const PROJECT_EXEC_SUMMARY_CHANGELOG_ADD: &str = "project.exec_summary.chang
 /// Target carries `<project_id>:<entry_id>`.
 pub const PROJECT_EXEC_SUMMARY_CHANGELOG_REMOVE: &str = "project.exec_summary.changelog_remove";
 
+/// `project.exec_summary.changelog_restore` — `POST /projects/{id}/exec-summary/changelog/{entry_id}/restore`.
+/// Target carries `<project_id>:<entry_id>` of the restored-from entry.
+pub const PROJECT_EXEC_SUMMARY_CHANGELOG_RESTORE: &str = "project.exec_summary.changelog_restore";
+
 /// `issue.pending_remote_timeout` — emitted by the §8.5 sweeper
 /// when a `dp_issues.pending_remote` flag has lingered past
 /// `issues.pending_remote_timeout_secs`. The audit target carries
@@ -290,6 +294,10 @@ pub const PRODUCT_UNLINK_PROJECT: &str = "manufacturing.product.unlink_project";
 pub const PRODUCT_DOCUMENT_ADD: &str = "manufacturing.product.document_add";
 /// `manufacturing.product.document_remove` — `DELETE /products/{id}/documents/{doc_id}`.
 pub const PRODUCT_DOCUMENT_REMOVE: &str = "manufacturing.product.document_remove";
+/// `manufacturing.product_release.create` — `POST /products/{id}/releases`.
+pub const PRODUCT_RELEASE_CREATE: &str = "manufacturing.product_release.create";
+/// `manufacturing.product_release.update` — `PATCH/DELETE …/releases/{rid}`.
+pub const PRODUCT_RELEASE_UPDATE: &str = "manufacturing.product_release.update";
 /// `manufacturing.manual.create` — `POST /products/{id}/manuals`.
 pub const MANUAL_CREATE: &str = "manufacturing.manual.create";
 /// `manufacturing.manual.revision_add` — `POST …/manuals/{m}/revisions`.

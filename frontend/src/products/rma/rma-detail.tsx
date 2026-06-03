@@ -309,16 +309,16 @@ function RmaDetailBody({ rma }: { rma: RmaDto }): JSX.Element {
             </InfoRow>
             {rma.received_at && (
               <InfoRow label="Received">
-                {new Date(rma.received_at).toLocaleString()}
+                {new Date(rma.received_at).toLocaleString("en-AU")}
               </InfoRow>
             )}
             {rma.resolved_at && (
               <InfoRow label="Resolved">
-                {new Date(rma.resolved_at).toLocaleString()}
+                {new Date(rma.resolved_at).toLocaleString("en-AU")}
               </InfoRow>
             )}
             <InfoRow label="Created">
-              {new Date(rma.created_at).toLocaleString()}
+              {new Date(rma.created_at).toLocaleString("en-AU")}
             </InfoRow>
           </CardContent>
         </Card>

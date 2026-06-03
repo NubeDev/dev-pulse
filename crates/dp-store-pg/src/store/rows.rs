@@ -24,6 +24,7 @@ use dp_domain::party::{Customer, Manufacturer, Supplier};
 use dp_domain::product::{Product, ProductProjectLink};
 use dp_domain::product_doc::ProductDocument;
 use dp_domain::product_manual::{ManualRevision, ProductManual};
+use dp_domain::product_release::ProductRelease;
 use dp_domain::rma::Rma;
 use dp_domain::project::{
     PortfolioRawRow, Project, ProjectStatus,
@@ -45,7 +46,7 @@ use crate::encode::{
     actor_role_from_text, event_kind_from_text,
     tag_link_kind_from_text, tag_scope_kind_from_text,
     fetch_run_kind_from_text, membership_role_from_text, resource_kind_from_text,
-    product_status_from_text, revision_status_from_text,
+    product_status_from_text, revision_status_from_text, release_kind_from_text,
     run_status_from_text, unit_status_from_text, eol_result_from_text,
     rma_status_from_text,
 };
@@ -801,6 +802,32 @@ pub(super) fn row_to_manual_revision(
         change_note: r.try_get("change_note").map_err(map_sqlx)?,
         authored_by: r.try_get("authored_by").map_err(map_sqlx)?,
         created_at: r.try_get("created_at").map_err(map_sqlx)?,
+    })
+}
+
+pub(super) fn row_to_product_release(
+    r: &sqlx::postgres::PgRow,
+) -> Result<ProductRelease, StoreError> {
+    let kind_text: String = r.try_get("kind").map_err(map_sqlx)?;
+    let kind = release_kind_from_text(&kind_text).map_err(invalid)?;
+    Ok(ProductRelease {
+        id: r.try_get("id").map_err(map_sqlx)?,
+        org_id: r.try_get("org_id").map_err(map_sqlx)?,
+        product_id: r.try_get("product_id").map_err(map_sqlx)?,
+        kind,
+        major: r.try_get("major").map_err(map_sqlx)?,
+        minor: r.try_get("minor").map_err(map_sqlx)?,
+        release_notes: r.try_get("release_notes").map_err(map_sqlx)?,
+        released_at: r.try_get("released_at").map_err(map_sqlx)?,
+        links: {
+            let v: serde_json::Value = r.try_get("links").map_err(map_sqlx)?;
+            serde_json::from_value(v).unwrap_or_default()
+        },
+        archived_at: r.try_get("archived_at").map_err(map_sqlx)?,
+        created_by: r.try_get("created_by").map_err(map_sqlx)?,
+        created_at: r.try_get("created_at").map_err(map_sqlx)?,
+        updated_at: r.try_get("updated_at").map_err(map_sqlx)?,
+        version: r.try_get("version").map_err(map_sqlx)?,
     })
 }
 

@@ -74,6 +74,7 @@ import {
 } from "../routes.js";
 import { MarkdownField, TextField } from "./../projects/exec-summary/form-fields.js";
 
+import { ManufacturerField } from "./manufacturer-field.js";
 import { PRODUCT_STATUS_VARIANT } from "./product-list.js";
 import { ProductDocumentsSection } from "./product-documents-section.js";
 import { ProductManualsSection } from "./product-manuals-section.js";
@@ -81,6 +82,7 @@ import { ProductProjectsSection } from "./product-projects-section.js";
 import { ProductRunsSection } from "./runs/product-runs-section.js";
 import { ProductUnitsSection } from "./units/product-units-section.js";
 import { ProductReturnsSection } from "./rma/product-returns-section.js";
+import { ProductReleasesSection } from "./releases/product-releases-section.js";
 import {
   useArchiveProduct,
   usePatchProduct,
@@ -94,6 +96,26 @@ const STATUS_LABEL: Record<ProductStatus, string> = {
   archived: "Archived",
 };
 const STATUSES: ProductStatus[] = ["draft", "active", "eol", "archived"];
+
+/** Build a complete `PatchProductRequest` from the current product so a
+ *  partial edit doesn't NULL its sibling fields (the server PATCH is a
+ *  full upsert — see `OverviewTab`). `overrides` win. */
+function fullPatchBody(
+  product: ProductDto,
+  overrides: Partial<PatchProductRequest>,
+): PatchProductRequest {
+  return {
+    expected_version: product.version,
+    name: product.name,
+    model_number: product.model_number,
+    status: product.status,
+    description: product.description ?? null,
+    manufacturer_id: product.manufacturer_id ?? null,
+    serial_prefix: product.serial_prefix ?? null,
+    serial_format: product.serial_format ?? null,
+    ...overrides,
+  };
+}
 
 export function ProductDetailPage({
   productId,
@@ -171,12 +193,7 @@ function ProductDetailBody({ product }: { product: ProductDto }): JSX.Element {
   const onArchiveConfirm = (): void => {
     if (isArchived) {
       patch.mutate(
-        {
-          expected_version: product.version,
-          name: product.name,
-          model_number: product.model_number,
-          status: "active",
-        },
+        fullPatchBody(product, { status: "active" }),
         { onSuccess: () => setArchiveOpen(false) },
       );
     } else {
@@ -254,6 +271,9 @@ function ProductDetailBody({ product }: { product: ProductDto }): JSX.Element {
           <TabsTrigger value="units" data-testid="product-tab-units">
             Units
           </TabsTrigger>
+          <TabsTrigger value="releases" data-testid="product-tab-releases">
+            Firmware &amp; Software
+          </TabsTrigger>
           <TabsTrigger value="manuals" data-testid="product-tab-manuals">
             Manuals
           </TabsTrigger>
@@ -276,6 +296,9 @@ function ProductDetailBody({ product }: { product: ProductDto }): JSX.Element {
         </TabsContent>
         <TabsContent value="units" className="mt-4">
           <ProductUnitsSection product={product} />
+        </TabsContent>
+        <TabsContent value="releases" className="mt-4">
+          <ProductReleasesSection product={product} />
         </TabsContent>
         <TabsContent value="manuals" className="mt-4">
           <ProductManualsSection
@@ -342,18 +365,13 @@ function ProductDetailBody({ product }: { product: ProductDto }): JSX.Element {
 function OverviewTab({ product }: { product: ProductDto }): JSX.Element {
   const patch = usePatchProduct(product.id);
 
-  // PATCH requires name / model_number / status to always be present
-  // (they're non-optional on `PatchProductRequest`), so every commit
-  // re-sends the current values plus the changed field.
+  // The product PATCH is a FULL upsert — any field omitted from the
+  // body is written as NULL server-side. So every commit re-sends the
+  // *entire* current product (not just name/model/status) plus the
+  // changed field, otherwise editing one field would wipe the others
+  // (description, manufacturer, serial config).
   const commit = (overrides: Partial<PatchProductRequest>): void => {
-    const body: PatchProductRequest = {
-      expected_version: product.version,
-      name: product.name,
-      model_number: product.model_number,
-      status: product.status,
-      ...overrides,
-    };
-    patch.mutate(body);
+    patch.mutate(fullPatchBody(product, overrides));
   };
 
   const exampleSerial = buildExampleSerial(
@@ -408,6 +426,14 @@ function OverviewTab({ product }: { product: ProductDto }): JSX.Element {
                 </SelectContent>
               </Select>
             </div>
+            <ManufacturerField
+              orgId={product.org_id}
+              value={product.manufacturer_id ?? null}
+              onChange={(id) => {
+                if ((product.manufacturer_id ?? null) === id) return;
+                commit({ manufacturer_id: id });
+              }}
+            />
           </CardContent>
         </Card>
 
@@ -518,12 +544,11 @@ function EditProductDialog({
     e.preventDefault();
     if (nameError || modelError) return;
     patch.mutate(
-      {
-        expected_version: product.version,
+      fullPatchBody(product, {
         name: name.trim(),
         model_number: modelNumber.trim(),
         status,
-      },
+      }),
       { onSuccess: () => onOpenChange(false) },
     );
   };

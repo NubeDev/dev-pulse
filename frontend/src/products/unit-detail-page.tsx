@@ -200,7 +200,7 @@ function UnitDetailBody({ unit }: { unit: UnitDto }): JSX.Element {
                   Built at
                 </span>
                 <span className="text-sm">
-                  {new Date(unit.built_at).toLocaleString()}
+                  {new Date(unit.built_at).toLocaleString("en-AU")}
                 </span>
               </div>
             ) : null}
@@ -211,7 +211,7 @@ function UnitDetailBody({ unit }: { unit: UnitDto }): JSX.Element {
                   Shipped at
                 </span>
                 <span className="text-sm">
-                  {new Date(unit.shipped_at).toLocaleString()}
+                  {new Date(unit.shipped_at).toLocaleString("en-AU")}
                 </span>
               </div>
             ) : null}
@@ -317,7 +317,7 @@ function UnitDetailBody({ unit }: { unit: UnitDto }): JSX.Element {
                       </span>
                     ) : null}
                     <span className="ml-auto text-xs text-muted-foreground">
-                      {new Date(report.tested_at).toLocaleString()}
+                      {new Date(report.tested_at).toLocaleString("en-AU")}
                     </span>
                   </div>
 

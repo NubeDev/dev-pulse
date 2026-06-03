@@ -15,10 +15,12 @@ import type { ProjectDto } from "../api/client.js";
 import type {
   ArchivePartyRequest,
   ArchiveProductRequest,
+  ArchiveReleaseRequest,
   CreateCustomerRequest,
   CreateManualRequest,
   CreatePartyRequest,
   CreateProductRequest,
+  CreateReleaseRequest,
   CreateRevisionRequest,
   CustomerDto,
   CustomerListResponse,
@@ -31,9 +33,11 @@ import type {
   PatchCustomerRequest,
   PatchPartyRequest,
   PatchProductRequest,
+  PatchReleaseRequest,
   ProductDocumentDto,
   ProductDto,
   ProductListResponse,
+  ProductReleaseDto,
 } from "../api/schemas/products.js";
 
 /** Stable cache keys — the invalidation surface for the mutation
@@ -52,6 +56,8 @@ export const productsKeys = {
   manuals: (productId: string) => ["products", "manuals", productId] as const,
   revisions: (productId: string, manualId: string) =>
     ["products", "revisions", productId, manualId] as const,
+  releases: (productId: string) =>
+    ["products", "releases", productId] as const,
 };
 
 /** Party kind discriminator — the three list/edit surfaces share one
@@ -407,6 +413,62 @@ export function useArchiveParty(kind: PartyKind) {
     onSuccess: (_, { id }) => {
       qc.invalidateQueries({ queryKey: partiesKeys.detail(kind, id) });
       invalidatePartiesRoot(qc, kind);
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Firmware & Software releases
+// ---------------------------------------------------------------------------
+
+export function useProductReleases(productId: string | null) {
+  return useQuery<ProductReleaseDto[]>({
+    queryKey: productId
+      ? productsKeys.releases(productId)
+      : ["products", "releases", "(none)"],
+    queryFn: () =>
+      productId ? api.listProductReleases(productId) : Promise.resolve([]),
+    enabled: !!productId,
+    staleTime: 30_000,
+  });
+}
+
+export function useCreateRelease(productId: string) {
+  const qc = useQueryClient();
+  return useMutation<ProductReleaseDto, Error, CreateReleaseRequest>({
+    mutationFn: (body) => api.createProductRelease(productId, body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: productsKeys.releases(productId) });
+    },
+  });
+}
+
+export function usePatchRelease(productId: string) {
+  const qc = useQueryClient();
+  return useMutation<
+    ProductReleaseDto,
+    Error,
+    { releaseId: string; body: PatchReleaseRequest }
+  >({
+    mutationFn: ({ releaseId, body }) =>
+      api.patchProductRelease(productId, releaseId, body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: productsKeys.releases(productId) });
+    },
+  });
+}
+
+export function useArchiveRelease(productId: string) {
+  const qc = useQueryClient();
+  return useMutation<
+    ProductReleaseDto,
+    Error,
+    { releaseId: string; body: ArchiveReleaseRequest }
+  >({
+    mutationFn: ({ releaseId, body }) =>
+      api.archiveProductRelease(productId, releaseId, body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: productsKeys.releases(productId) });
     },
   });
 }

@@ -464,6 +464,7 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
     let parties = dp_rest::parties::parties_router(rest_state.clone());
     let products = dp_rest::products::products_router(rest_state.clone());
     let product_manuals = dp_rest::product_manuals::product_manuals_router(rest_state.clone());
+    let product_releases = dp_rest::product_releases::product_releases_router(rest_state.clone());
     let manufacturing = dp_rest::manufacturing::manufacturing_router(rest_state.clone());
     let rma = dp_rest::rma::rma_router(rest_state.clone());
     // PUBLIC token-gated unit landing — mounted OUTSIDE `with_principal`
@@ -495,6 +496,7 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
         .merge(parties)
         .merge(products)
         .merge(product_manuals)
+        .merge(product_releases)
         .merge(manufacturing)
         .merge(rma)
         .merge(admin);

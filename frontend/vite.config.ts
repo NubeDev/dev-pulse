@@ -114,6 +114,7 @@ export default defineConfig({
           "/customers": "http://localhost:8731",
           "/runs": "http://localhost:8731",
           "/units": "http://localhost:8731",
+          "/rma": "http://localhost:8731",
           "/blobs": "http://localhost:8731",
           "/u/": "http://localhost:8731",
           "/health": "http://localhost:8731",
