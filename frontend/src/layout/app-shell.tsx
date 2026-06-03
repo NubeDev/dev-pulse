@@ -34,6 +34,9 @@ import {
   IconBriefcase,
   IconArchive,
   IconLayoutKanban,
+  IconPackage,
+  IconBox,
+  IconAddressBook,
   IconCircleDashed,
   IconCircleCheck,
   IconClipboardList,
@@ -111,6 +114,65 @@ const NAV_MAIN: NavMainItem[] = [
         icon: IconArchive,
         description:
           "Portfolio filtered to archived projects (hidden by default; data preserved).",
+      },
+    ],
+  },
+  {
+    // §7.4 Product & Manufacturing — top-level Products section, peer
+    // to Projects. Sub-items mirror the hub's status filters plus a
+    // jump to the parties admin (customers / manufacturers /
+    // suppliers).
+    title: "Products",
+    minRole: "reader",
+    url: "#/products",
+    icon: IconPackage,
+    accent: "var(--accent-reports)",
+    subTestId: "products-subnav",
+    items: [
+      {
+        title: "All products",
+        url: "#/products",
+        icon: IconBox,
+        description:
+          "Full product catalogue: manuals, documents, serial formats, and linked projects.",
+      },
+      {
+        title: "Active",
+        url: "#/products?status=active",
+        icon: IconCircleDashed,
+        description: "Products currently in production.",
+      },
+      {
+        title: "Draft",
+        url: "#/products?status=draft",
+        icon: IconClipboardList,
+        description: "Products still being defined.",
+      },
+      {
+        title: "EOL",
+        url: "#/products?status=eol",
+        icon: IconCircleCheck,
+        description: "End-of-life products, kept for history.",
+      },
+      {
+        title: "Archived",
+        url: "#/products?status=archived",
+        icon: IconArchive,
+        description: "Archived products (hidden by default; data preserved).",
+      },
+      {
+        title: "Returns",
+        url: "#/rma",
+        icon: IconClipboardList,
+        description:
+          "RMA / warranty returns across all products — filter by status, customer, or product.",
+      },
+      {
+        title: "Parties",
+        url: "#/manufacturing/parties",
+        icon: IconAddressBook,
+        description:
+          "Customers, manufacturers, and suppliers used across products and manufacturing.",
       },
     ],
   },
@@ -313,6 +375,12 @@ const SECTION_TITLE: Record<Section, string> = {
   admin: "Admin",
   workflow: "Workflow",
   projects: "Projects",
+  products: "Products",
+  manufacturing: "Manufacturing",
+  customers: "Customers",
+  runs: "Run",
+  units: "Unit",
+  rma: "Returns",
   account: "Account",
   login: "Login",
 }
@@ -374,6 +442,20 @@ function activeUrlFor(route: string): string {
     const status = projectsStatusOf(route)
     return status ? `#/projects?status=${status}` : "#/projects"
   }
+  if (section === "products") {
+    const q = route.indexOf("?")
+    const params = new URLSearchParams(q >= 0 ? route.slice(q + 1) : "")
+    const status = params.get("status")
+    const valid = new Set(["draft", "active", "eol", "archived"])
+    return status && valid.has(status)
+      ? `#/products?status=${status}`
+      : "#/products"
+  }
+  if (section === "manufacturing" || section === "customers") {
+    // Both map onto the parties admin sub-item so it highlights when
+    // you're anywhere in the manufacturing / customer surfaces.
+    return "#/manufacturing/parties"
+  }
   if (section === "reports" && tab === "projects") {
     // Portfolio: preserve the `?status=` so the matching sub-item
     // (Active / Backlog / Done / Archived) lights up; plain
@@ -415,6 +497,24 @@ function titleFor(route: string): string {
       if (!status) return "Projects"
       return `Projects · ${PROJECT_STATUS_TITLE[status] ?? status}`
     }
+    case "products": {
+      const q = route.indexOf("?")
+      const params = new URLSearchParams(q >= 0 ? route.slice(q + 1) : "")
+      const status = params.get("status")
+      const labels: Record<string, string> = {
+        draft: "Draft",
+        active: "Active",
+        eol: "EOL",
+        archived: "Archived",
+      }
+      return status && labels[status]
+        ? `Products · ${labels[status]}`
+        : "Products"
+    }
+    case "manufacturing":
+      return "Manufacturing · Parties"
+    case "customers":
+      return "Customers"
     case "account":
       return accountTabOf(route) === "settings"
         ? "Account · Settings"

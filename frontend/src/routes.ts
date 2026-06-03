@@ -31,6 +31,12 @@ export type Section =
   | "admin"
   | "workflow"
   | "projects"
+  | "products"
+  | "manufacturing"
+  | "customers"
+  | "runs"
+  | "units"
+  | "rma"
   | "account"
   | "login";
 
@@ -455,6 +461,247 @@ export function reportTabOf(route: string): ReportTab {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Product & Manufacturing — §7.4 routes
+//   #/products                         — products hub
+//   #/products?status=…                — hub filtered to a status
+//   #/products/{id}                    — product detail (+ ?tab=)
+//   #/manufacturing/parties            — parties admin (+ ?kind=)
+//   #/customers/{id}                   — customer detail
+// ---------------------------------------------------------------------------
+
+/** §7.4 status filter for `#/products?status=…`. `null` ⇒ show every
+ *  status (the hub default landing). */
+export type ProductStatusRoute = "draft" | "active" | "eol" | "archived";
+
+export function productsStatusOf(route: string): ProductStatusRoute | null {
+  const q = route.indexOf("?");
+  if (q < 0) return null;
+  const v = new URLSearchParams(route.slice(q + 1)).get("status");
+  switch (v) {
+    case "draft":
+    case "active":
+    case "eol":
+    case "archived":
+      return v;
+    default:
+      return null;
+  }
+}
+
+/** Build a `#/products` URL with an optional status filter. */
+export function productsRoute(status?: ProductStatusRoute | null): string {
+  if (!status) return "#/products";
+  return `#/products?status=${status}`;
+}
+
+/** Parse `#/products/{id}` → the product id (UUID), or `null` for the
+ *  hub landing (`#/products` / `#/products?status=…`). */
+export function productDetailIdOf(route: string): string | null {
+  const q = route.indexOf("?");
+  const pathPart = q < 0 ? route : route.slice(0, q);
+  const parts = pathPart.replace(/^#/, "").replace(/^\/+/, "").split("/");
+  if (parts[0] !== "products") return null;
+  const id = parts[1];
+  if (!id) return null;
+  if (!/^[0-9a-fA-F-]{36}$/.test(id)) return null;
+  return id;
+}
+
+/** Build a `#/products/{id}` URL. */
+export function productDetailRoute(id: string): string {
+  return `#/products/${id}`;
+}
+
+/** Sub-tab on `#/products/{id}` — persisted via `?tab=…`. */
+export type ProductDetailTab =
+  | "overview"
+  | "projects"
+  | "runs"
+  | "units"
+  | "manuals"
+  | "documents"
+  | "returns";
+
+export function productDetailTab(route: string): ProductDetailTab {
+  const q = route.indexOf("?");
+  if (q < 0) return "overview";
+  const v = new URLSearchParams(route.slice(q + 1)).get("tab");
+  switch (v) {
+    case "projects":
+    case "runs":
+    case "units":
+    case "manuals":
+    case "documents":
+    case "returns":
+      return v;
+    default:
+      return "overview";
+  }
+}
+
+export function productDetailTabRoute(
+  id: string,
+  tab: ProductDetailTab,
+): string {
+  if (tab === "overview") return `#/products/${id}`;
+  return `#/products/${id}?tab=${tab}`;
+}
+
+/** Active manual id inside the Manuals tab — `?manual=<uuid>` opens
+ *  the in-tab manual editor. `null` ⇒ the manual list. */
+export function productManualId(route: string): string | null {
+  const q = route.indexOf("?");
+  if (q < 0) return null;
+  const raw = new URLSearchParams(route.slice(q + 1)).get("manual");
+  if (!raw) return null;
+  if (!/^[0-9a-fA-F-]{36}$/.test(raw)) return null;
+  return raw;
+}
+
+/** Build `#/products/{id}?tab=manuals[&manual=<uuid>]`. */
+export function productManualRoute(
+  id: string,
+  manualId: string | null,
+): string {
+  const params = new URLSearchParams();
+  params.set("tab", "manuals");
+  if (manualId) params.set("manual", manualId);
+  return `#/products/${id}?${params.toString()}`;
+}
+
+/** Parties admin sub-nav kind, parsed from `#/manufacturing/parties?kind=…`.
+ *  Defaults to `customers`. */
+export type PartiesKindRoute = "customers" | "manufacturers" | "suppliers";
+
+export function partiesKindOf(route: string): PartiesKindRoute {
+  const q = route.indexOf("?");
+  if (q < 0) return "customers";
+  const v = new URLSearchParams(route.slice(q + 1)).get("kind");
+  switch (v) {
+    case "manufacturers":
+      return "manufacturers";
+    case "suppliers":
+      return "suppliers";
+    default:
+      return "customers";
+  }
+}
+
+export function partiesRoute(kind?: PartiesKindRoute | null): string {
+  if (!kind || kind === "customers") return "#/manufacturing/parties";
+  return `#/manufacturing/parties?kind=${kind}`;
+}
+
+/** Parse `#/customers/{id}` → the customer id (UUID), or `null`. */
+export function customerDetailIdOf(route: string): string | null {
+  const q = route.indexOf("?");
+  const pathPart = q < 0 ? route : route.slice(0, q);
+  const parts = pathPart.replace(/^#/, "").replace(/^\/+/, "").split("/");
+  if (parts[0] !== "customers") return null;
+  const id = parts[1];
+  if (!id) return null;
+  if (!/^[0-9a-fA-F-]{36}$/.test(id)) return null;
+  return id;
+}
+
+export function customerDetailRoute(id: string): string {
+  return `#/customers/${id}`;
+}
+
+// ---------------------------------------------------------------------------
+// P2 — manufacturing runs + serialised units (§7.4)
+//   #/runs/{id}    — run detail
+//   #/units/{id}   — unit detail
+// ---------------------------------------------------------------------------
+
+/** Parse `#/runs/{id}` → the run id (UUID), or `null`. */
+export function runDetailIdOf(route: string): string | null {
+  const q = route.indexOf("?");
+  const pathPart = q < 0 ? route : route.slice(0, q);
+  const parts = pathPart.replace(/^#/, "").replace(/^\/+/, "").split("/");
+  if (parts[0] !== "runs") return null;
+  const id = parts[1];
+  if (!id) return null;
+  if (!/^[0-9a-fA-F-]{36}$/.test(id)) return null;
+  return id;
+}
+
+export function runDetailRoute(id: string): string {
+  return `#/runs/${id}`;
+}
+
+/** Parse `#/units/{id}` → the unit id (UUID), or `null`. */
+export function unitDetailIdOf(route: string): string | null {
+  const q = route.indexOf("?");
+  const pathPart = q < 0 ? route : route.slice(0, q);
+  const parts = pathPart.replace(/^#/, "").replace(/^\/+/, "").split("/");
+  if (parts[0] !== "units") return null;
+  const id = parts[1];
+  if (!id) return null;
+  if (!/^[0-9a-fA-F-]{36}$/.test(id)) return null;
+  return id;
+}
+
+export function unitDetailRoute(id: string): string {
+  return `#/units/${id}`;
+}
+
+// ---------------------------------------------------------------------------
+// P3 — Returns / RMA (§7.4)
+//   #/rma          — RMA list (filter by status/customer/product)
+//   #/rma/{id}     — RMA detail / status workflow
+// ---------------------------------------------------------------------------
+
+/** §7.4 status filter for `#/rma?status=…`. `null` ⇒ all statuses. */
+export type RmaStatusRoute =
+  | "open"
+  | "received"
+  | "diagnosed"
+  | "repaired"
+  | "replaced"
+  | "rejected"
+  | "closed";
+
+export function rmaStatusOf(route: string): RmaStatusRoute | null {
+  const q = route.indexOf("?");
+  if (q < 0) return null;
+  const v = new URLSearchParams(route.slice(q + 1)).get("status");
+  switch (v) {
+    case "open":
+    case "received":
+    case "diagnosed":
+    case "repaired":
+    case "replaced":
+    case "rejected":
+    case "closed":
+      return v;
+    default:
+      return null;
+  }
+}
+
+export function rmaListRoute(status?: RmaStatusRoute | null): string {
+  if (!status) return "#/rma";
+  return `#/rma?status=${status}`;
+}
+
+/** Parse `#/rma/{id}` → the RMA id (UUID), or `null` for the list. */
+export function rmaDetailIdOf(route: string): string | null {
+  const q = route.indexOf("?");
+  const pathPart = q < 0 ? route : route.slice(0, q);
+  const parts = pathPart.replace(/^#/, "").replace(/^\/+/, "").split("/");
+  if (parts[0] !== "rma") return null;
+  const id = parts[1];
+  if (!id) return null;
+  if (!/^[0-9a-fA-F-]{36}$/.test(id)) return null;
+  return id;
+}
+
+export function rmaDetailRoute(id: string): string {
+  return `#/rma/${id}`;
+}
+
 function subscribe(cb: () => void): () => void {
   window.addEventListener("hashchange", cb);
   return () => window.removeEventListener("hashchange", cb);
@@ -504,6 +751,18 @@ export function sectionOf(route: string): Section {
       return "workflow";
     case "projects":
       return "projects";
+    case "products":
+      return "products";
+    case "manufacturing":
+      return "manufacturing";
+    case "customers":
+      return "customers";
+    case "runs":
+      return "runs";
+    case "units":
+      return "units";
+    case "rma":
+      return "rma";
     case "account":
       return "account";
     case "reports":
@@ -539,6 +798,12 @@ export function isKnownRoute(route: string): boolean {
     head === "admin" ||
     head === "workflow" ||
     head === "projects" ||
+    head === "products" ||
+    head === "manufacturing" ||
+    head === "customers" ||
+    head === "runs" ||
+    head === "units" ||
+    head === "rma" ||
     head === "account"
   );
 }

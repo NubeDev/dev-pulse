@@ -35,12 +35,19 @@ pub mod issue_dates;
 pub mod issue_mutation;
 pub mod membership;
 pub mod milestone;
+pub mod eol;
+pub mod manufacturing;
 pub mod org;
+pub mod party;
 pub mod pin;
+pub mod product;
+pub mod product_doc;
+pub mod product_manual;
 pub mod project;
 pub mod project_exec_summary;
 pub mod project_view;
 pub mod repo;
+pub mod rma;
 pub mod setting;
 pub mod store;
 pub mod tag;
@@ -67,8 +74,24 @@ pub use issue_dates::{
 pub use issue_mutation::{IssueMutation, IssueMutationOp, IssueMutationResult};
 pub use membership::{Membership, MembershipRole};
 pub use milestone::{Milestone, MilestoneState, MilestoneUpsert};
+pub use eol::{EolResult, EolTestReport, EolTestUpsert, RunEolSummary, RunEolSummaryUpsert};
+pub use manufacturing::{
+    ManufacturingRun, ProductUnit, RunStatus, RunUpsert, UnitAllocation, UnitStatus, UnitUpsert,
+    MAX_UNIT_ALLOC,
+};
 pub use org::Org;
+pub use party::{
+    Customer, CustomerUpsert, Manufacturer, ManufacturerUpsert, PartyListFilter, Supplier,
+    SupplierUpsert,
+};
 pub use pin::{Pin, PinKind, PIN_CAP};
+pub use product::{
+    Product, ProductListFilter, ProductProjectLink, ProductStatus, ProductUpsert,
+};
+pub use product_doc::ProductDocument;
+pub use product_manual::{
+    ManualRevision, ManualUpsert, ProductManual, RevisionStatus, RevisionUpsert,
+};
 pub use project::{
     Project, ProjectIssueAddOutcome, ProjectIssueAddSkip, ProjectListFilter, ProjectRepo,
     ProjectStatus, ProjectUpsert,
@@ -79,6 +102,7 @@ pub use project_exec_summary::{
     ProjectExecSummaryPatch, EXEC_SUMMARY_SUBMIT_THRESHOLD_PERCENT,
 };
 pub use repo::{Repo, RepoMetadata};
+pub use rma::{Rma, RmaCreate, RmaFilter, RmaStatus, RmaUpdate};
 pub use setting::UserSetting;
 pub use store::{PendingRemoteIssue, Store, StoreError};
 pub use store::{IssueListFilter, RepoListFilter, DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT};

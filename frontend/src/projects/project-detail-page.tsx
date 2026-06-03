@@ -80,6 +80,7 @@ import { ProjectTagsControl } from "./project-tags.js";
 import { NewMilestoneDialog } from "./new-milestone-dialog.js";
 import { EditMilestoneDialog } from "./edit-milestone-dialog.js";
 import { ManageReposDialog } from "./project-repos-card.js";
+import { ProjectProductsPanel } from "../products/project-products-panel.js";
 import { parseFilterString, serializeFilterChips } from "./project-filter-chips.js";
 import { ProjectWorkbench } from "./project-workbench.js";
 import {
@@ -579,6 +580,8 @@ function ProjectDetailBody({ project }: { project: ProjectDto }): JSX.Element {
         onDeleteMilestone={(m) => setDeleteMilestoneTarget(m)}
         writeBusy={updateMilestone.isPending || deleteMilestone.isPending}
       />
+
+      <ProjectProductsPanel projectId={project.id} orgId={project.org_id} />
 
       <ProjectWorkbench
         project={project}

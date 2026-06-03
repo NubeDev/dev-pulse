@@ -112,25 +112,40 @@ start: config env migrate $(RUN_DIR) $(LOG_DIR)
 
 kill stop:
 	@for f in $(BACK_PID) $(FRONT_PID); do \
-	  if [ -f $$f ]; then \
-	    pid=$$(cat $$f); \
-	    if kill -0 $$pid 2>/dev/null; then \
-	      echo "killing $$(basename $$f .pid) (pid $$pid)"; \
-	      kill $$pid 2>/dev/null || true; \
-	      for i in 1 2 3 4 5; do \
-	        kill -0 $$pid 2>/dev/null || break; \
-	        sleep 1; \
-	      done; \
-	      kill -9 $$pid 2>/dev/null || true; \
-	    fi; \
-	    rm -f $$f; \
+	  [ -f $$f ] || continue; \
+	  name=$$(basename $$f .pid); \
+	  pid=$$(cat $$f 2>/dev/null); \
+	  case $$name in \
+	    backend)  marker='dev-pulse';; \
+	    frontend) marker='pnpm|vite|$(FRONT_PORT)';; \
+	    *)        marker='.';; \
+	  esac; \
+	  if [ -z "$$pid" ] || ! kill -0 $$pid 2>/dev/null; then \
+	    echo "$$name: not running (clearing stale pidfile)"; rm -f $$f; continue; \
 	  fi; \
+	  if ! ps -o args= -p $$pid 2>/dev/null | grep -Eq "$$marker"; then \
+	    echo "$$name: pid $$pid is not ours (reused) — refusing to kill, clearing pidfile"; \
+	    rm -f $$f; continue; \
+	  fi; \
+	  pgid=$$(ps -o pgid= -p $$pid 2>/dev/null | tr -d ' '); \
+	  echo "killing $$name (pid $$pid, pgrp $$pgid)"; \
+	  kill -TERM -$$pgid 2>/dev/null || kill -TERM $$pid 2>/dev/null || true; \
+	  for i in 1 2 3 4 5; do \
+	    kill -0 $$pid 2>/dev/null || break; \
+	    sleep 1; \
+	  done; \
+	  kill -KILL -$$pgid 2>/dev/null || kill -KILL $$pid 2>/dev/null || true; \
+	  rm -f $$f; \
 	done
-	@# Belt + braces: cargo run spawns a child `dev-pulse` binary
-	@# whose pid isn't what nohup recorded. Sweep any stragglers
-	@# that match our cargo manifest or the vite dev server.
-	@pkill -f "target/debug/dev-pulse serve" 2>/dev/null || true
-	@pkill -f "vite.*--port $(FRONT_PORT)"   2>/dev/null || true
+	@# Belt + braces: cargo run spawns a child `dev-pulse` binary whose
+	@# pid isn't what we recorded, and vite spawns node children. Reap
+	@# whatever is still bound to our ports. We match by LISTENING PORT
+	@# rather than `pkill -f <name>`: this recipe's own argv contains the
+	@# service names/ports as literal text, so a name pattern would also
+	@# match the recipe shell and SIGTERM `make` itself. Nothing but the
+	@# real servers holds these ports, so port-matching can't self-kill.
+	@fuser -k -TERM $(BACK_PORT)/tcp  2>/dev/null || true
+	@fuser -k -TERM $(FRONT_PORT)/tcp 2>/dev/null || true
 	@echo "stopped."
 
 restart: kill start

@@ -1110,16 +1110,16 @@ pub async fn delete_exec_summary_changelog(
 /// Internal multipart parse result: file bytes + filename +
 /// content_type + extra text fields (used by the document handler
 /// for `title` / `doc_type` / `notes` / `required_action`).
-struct UploadedPart {
-    bytes: Bytes,
-    filename: String,
-    content_type: String,
-    text_fields: BTreeMap<String, String>,
+pub(crate) struct UploadedPart {
+    pub(crate) bytes: Bytes,
+    pub(crate) filename: String,
+    pub(crate) content_type: String,
+    pub(crate) text_fields: BTreeMap<String, String>,
 }
 
 /// Pull the first `file` field plus any leading text fields out of
 /// a multipart body. Caps total bytes at [`MAX_UPLOAD_BYTES`].
-async fn read_upload(mut multipart: Multipart) -> Result<UploadedPart, ApiError> {
+pub(crate) async fn read_upload(mut multipart: Multipart) -> Result<UploadedPart, ApiError> {
     let mut file_bytes: Option<Bytes> = None;
     let mut filename: Option<String> = None;
     let mut content_type: Option<String> = None;
@@ -1174,7 +1174,7 @@ async fn read_upload(mut multipart: Multipart) -> Result<UploadedPart, ApiError>
     Ok(UploadedPart { bytes, filename, content_type, text_fields })
 }
 
-fn require_blob_store(state: &AppState) -> Result<Arc<dyn BlobStore>, ApiError> {
+pub(crate) fn require_blob_store(state: &AppState) -> Result<Arc<dyn BlobStore>, ApiError> {
     state.blob_store.clone().ok_or_else(|| ApiError::BadRequest {
         code: "blob_storage_unavailable",
         message: "no blob storage backend wired into this deployment".into(),
@@ -1209,7 +1209,7 @@ fn build_blob_key(
         })
 }
 
-fn map_blob_err(e: BlobError) -> ApiError {
+pub(crate) fn map_blob_err(e: BlobError) -> ApiError {
     match e {
         BlobError::NotFound => ApiError::NotFound {
             code: "blob_not_found",
@@ -1424,7 +1424,7 @@ pub async fn proxy_exec_summary_blob(
     Ok((StatusCode::OK, headers, body).into_response())
 }
 
-fn escape_filename(name: &str) -> String {
+pub(crate) fn escape_filename(name: &str) -> String {
     // Strip CR/LF and double-quote so the Content-Disposition stays
     // well-formed. RFC 5987 encoding for non-ASCII is out of scope
     // for 0.1 — the upload normaliser already strips non-ASCII into
