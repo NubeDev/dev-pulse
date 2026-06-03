@@ -312,6 +312,11 @@ pub struct ExecSummaryChangelogEntryDto {
     #[allow(missing_docs)] pub changed_at: NaiveDate,
     #[allow(missing_docs)] pub changed_by: String,
     #[allow(missing_docs)] pub summary: String,
+    /// Whether this entry carries a content snapshot and can therefore
+    /// be restored. The snapshot bytes themselves stay server-side;
+    /// the UI only needs the boolean to decide whether to offer the
+    /// "Restore this version" action.
+    pub has_snapshot: bool,
     #[allow(missing_docs)] pub created_at: DateTime<Utc>,
 }
 
@@ -324,6 +329,7 @@ impl From<ExecSummaryChangelogEntry> for ExecSummaryChangelogEntryDto {
             changed_at: e.changed_at,
             changed_by: e.changed_by,
             summary: e.summary,
+            has_snapshot: e.snapshot.is_some(),
             created_at: e.created_at,
         }
     }
@@ -680,6 +686,19 @@ pub struct ExecSummaryDocumentPatchBody {
 /// Body for `POST .../changelog`.
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct ExecSummaryChangelogInsertBody {
+    #[allow(missing_docs)] pub version: String,
+    #[allow(missing_docs)] pub changed_at: NaiveDate,
+    #[allow(missing_docs)] pub changed_by: String,
+    #[allow(missing_docs)] pub summary: String,
+}
+
+/// Body for `POST .../changelog/{entry_id}/restore`. Carries the
+/// metadata for the *new* entry that records the restore — the
+/// frontend derives `version` the same way the "Save version" dialog
+/// does (next minor/major) and fills `changed_by` from the signed-in
+/// user.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+pub struct ExecSummaryChangelogRestoreBody {
     #[allow(missing_docs)] pub version: String,
     #[allow(missing_docs)] pub changed_at: NaiveDate,
     #[allow(missing_docs)] pub changed_by: String,
@@ -1060,18 +1079,25 @@ pub async fn delete_exec_summary_document(
 // ----- changelog ------------------------------------------------------------
 
 /// `POST /projects/{id}/exec-summary/changelog` — append-only.
+///
+/// Captures a content snapshot of the live summary alongside the entry
+/// so the revision can later be restored (see
+/// [`restore_exec_summary_changelog`]). If no summary row exists yet
+/// the entry is still recorded, just without a snapshot.
 pub async fn append_exec_summary_changelog(
     State(state): State<AppState>,
     Extension(principal): Extension<Principal>,
     Path(project_id): Path<Uuid>,
     Json(body): Json<ExecSummaryChangelogInsertBody>,
 ) -> Result<Json<ExecSummaryChangelogEntryDto>, ApiError> {
+    let snapshot = snapshot_current(state.store.as_ref(), project_id).await?;
     let insert = ExecSummaryChangelogInsert {
         project_id,
         version: body.version,
         changed_at: body.changed_at,
         changed_by: body.changed_by,
         summary: body.summary,
+        snapshot,
     };
     let row = state.store.insert_exec_summary_changelog(&insert).await?;
     audit::record(
@@ -1103,6 +1129,107 @@ pub async fn delete_exec_summary_changelog(
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
+/// Serialise the live summary's editable content as a change-log
+/// snapshot. `Ok(None)` when no summary row exists yet.
+async fn snapshot_current(
+    store: &dyn Store,
+    project_id: Uuid,
+) -> Result<Option<serde_json::Value>, ApiError> {
+    let Some((summary, _)) = store.get_project_exec_summary(project_id).await? else {
+        return Ok(None);
+    };
+    let patch = ProjectExecSummaryPatch::snapshot_of(&summary);
+    // A fully-populated patch always serialises (plain Options /
+    // strings / ints / dates); a failure here is a bug, so surface it
+    // as a 500 rather than silently dropping the snapshot.
+    serde_json::to_value(&patch).map(Some).map_err(|e| {
+        ApiError::Store(StoreError::Invalid(format!(
+            "could not serialise exec-summary snapshot: {e}"
+        )))
+    })
+}
+
+/// `POST /projects/{id}/exec-summary/changelog/{entry_id}/restore` —
+/// roll the live summary back to a previous revision's content.
+///
+/// Append-only is preserved: the target entry is never touched. The
+/// snapshot is applied to the live row and a *new* change-log entry is
+/// recorded (carrying a fresh snapshot of the now-restored state, so
+/// it too can be rolled forward later). The approval state machine is
+/// left alone — restore changes content, not sign-off.
+#[utoipa::path(
+    post,
+    path = "/projects/{id}/exec-summary/changelog/{entry_id}/restore",
+    params(
+        ("id" = Uuid, Path, description = "Project id"),
+        ("entry_id" = Uuid, Path, description = "Change-log entry id to restore"),
+    ),
+    request_body = ExecSummaryChangelogRestoreBody,
+    responses(
+        (status = 200, description = "Updated exec summary", body = ExecSummaryDto),
+        (status = 400, description = "Entry has no restorable snapshot"),
+        (status = 404, description = "No such project / summary / entry"),
+    ),
+    tag = "projects",
+)]
+pub async fn restore_exec_summary_changelog(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    Path((project_id, entry_id)): Path<(Uuid, Uuid)>,
+    Json(body): Json<ExecSummaryChangelogRestoreBody>,
+) -> Result<Json<ExecSummaryDto>, ApiError> {
+    let entry = state
+        .store
+        .get_exec_summary_changelog(entry_id)
+        .await?
+        .filter(|e| e.project_id == project_id)
+        .ok_or_else(|| ApiError::NotFound {
+            code: "changelog_entry_not_found",
+            message: format!("no change-log entry {entry_id} for project {project_id}"),
+        })?;
+
+    let snapshot = entry.snapshot.ok_or_else(|| ApiError::BadRequest {
+        code: "no_snapshot",
+        message: "this change-log entry has no content snapshot to restore".into(),
+    })?;
+
+    let patch: ProjectExecSummaryPatch =
+        serde_json::from_value(snapshot).map_err(|e| ApiError::BadRequest {
+            code: "snapshot_invalid",
+            message: format!("stored snapshot is not a valid patch: {e}"),
+        })?;
+
+    // Make sure the row exists before patching (lazy materialisation).
+    state.store.upsert_project_exec_summary(project_id).await?;
+    state
+        .store
+        .patch_project_exec_summary(project_id, &patch)
+        .await?;
+
+    // Record the restore as a new entry, snapshotting the now-restored
+    // content so the new top-of-log is itself restorable.
+    let fresh = snapshot_current(state.store.as_ref(), project_id).await?;
+    let insert = ExecSummaryChangelogInsert {
+        project_id,
+        version: body.version,
+        changed_at: body.changed_at,
+        changed_by: body.changed_by,
+        summary: body.summary,
+        snapshot: fresh,
+    };
+    state.store.insert_exec_summary_changelog(&insert).await?;
+
+    audit::record(
+        state.store.as_ref(),
+        principal.actor_user_id,
+        audit::PROJECT_EXEC_SUMMARY_CHANGELOG_RESTORE,
+        format!("{project_id}:{entry_id}"),
+    )
+    .await
+    .ok();
+    Ok(Json(load_full_dto(state.store.as_ref(), project_id).await?))
+}
+
 // ---------------------------------------------------------------------------
 // Multipart upload + proxy
 // ---------------------------------------------------------------------------
@@ -1110,16 +1237,16 @@ pub async fn delete_exec_summary_changelog(
 /// Internal multipart parse result: file bytes + filename +
 /// content_type + extra text fields (used by the document handler
 /// for `title` / `doc_type` / `notes` / `required_action`).
-struct UploadedPart {
-    bytes: Bytes,
-    filename: String,
-    content_type: String,
-    text_fields: BTreeMap<String, String>,
+pub(crate) struct UploadedPart {
+    pub(crate) bytes: Bytes,
+    pub(crate) filename: String,
+    pub(crate) content_type: String,
+    pub(crate) text_fields: BTreeMap<String, String>,
 }
 
 /// Pull the first `file` field plus any leading text fields out of
 /// a multipart body. Caps total bytes at [`MAX_UPLOAD_BYTES`].
-async fn read_upload(mut multipart: Multipart) -> Result<UploadedPart, ApiError> {
+pub(crate) async fn read_upload(mut multipart: Multipart) -> Result<UploadedPart, ApiError> {
     let mut file_bytes: Option<Bytes> = None;
     let mut filename: Option<String> = None;
     let mut content_type: Option<String> = None;
@@ -1174,7 +1301,7 @@ async fn read_upload(mut multipart: Multipart) -> Result<UploadedPart, ApiError>
     Ok(UploadedPart { bytes, filename, content_type, text_fields })
 }
 
-fn require_blob_store(state: &AppState) -> Result<Arc<dyn BlobStore>, ApiError> {
+pub(crate) fn require_blob_store(state: &AppState) -> Result<Arc<dyn BlobStore>, ApiError> {
     state.blob_store.clone().ok_or_else(|| ApiError::BadRequest {
         code: "blob_storage_unavailable",
         message: "no blob storage backend wired into this deployment".into(),
@@ -1209,7 +1336,7 @@ fn build_blob_key(
         })
 }
 
-fn map_blob_err(e: BlobError) -> ApiError {
+pub(crate) fn map_blob_err(e: BlobError) -> ApiError {
     match e {
         BlobError::NotFound => ApiError::NotFound {
             code: "blob_not_found",
@@ -1424,7 +1551,7 @@ pub async fn proxy_exec_summary_blob(
     Ok((StatusCode::OK, headers, body).into_response())
 }
 
-fn escape_filename(name: &str) -> String {
+pub(crate) fn escape_filename(name: &str) -> String {
     // Strip CR/LF and double-quote so the Content-Disposition stays
     // well-formed. RFC 5987 encoding for non-ASCII is out of scope
     // for 0.1 — the upload normaliser already strips non-ASCII into
@@ -1546,6 +1673,10 @@ pub fn project_exec_summary_router(state: Arc<AppState>) -> Router {
                 .route(
                     "/projects/{id}/exec-summary/changelog/{entry_id}",
                     delete(delete_exec_summary_changelog),
+                )
+                .route(
+                    "/projects/{id}/exec-summary/changelog/{entry_id}/restore",
+                    post(restore_exec_summary_changelog),
                 ),
             "projects",
             "write",

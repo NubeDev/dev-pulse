@@ -256,6 +256,13 @@ pub struct AppState {
     /// returns the `upstream_unavailable` 400 so the dialog can
     /// render the `[Open GitHub project settings]` hint.
     pub org_projects_picker: Option<Arc<dyn OrgProjectsPickerBackend>>,
+    /// External-facing base URL (mirrors `server.base_url`). Used to
+    /// compose the Product & Manufacturing unit QR payload
+    /// `{base_url}/u/{unit_id}?t=<token>` (§6).
+    pub public_base_url: Option<String>,
+    /// HMAC secret for the token-gated public unit landing route
+    /// (`MANUFACTURING_QR_SECRET`, §6). `None` ⇒ `/u/{id}` 404s.
+    pub manufacturing_qr_secret: Option<String>,
 }
 
 /// All the inputs [`build`] needs. Bundles [`AppState`] with the
@@ -322,6 +329,8 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
         milestone_writer,
         projectv2_mirror,
         org_projects_picker,
+        public_base_url,
+        manufacturing_qr_secret,
     } = state;
 
     // -----------------------------------------------------------------
@@ -363,6 +372,12 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
         }
         if let Some(p) = org_projects_picker {
             s = s.with_org_projects_picker(p);
+        }
+        if let Some(b) = public_base_url.clone() {
+            s = s.with_public_base_url(b);
+        }
+        if let Some(secret) = manufacturing_qr_secret.clone() {
+            s = s.with_manufacturing_qr_secret(secret);
         }
         s
     });
@@ -444,7 +459,17 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
     // `(github_app, read)` so the §15.11 access gate is the only
     // visibility check (out-of-org users get the empty `orgs`
     // list, not a 403).
-    let github_app_routes = app_permissions_router(rest_state);
+    let github_app_routes = app_permissions_router(rest_state.clone());
+    // Product & Manufacturing routers (DOCS/ideas/product-manufacturing.md).
+    let parties = dp_rest::parties::parties_router(rest_state.clone());
+    let products = dp_rest::products::products_router(rest_state.clone());
+    let product_manuals = dp_rest::product_manuals::product_manuals_router(rest_state.clone());
+    let product_releases = dp_rest::product_releases::product_releases_router(rest_state.clone());
+    let manufacturing = dp_rest::manufacturing::manufacturing_router(rest_state.clone());
+    let rma = dp_rest::rma::rma_router(rest_state.clone());
+    // PUBLIC token-gated unit landing — mounted OUTSIDE `with_principal`
+    // below (LOCKED DECISION #2). Built here so it shares `rest_state`.
+    let manufacturing_public = dp_rest::manufacturing::manufacturing_public_router(rest_state);
     let admin = admin_router(admin_state);
 
     let protected = Router::new()
@@ -468,6 +493,12 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
         .merge(me_identities)
         .merge(settings)
         .merge(github_app_routes)
+        .merge(parties)
+        .merge(products)
+        .merge(product_manuals)
+        .merge(product_releases)
+        .merge(manufacturing)
+        .merge(rma)
         .merge(admin);
 
     // Hand the policy engine down via Extension. The per-route
@@ -557,6 +588,7 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
     let router = ServerBuilder::<()>::new(())
         .merge_router(protected)
         .merge_router(webhook_router)
+        .merge_router(manufacturing_public)
         .merge_router(session_router)
         .merge_router(github_router)
         .with_openapi(DevPulseApi::openapi())

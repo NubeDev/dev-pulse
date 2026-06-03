@@ -65,6 +65,7 @@ import { useAuth } from "@nube/starter-ui-core/auth";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 import { ProjectExecSummaryPage } from "./exec-summary/project-exec-summary-page.js";
+import { ProjectViewsGantt } from "./project-views-gantt.js";
 import { api } from "../api/client.js";
 import type { IssueListItem, MilestoneDto, OrgDto, PatchProjectRequest, ProjectDto } from "../api/client.js";
 import { PageHeading } from "../components/page-heading.jsx";
@@ -80,6 +81,7 @@ import { ProjectTagsControl } from "./project-tags.js";
 import { NewMilestoneDialog } from "./new-milestone-dialog.js";
 import { EditMilestoneDialog } from "./edit-milestone-dialog.js";
 import { ManageReposDialog } from "./project-repos-card.js";
+import { ManageProductsDialog } from "../products/project-products-panel.js";
 import { parseFilterString, serializeFilterChips } from "./project-filter-chips.js";
 import { ProjectWorkbench } from "./project-workbench.js";
 import {
@@ -186,6 +188,7 @@ function ProjectDetailBody({ project }: { project: ProjectDto }): JSX.Element {
   const selectedIssueId = projectSelectedIssue(route);
   const [linkBoardOpen, setLinkBoardOpen] = useState(false);
   const [manageReposOpen, setManageReposOpen] = useState(false);
+  const [manageProductsOpen, setManageProductsOpen] = useState(false);
   const [archiveConfirmOpen, setArchiveConfirmOpen] = useState(false);
   const [editDatesOpen, setEditDatesOpen] = useState(false);
   const [editDetailsOpen, setEditDetailsOpen] = useState(false);
@@ -320,7 +323,7 @@ function ProjectDetailBody({ project }: { project: ProjectDto }): JSX.Element {
                 "Top tiles: Progress (closed / total), Timeline (start + due, click ✎ to edit), Issues (open / closed), Lead (click to assign), and Linked Surfaces (GitHub boards + repos linked to this project).",
                 "Milestones strip: GitHub milestones on the linked repos. Create / Edit / Close / Delete write through to GitHub via the dev-pulse App or a personal access token.",
                 "Workbench: tabs are Saved Views (per-user). Toolbar groups, filters and sorts the issue list; use + Add issue to attach work from the Triage queue.",
-                "Settings ▾: link / unlink GitHub boards, manage which repos this project draws from, and archive or restore the project.",
+                "Settings ▾: link / unlink GitHub boards, manage which repos this project draws from, link products to this project, and archive or restore the project.",
               ]}
             />
             <Badge
@@ -435,6 +438,17 @@ function ProjectDetailBody({ project }: { project: ProjectDto }): JSX.Element {
                   Manage repos…
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
+                <DropdownMenuLabel>Products</DropdownMenuLabel>
+                <DropdownMenuItem
+                  onSelect={(e) => {
+                    e.preventDefault();
+                    setManageProductsOpen(true);
+                  }}
+                  data-testid="project-settings-manage-products"
+                >
+                  Manage products…
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
                 <DropdownMenuLabel>Actions</DropdownMenuLabel>
                 <DropdownMenuItem
                   onSelect={(e) => {
@@ -518,7 +532,12 @@ function ProjectDetailBody({ project }: { project: ProjectDto }): JSX.Element {
       <Tabs
         value={activeTab}
         onValueChange={(v) =>
-          navigate(projectDetailTabRoute(project.id, v as "workbench" | "exec-summary"))
+          navigate(
+            projectDetailTabRoute(
+              project.id,
+              v as "workbench" | "exec-summary" | "schedule",
+            ),
+          )
         }
         data-testid="project-detail-tabs"
       >
@@ -532,6 +551,9 @@ function ProjectDetailBody({ project }: { project: ProjectDto }): JSX.Element {
           >
             Exec Summary
           </TabsTrigger>
+          <TabsTrigger value="schedule" data-testid="project-tab-schedule">
+            Schedule
+          </TabsTrigger>
         </TabsList>
       </Tabs>
 
@@ -540,6 +562,8 @@ function ProjectDetailBody({ project }: { project: ProjectDto }): JSX.Element {
           project={project}
           viewerUserId={viewerUserId}
         />
+      ) : activeTab === "schedule" ? (
+        <ProjectViewsGantt project={project} />
       ) : (
         <>
       <MilestonesStrip
@@ -603,6 +627,13 @@ function ProjectDetailBody({ project }: { project: ProjectDto }): JSX.Element {
         onOpenChange={setLinkBoardOpen}
         projectId={project.id}
         projectOrgId={project.org_id}
+      />
+
+      <ManageProductsDialog
+        open={manageProductsOpen}
+        onOpenChange={setManageProductsOpen}
+        projectId={project.id}
+        orgId={project.org_id}
       />
 
       <NewMilestoneDialog

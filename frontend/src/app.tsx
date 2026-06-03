@@ -38,15 +38,28 @@ import { IssuesPage } from "./workflow/issues-page.jsx";
 import { ReposPage } from "./workflow/repos-page.jsx";
 import { TriagePage } from "./workflow/triage-page.jsx";
 import { ProjectDetailPage } from "./projects/project-detail-page.jsx";
+import { ProductListPage } from "./products/product-list.jsx";
+import { ProductDetailPage } from "./products/product-detail-page.jsx";
+import { PartiesAdminPage } from "./products/parties/parties-admin.jsx";
+import { CustomerDetailPage } from "./products/parties/customer-detail.jsx";
+import { RunDetail } from "./products/runs/run-detail.jsx";
+import { UnitDetailPage } from "./products/unit-detail-page.jsx";
+import { RmaListPage } from "./products/rma/rma-list.jsx";
+import { RmaDetailPage } from "./products/rma/rma-detail.jsx";
 import {
   accountTabOf,
   adminTabOf,
+  customerDetailIdOf,
   directoryTabOf,
   isKnownRoute,
   isLoginRoute,
+  productDetailIdOf,
   projectDetailIdOf,
   reportTabOf,
+  rmaDetailIdOf,
+  runDetailIdOf,
   sectionOf,
+  unitDetailIdOf,
   useRoute,
   workflowTabOf,
   type AccountTab,
@@ -107,6 +120,12 @@ function Router(): JSX.Element {
     directory: "reader",
     account: "reader",
     projects: "reader",
+    products: "reader",
+    manufacturing: "reader",
+    customers: "reader",
+    runs: "reader",
+    units: "reader",
+    rma: "reader",
     workflow: "writer",
     admin: "admin",
   };
@@ -156,7 +175,19 @@ function SectionPane({
   section,
   route,
 }: {
-  section: "reports" | "directory" | "admin" | "workflow" | "projects" | "account";
+  section:
+    | "reports"
+    | "directory"
+    | "admin"
+    | "workflow"
+    | "projects"
+    | "products"
+    | "manufacturing"
+    | "customers"
+    | "runs"
+    | "units"
+    | "rma"
+    | "account";
   route: string;
 }): JSX.Element {
   switch (section) {
@@ -175,6 +206,38 @@ function SectionPane({
       // already drive `?status=` filters against the same page).
       const id = projectDetailIdOf(route);
       return id ? <ProjectDetailPage projectId={id} /> : <ProjectPortfolioPage />;
+    }
+    case "products": {
+      const id = productDetailIdOf(route);
+      return id ? <ProductDetailPage productId={id} /> : <ProductListPage />;
+    }
+    case "manufacturing":
+      // P1 ships a single manufacturing surface: the parties admin.
+      return <PartiesAdminPage />;
+    case "customers": {
+      const id = customerDetailIdOf(route);
+      // A bare `#/customers` with no id falls back to the parties
+      // admin (customers tab) — the canonical list surface.
+      return id ? (
+        <CustomerDetailPage customerId={id} />
+      ) : (
+        <PartiesAdminPage />
+      );
+    }
+    case "runs": {
+      const id = runDetailIdOf(route);
+      // A bare `#/runs` with no id has no list surface of its own
+      // (runs are reached from the product detail Runs tab) — fall
+      // back to the products hub.
+      return id ? <RunDetail runId={id} /> : <ProductListPage />;
+    }
+    case "units": {
+      const id = unitDetailIdOf(route);
+      return id ? <UnitDetailPage unitId={id} /> : <ProductListPage />;
+    }
+    case "rma": {
+      const id = rmaDetailIdOf(route);
+      return id ? <RmaDetailPage rmaId={id} /> : <RmaListPage />;
     }
     case "account":
       return <AccountPane tab={accountTabOf(route)} />;

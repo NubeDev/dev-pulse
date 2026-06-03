@@ -208,7 +208,7 @@ function submitIncompleteMessage(err: Error | null): string | null {
 
 function fmtDateTime(iso: string): string {
   try {
-    return new Date(iso).toLocaleString();
+    return new Date(iso).toLocaleString("en-AU");
   } catch {
     return iso;
   }

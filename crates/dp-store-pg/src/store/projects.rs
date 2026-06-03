@@ -661,8 +661,15 @@ impl PgStore {
         let mut tx = self.pool.sqlx().begin().await.map_err(map_sqlx)?;
         // Append-at-end position. Per-(project, owner) so two users'
         // tab strips never collide on position.
+        //
+        // MAX(position)+1 — NOT COUNT(*). After a delete the positions
+        // are non-contiguous (a gap), and COUNT(*) would re-issue a
+        // position that a surviving row still holds, colliding under the
+        // UNIQUE (project_id, owner_user_id, position) index added in
+        // migration 0056. MAX+1 is always free regardless of gaps. The
+        // empty-set case yields COALESCE(NULL, -1)+1 = 0.
         let (next_pos,): (i64,) = sqlx::query_as(
-            r#"SELECT COUNT(*)::bigint
+            r#"SELECT COALESCE(MAX(position), -1)::bigint + 1
                  FROM dp_project_views
                 WHERE project_id = $1 AND owner_user_id = $2"#,
         )

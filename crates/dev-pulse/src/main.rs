@@ -91,6 +91,20 @@ struct DevPulseConfig {
     scheduler: SchedulerSection,
     #[serde(default)]
     github: GithubSection,
+    #[serde(default)]
+    manufacturing: ManufacturingSection,
+}
+
+/// Product & Manufacturing config (DOCS/ideas/product-manufacturing.md
+/// §6). Optional; absent ⇒ the token-gated public unit landing is
+/// disabled (the `/u/{id}` route 404s).
+#[derive(Debug, Default, Deserialize)]
+struct ManufacturingSection {
+    /// Secret handle for the unit-QR HMAC key. Same `secret://` /
+    /// `file:` / literal resolution as the webhook secret; resolves
+    /// `secret://manufacturing/qr_secret` → env `MANUFACTURING_QR_SECRET`.
+    #[serde(default)]
+    qr_secret_ref: Option<String>,
 }
 
 /// Fetcher-side GitHub credentials. Separate from `[auth.github]`,
@@ -867,6 +881,16 @@ async fn run_serve(matches: &ArgMatches) -> Result<()> {
         StandardMetrics::register(&prom_registry).context("register prometheus metrics")?,
     );
 
+    // -- Product & Manufacturing QR secret (§6) ------------------------
+    // Resolve the optional HMAC secret for the token-gated public unit
+    // landing. Absent ⇒ `/u/{id}` 404s (no token can be minted).
+    let manufacturing_qr_secret = match cfg.manufacturing.qr_secret_ref.as_deref() {
+        Some(handle) => Some(
+            resolve_secret(handle).context("resolve manufacturing.qr_secret_ref")?,
+        ),
+        None => None,
+    };
+
     // -- Compose the dp_server router ----------------------------------
     let build_cfg = BuildConfig {
         state: AppState {
@@ -887,6 +911,8 @@ async fn run_serve(matches: &ArgMatches) -> Result<()> {
             milestone_writer: milestone_writer.clone(),
             projectv2_mirror: projectv2_mirror.clone(),
             org_projects_picker: org_projects_picker.clone(),
+            public_base_url: Some(cfg.server.base_url.clone()),
+            manufacturing_qr_secret,
         },
         auth: auth_state,
         oauth: oauth_state,

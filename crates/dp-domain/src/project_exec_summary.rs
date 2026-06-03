@@ -243,6 +243,12 @@ pub struct ExecSummaryChangelogEntry {
     pub changed_by: String,
     /// Change summary (markdown).
     pub summary: String,
+    /// Content snapshot captured when the entry was cut — a
+    /// fully-populated [`ProjectExecSummaryPatch`] serialised to JSON.
+    /// `None` for entries written before snapshots existed (or cut
+    /// without a summary row). Drives the "Restore this version" UI;
+    /// the bytes are opaque to consumers other than the restore path.
+    pub snapshot: Option<serde_json::Value>,
     /// Row creation timestamp.
     pub created_at: DateTime<Utc>,
 }
@@ -392,6 +398,67 @@ pub struct ProjectExecSummaryPatch {
     pub skipped_sections: Option<Vec<String>>,
 }
 
+impl ProjectExecSummaryPatch {
+    /// Build a fully-populated patch capturing the editable content of
+    /// `s` — every section field present (`Some`), nulls preserved as
+    /// `Some(None)`. Serialised, this is the change-log *snapshot*;
+    /// deserialised and fed back through
+    /// [`crate::store::Store::patch_project_exec_summary`] it restores
+    /// the summary to this exact content.
+    ///
+    /// Deliberately omits the approval state machine (`status`,
+    /// `submitted_at`, `approved_at`) — those aren't patch fields, so a
+    /// restore rolls content back without touching sign-off.
+    pub fn snapshot_of(s: &ProjectExecSummary) -> Self {
+        Self {
+            product_name: Some(s.product_name.clone()),
+            part_number: Some(s.part_number.clone()),
+            target_release_date: Some(s.target_release_date),
+            objective: Some(s.objective.clone()),
+            problem: Some(s.problem.clone()),
+            value: Some(s.value.clone()),
+            differentiators: Some(s.differentiators.clone()),
+            success_criteria: Some(s.success_criteria.clone()),
+
+            in_scope: Some(s.in_scope.clone()),
+            out_of_scope: Some(s.out_of_scope.clone()),
+            assumptions: Some(s.assumptions.clone()),
+            dependencies: Some(s.dependencies.clone()),
+            constraints: Some(s.constraints.clone()),
+
+            must_have: Some(s.must_have.clone()),
+            optional: Some(s.optional.clone()),
+            user_interaction: Some(s.user_interaction.clone()),
+            architecture: Some(s.architecture.clone()),
+            protocols: Some(s.protocols.clone()),
+            power: Some(s.power.clone()),
+            mounting: Some(s.mounting.clone()),
+            certification: Some(s.certification.clone()),
+
+            hardware_features: Some(s.hardware_features.clone()),
+            physical_notes: Some(s.physical_notes.clone()),
+            enclosure: Some(s.enclosure.clone()),
+            mounting_type: Some(s.mounting_type.clone()),
+            operating_env: Some(s.operating_env.clone()),
+
+            rrp_cents: Some(s.rrp_cents),
+            oem_price_cents: Some(s.oem_price_cents),
+            target_gp_bp: Some(s.target_gp_bp),
+            revenue_model: Some(s.revenue_model.clone()),
+            channel_strategy: Some(s.channel_strategy.clone()),
+            target_market: Some(s.target_market.clone()),
+            volume_assumptions: Some(s.volume_assumptions.clone()),
+
+            reviewer: Some(s.reviewer.clone()),
+            approver: Some(s.approver.clone()),
+            review_notes: Some(s.review_notes.clone()),
+            approval_notes: Some(s.approval_notes.clone()),
+
+            skipped_sections: Some(s.skipped_sections.clone()),
+        }
+    }
+}
+
 /// Per-section completion booleans computed server-side from the
 /// row + child-table counts. See §6 of the scope doc for the rules.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
@@ -480,4 +547,9 @@ pub struct ExecSummaryChangelogInsert {
     pub changed_by: String,
     /// Change summary (markdown).
     pub summary: String,
+    /// Content snapshot to persist alongside the entry. Built by the
+    /// REST layer from the live summary via
+    /// [`ProjectExecSummaryPatch::snapshot_of`]; `None` leaves the
+    /// column NULL (e.g. no summary row exists yet).
+    pub snapshot: Option<serde_json::Value>,
 }

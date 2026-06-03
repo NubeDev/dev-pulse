@@ -105,6 +105,16 @@ pub struct AppState {
     /// `FsBlobStore` / `GarageBlobStore` (prod) via
     /// [`AppState::with_blob_store`].
     pub blob_store: Option<Arc<dyn BlobStore>>,
+    /// External-facing base URL (mirrors `server.base_url`), used to
+    /// compose the QR payload `{base_url}/u/{unit_id}?t=<token>` for
+    /// the Product & Manufacturing unit landing (P2 §6). `None` in
+    /// test builds; the unit QR / landing degrade gracefully.
+    pub public_base_url: Option<String>,
+    /// HMAC secret for the token-gated public unit landing route
+    /// (`MANUFACTURING_QR_SECRET`, P2 §6). The QR token is
+    /// `HMAC-SHA256(secret, unit_id)`. `None` ⇒ no valid token can be
+    /// minted, so `/u/{id}` 404s and `qr.svg` reports unavailable.
+    pub manufacturing_qr_secret: Option<Arc<String>>,
 }
 
 impl AppState {
@@ -122,7 +132,23 @@ impl AppState {
             org_projects_picker: Arc::new(UnconfiguredOrgProjectsPicker),
             identity_store: None,
             blob_store: None,
+            public_base_url: None,
+            manufacturing_qr_secret: None,
         }
+    }
+
+    /// Wire the external-facing base URL used to compose QR payloads
+    /// for the Product & Manufacturing unit landing (§6).
+    pub fn with_public_base_url(mut self, base_url: impl Into<String>) -> Self {
+        self.public_base_url = Some(base_url.into());
+        self
+    }
+
+    /// Wire the HMAC secret for the token-gated public unit landing
+    /// route (`MANUFACTURING_QR_SECRET`, §6).
+    pub fn with_manufacturing_qr_secret(mut self, secret: impl Into<String>) -> Self {
+        self.manufacturing_qr_secret = Some(Arc::new(secret.into()));
+        self
     }
 
     /// Wire the [`BlobStore`] backing the project Executive Summary

@@ -1,0 +1,36 @@
+-- 0057_exec_summary_changelog_snapshot.sql
+--
+-- Make the exec-summary change log restorable.
+--
+-- Until now `dp_project_exec_summary_changelog` rows were pure text
+-- notes ("what changed in this revision") with no link back to the
+-- *content* at that revision. You could read the history but not roll
+-- back to it. This adds a content snapshot so the UI can offer a
+-- "Restore this version" action (roll-forward, never rewriting
+-- history — see the restore handler in
+-- [crates/dp-rest/src/project_exec_summary.rs]).
+--
+-- Design:
+--
+-- * **`snapshot jsonb NULL`.** Captures the editable scalar content of
+--   the summary at the moment the entry was cut — serialised as a
+--   fully-populated `ProjectExecSummaryPatch` (every section field,
+--   `protocols`, `skipped_sections`). Restore deserialises it back
+--   into the same sparse-PATCH apply path, so the state machine
+--   (`status` / `submitted_at` / `approved_at`) is deliberately *not*
+--   part of the snapshot — a restore changes content, not approval.
+--
+-- * **Nullable, on purpose.** Rows written before this migration, and
+--   any future entry cut when no summary row exists yet, carry NULL.
+--   The REST DTO exposes `has_snapshot` so the UI only offers Restore
+--   on entries that actually have one. The append-only E5 rule is
+--   preserved: restoring writes a *new* entry, it never edits or
+--   deletes past rows.
+--
+-- * **Why JSONB not a child table.** The snapshot is opaque blob data
+--   we round-trip verbatim (same rationale as the `blob_ref` columns
+--   in 0045). We never query inside it; a per-field shadow table would
+--   double the column count for zero upside.
+
+ALTER TABLE dp_project_exec_summary_changelog
+    ADD COLUMN snapshot jsonb NULL;

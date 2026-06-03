@@ -78,6 +78,13 @@ use dp_domain::webhook::WebhookDelivery;
 use dp_domain::window::{Window, WindowAnchor};
 use dp_store_pg::PgStore;
 use serde_json::json;
+use dp_domain::eol::{EolResult, EolTestUpsert, RunEolSummaryUpsert};
+use dp_domain::manufacturing::{RunStatus, RunUpsert, UnitStatus};
+use dp_domain::party::{CustomerUpsert, ManufacturerUpsert, PartyListFilter, SupplierUpsert};
+use dp_domain::product::{ProductListFilter, ProductStatus, ProductUpsert};
+use dp_domain::product_manual::{ManualUpsert, RevisionStatus, RevisionUpsert};
+use dp_domain::product_release::{ProductReleaseCreate, ProductReleaseUpdate, ReleaseKind};
+use dp_domain::rma::{RmaCreate, RmaFilter, RmaStatus, RmaUpdate};
 use starter_store_postgres::migrate;
 use starter_store_postgres::pool::connect;
 use testcontainers::runners::AsyncRunner;
@@ -2493,4 +2500,788 @@ async fn portfolio_query_round_trips_projects_with_kpis() {
         .unwrap();
     assert_eq!(done.len(), 1);
     assert_eq!(done[0].status, ProjectStatus::Done);
+}
+
+// ===================================================================
+// Product & Manufacturing — P1 store coverage
+// ===================================================================
+
+/// Parties (manufacturers / suppliers / customers) CRUD + CAS +
+/// idempotent archive + the partial-unique active-name index.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Docker or DP_TEST_DATABASE_URL"]
+async fn parties_crud_and_archive() {
+    let f = fixture().await;
+    let s = f.store();
+    let org = seed_org(s, 9100, "pm-acme").await;
+
+    // create
+    let m = s
+        .create_manufacturer(&ManufacturerUpsert {
+            org_id: org.id,
+            name: "Contoso CM".into(),
+            contact_name: Some("Jo".into()),
+            email: None,
+            phone: None,
+            address: None,
+            website: None,
+            notes: None,
+            created_by: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(m.version, 1);
+    assert!(m.archived_at.is_none());
+
+    // duplicate active name (case-insensitive) → Conflict
+    let dup = s
+        .create_manufacturer(&ManufacturerUpsert {
+            org_id: org.id,
+            name: "contoso cm".into(),
+            contact_name: None,
+            email: None,
+            phone: None,
+            address: None,
+            website: None,
+            notes: None,
+            created_by: None,
+        })
+        .await;
+    assert!(matches!(dup, Err(StoreError::Conflict(_))));
+
+    // update under correct version
+    let m2 = s
+        .update_manufacturer(
+            m.id,
+            m.version,
+            &ManufacturerUpsert {
+                org_id: org.id,
+                name: "Contoso CM".into(),
+                contact_name: Some("Jane".into()),
+                email: Some("jane@contoso.test".into()),
+                phone: None,
+                address: None,
+                website: None,
+                notes: None,
+                created_by: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(m2.version, 2);
+    assert_eq!(m2.contact_name.as_deref(), Some("Jane"));
+
+    // stale version → Conflict
+    let stale = s
+        .update_manufacturer(
+            m.id,
+            m.version, // old
+            &ManufacturerUpsert {
+                org_id: org.id,
+                name: "Contoso CM".into(),
+                contact_name: None,
+                email: None,
+                phone: None,
+                address: None,
+                website: None,
+                notes: None,
+                created_by: None,
+            },
+        )
+        .await;
+    assert!(matches!(stale, Err(StoreError::Conflict(_))));
+
+    // archive (idempotent)
+    let arch = s.archive_manufacturer(m.id, m2.version).await.unwrap();
+    assert!(arch.archived_at.is_some());
+    let arch_again = s.archive_manufacturer(m.id, arch.version).await.unwrap();
+    assert_eq!(arch_again.version, arch.version, "re-archive is a no-op");
+
+    // name freed after archive
+    let reused = s
+        .create_manufacturer(&ManufacturerUpsert {
+            org_id: org.id,
+            name: "Contoso CM".into(),
+            contact_name: None,
+            email: None,
+            phone: None,
+            address: None,
+            website: None,
+            notes: None,
+            created_by: None,
+        })
+        .await
+        .unwrap();
+    assert_ne!(reused.id, m.id);
+
+    // supplier + customer smoke (incl. customer account_ref)
+    let sup = s
+        .create_supplier(&SupplierUpsert {
+            org_id: org.id,
+            name: "Parts Co".into(),
+            contact_name: None,
+            email: None,
+            phone: None,
+            address: None,
+            website: None,
+            notes: None,
+            created_by: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(s.count_suppliers(&PartyListFilter { org_id: Some(org.id), ..Default::default() }).await.unwrap(), 1);
+    assert_eq!(sup.name, "Parts Co");
+
+    let cust = s
+        .create_customer(&CustomerUpsert {
+            org_id: org.id,
+            name: "Globex".into(),
+            contact_name: None,
+            email: None,
+            phone: None,
+            address: None,
+            website: None,
+            notes: None,
+            account_ref: Some("ERP-42".into()),
+            created_by: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(cust.account_ref.as_deref(), Some("ERP-42"));
+    let got = s.get_customer(cust.id).await.unwrap().unwrap();
+    assert_eq!(got.account_ref.as_deref(), Some("ERP-42"));
+}
+
+/// Products CRUD + project link round-trip (both directions) + the
+/// document insert/list/delete path.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Docker or DP_TEST_DATABASE_URL"]
+async fn products_crud_links_and_documents() {
+    let f = fixture().await;
+    let s = f.store();
+    let org = seed_org(s, 9200, "pm-org").await;
+    let lead = seed_user(s, 9201, "pm-lead").await;
+
+    let p = s
+        .create_product(&ProductUpsert {
+            org_id: org.id,
+            name: "Edge Gateway".into(),
+            model_number: "NB-EG-100".into(),
+            description: Some("md".into()),
+            manufacturer_id: None,
+            status: ProductStatus::Active,
+            serial_prefix: Some("NB".into()),
+            serial_format: Some("{prefix}-{run_code}-{seq:05}".into()),
+            created_by: Some(lead.id),
+        })
+        .await
+        .unwrap();
+    assert_eq!(p.status, ProductStatus::Active);
+    assert_eq!(p.version, 1);
+
+    // duplicate model number (case-insensitive, active) → Conflict
+    let dup = s
+        .create_product(&ProductUpsert {
+            org_id: org.id,
+            name: "Dupe".into(),
+            model_number: "nb-eg-100".into(),
+            description: None,
+            manufacturer_id: None,
+            status: ProductStatus::Active,
+            serial_prefix: None,
+            serial_format: None,
+            created_by: None,
+        })
+        .await;
+    assert!(matches!(dup, Err(StoreError::Conflict(_))));
+
+    // list / count / filter
+    let list = s
+        .list_products(&ProductListFilter { org_id: Some(org.id), limit: 50, ..Default::default() })
+        .await
+        .unwrap();
+    assert_eq!(list.len(), 1);
+    assert_eq!(s.count_products(&ProductListFilter { org_id: Some(org.id), ..Default::default() }).await.unwrap(), 1);
+
+    // project link round-trip
+    let proj = s
+        .create_project(&ProjectUpsert {
+            org_id: org.id,
+            name: "Gateway launch".into(),
+            description: None,
+            lead_user_id: None,
+            status: ProjectStatus::Active,
+            start_at: None,
+            due_at: None,
+            created_by: Some(lead.id),
+        })
+        .await
+        .unwrap();
+    s.link_product_project(p.id, proj.id, Some(lead.id)).await.unwrap();
+    // idempotent re-link
+    s.link_product_project(p.id, proj.id, Some(lead.id)).await.unwrap();
+    assert_eq!(s.list_product_projects(p.id).await.unwrap().len(), 1);
+    assert_eq!(s.list_project_products(proj.id).await.unwrap().len(), 1);
+    s.unlink_product_project(p.id, proj.id).await.unwrap();
+    assert!(s.list_product_projects(p.id).await.unwrap().is_empty());
+
+    // documents
+    let doc = s
+        .insert_product_document(
+            p.id,
+            &json!({"fake": "blobref"}),
+            "Datasheet",
+            Some("datasheet"),
+            None,
+            Some("op-1"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(s.list_product_documents(p.id).await.unwrap().len(), 1);
+    assert_eq!(s.get_product_document(doc.id).await.unwrap().unwrap().title, "Datasheet");
+    s.delete_product_document(doc.id).await.unwrap();
+    assert!(s.list_product_documents(p.id).await.unwrap().is_empty());
+
+    // archive flips status + frees the model number
+    let arch = s.archive_product(p.id, p.version).await.unwrap();
+    assert_eq!(arch.status, ProductStatus::Archived);
+    assert!(arch.archived_at.is_some());
+}
+
+/// Manuals + revisions: publishing supersedes the prior published
+/// revision and keeps the "at most one published" invariant.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Docker or DP_TEST_DATABASE_URL"]
+async fn manuals_publish_supersedes_prior() {
+    let f = fixture().await;
+    let s = f.store();
+    let org = seed_org(s, 9300, "pm-manuals").await;
+    let p = s
+        .create_product(&ProductUpsert {
+            org_id: org.id,
+            name: "Sensor".into(),
+            model_number: "NB-S-1".into(),
+            description: None,
+            manufacturer_id: None,
+            status: ProductStatus::Active,
+            serial_prefix: None,
+            serial_format: None,
+            created_by: None,
+        })
+        .await
+        .unwrap();
+    let manual = s
+        .create_product_manual(&ManualUpsert {
+            product_id: p.id,
+            title: "Install Guide".into(),
+            created_by: None,
+        })
+        .await
+        .unwrap();
+
+    let rev_a = s
+        .create_manual_revision(manual.id, &RevisionUpsert {
+            revision: "A".into(),
+            body_md: "# A".into(),
+            change_note: None,
+            authored_by: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(rev_a.status, RevisionStatus::Draft);
+
+    // duplicate revision string (case-insensitive) → Conflict
+    let dup = s
+        .create_manual_revision(manual.id, &RevisionUpsert {
+            revision: "a".into(),
+            body_md: "x".into(),
+            change_note: None,
+            authored_by: None,
+        })
+        .await;
+    assert!(matches!(dup, Err(StoreError::Conflict(_))));
+
+    let rev_b = s
+        .create_manual_revision(manual.id, &RevisionUpsert {
+            revision: "B".into(),
+            body_md: "# B".into(),
+            change_note: Some("typos".into()),
+            authored_by: None,
+        })
+        .await
+        .unwrap();
+
+    // publish A, then B → A becomes superseded, B published, exactly one published
+    let pub_a = s.publish_manual_revision(manual.id, rev_a.id).await.unwrap();
+    assert_eq!(pub_a.status, RevisionStatus::Published);
+    let pub_b = s.publish_manual_revision(manual.id, rev_b.id).await.unwrap();
+    assert_eq!(pub_b.status, RevisionStatus::Published);
+
+    let published = s.list_published_manuals_for_product(p.id).await.unwrap();
+    assert_eq!(published.len(), 1, "exactly one published revision per manual");
+    assert_eq!(published[0].1.revision, "B");
+
+    let all = s.list_manual_revisions(manual.id).await.unwrap();
+    let superseded = all.iter().filter(|r| r.status == RevisionStatus::Superseded).count();
+    assert_eq!(superseded, 1);
+}
+
+/// Software / firmware release history: list ordering + kind filter,
+/// CAS update, duplicate `(product,kind,major,minor)` → Conflict, a
+/// release under the wrong product is rejected, archive drops it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Docker or DP_TEST_DATABASE_URL"]
+async fn product_releases_crud() {
+    let f = fixture().await;
+    let s = f.store();
+    let org = seed_org(s, 9350, "pm-releases").await;
+    let lead = seed_user(s, 9351, "pm-rel-lead").await;
+
+    let p = s
+        .create_product(&ProductUpsert {
+            org_id: org.id,
+            name: "Gateway".into(),
+            model_number: "NB-REL-1".into(),
+            description: None,
+            manufacturer_id: None,
+            status: ProductStatus::Active,
+            serial_prefix: None,
+            serial_format: None,
+            created_by: Some(lead.id),
+        })
+        .await
+        .unwrap();
+
+    // A software 1.0 and a firmware 2.3.
+    let sw = s
+        .create_product_release(&ProductReleaseCreate {
+            org_id: org.id,
+            product_id: p.id,
+            kind: ReleaseKind::Software,
+            major: 1,
+            minor: 0,
+            release_notes: Some("initial".into()),
+            released_at: None,
+            created_by: Some(lead.id),
+        })
+        .await
+        .unwrap();
+    assert_eq!(sw.version, 1);
+
+    s.create_product_release(&ProductReleaseCreate {
+        org_id: org.id,
+        product_id: p.id,
+        kind: ReleaseKind::Software,
+        major: 1,
+        minor: 2,
+        release_notes: None,
+        released_at: None,
+        created_by: None,
+    })
+    .await
+    .unwrap();
+
+    s.create_product_release(&ProductReleaseCreate {
+        org_id: org.id,
+        product_id: p.id,
+        kind: ReleaseKind::Firmware,
+        major: 2,
+        minor: 3,
+        release_notes: None,
+        released_at: None,
+        created_by: None,
+    })
+    .await
+    .unwrap();
+
+    // list (all): ordered by kind, major DESC, minor DESC.
+    let all = s.list_product_releases(p.id, None).await.unwrap();
+    assert_eq!(all.len(), 3);
+    assert_eq!(all[0].kind, ReleaseKind::Firmware);
+    assert_eq!((all[1].major, all[1].minor), (1, 2));
+    assert_eq!((all[2].major, all[2].minor), (1, 0));
+
+    // kind filter.
+    let sw_only = s.list_product_releases(p.id, Some(ReleaseKind::Software)).await.unwrap();
+    assert_eq!(sw_only.len(), 2);
+    assert!(sw_only.iter().all(|r| r.kind == ReleaseKind::Software));
+
+    // CAS update bumps version.
+    let updated = s
+        .update_product_release(sw.id, sw.version, &ProductReleaseUpdate {
+            kind: ReleaseKind::Software,
+            major: 1,
+            minor: 1,
+            release_notes: Some("patch".into()),
+            released_at: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(updated.version, 2);
+    assert_eq!((updated.major, updated.minor), (1, 1));
+
+    // stale CAS → Conflict.
+    let stale = s
+        .update_product_release(sw.id, sw.version, &ProductReleaseUpdate {
+            kind: ReleaseKind::Software,
+            major: 9,
+            minor: 9,
+            release_notes: None,
+            released_at: None,
+        })
+        .await;
+    assert!(matches!(stale, Err(StoreError::Conflict(_))));
+
+    // duplicate (product, kind, major, minor) → Conflict (1.2 already exists).
+    let dup = s
+        .create_product_release(&ProductReleaseCreate {
+            org_id: org.id,
+            product_id: p.id,
+            kind: ReleaseKind::Software,
+            major: 1,
+            minor: 2,
+            release_notes: None,
+            released_at: None,
+            created_by: None,
+        })
+        .await;
+    assert!(matches!(dup, Err(StoreError::Conflict(_))));
+
+    // a release under the WRONG product id is rejected (parent check).
+    let other = s
+        .create_product(&ProductUpsert {
+            org_id: org.id,
+            name: "Other".into(),
+            model_number: "NB-REL-2".into(),
+            description: None,
+            manufacturer_id: None,
+            status: ProductStatus::Active,
+            serial_prefix: None,
+            serial_format: None,
+            created_by: None,
+        })
+        .await
+        .unwrap();
+    let fetched = s.get_product_release(sw.id).await.unwrap().unwrap();
+    assert_ne!(fetched.product_id, other.id, "release belongs to its own product, not 'other'");
+
+    // create on a non-existent product → NotFound.
+    let orphan = s
+        .create_product_release(&ProductReleaseCreate {
+            org_id: org.id,
+            product_id: Uuid::new_v4(),
+            kind: ReleaseKind::Software,
+            major: 0,
+            minor: 1,
+            release_notes: None,
+            released_at: None,
+            created_by: None,
+        })
+        .await;
+    assert!(matches!(orphan, Err(StoreError::NotFound { .. })));
+
+    // archive the updated software release → drops from the list, slot freed.
+    let archived = s.archive_product_release(updated.id, updated.version).await.unwrap();
+    assert!(archived.archived_at.is_some());
+    let after = s.list_product_releases(p.id, None).await.unwrap();
+    assert_eq!(after.len(), 2);
+    assert!(after.iter().all(|r| r.id != updated.id));
+}
+
+// ===================================================================
+// Product & Manufacturing — P2 store coverage
+// ===================================================================
+
+async fn seed_product_for_runs(s: &PgStore, org: &Org, model: &str, fmt: Option<&str>) -> Uuid {
+    s.create_product(&ProductUpsert {
+        org_id: org.id,
+        name: format!("prod-{model}"),
+        model_number: model.into(),
+        description: None,
+        manufacturer_id: None,
+        status: ProductStatus::Active,
+        serial_prefix: Some("NB".into()),
+        serial_format: fmt.map(str::to_string),
+        created_by: None,
+    })
+    .await
+    .unwrap()
+    .id
+}
+
+/// Serial allocation reserves a contiguous block via the atomic
+/// next_serial_seq reservation, formats serials per the product
+/// template, bumps qty_built, and does NOT bump the run's version (§6).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Docker or DP_TEST_DATABASE_URL"]
+async fn run_serial_allocation_atomic_and_version_safe() {
+    let f = fixture().await;
+    let s = f.store();
+    let org = seed_org(s, 9400, "pm-runs").await;
+    let product_id = seed_product_for_runs(s, &org, "NB-RUN-1", None).await;
+
+    let run = s
+        .create_run(&RunUpsert {
+            org_id: org.id,
+            product_id,
+            manufacturer_id: None,
+            run_code: "R2026-014".into(),
+            status: RunStatus::InProgress,
+            qty_planned: 100,
+            started_at: None,
+            completed_at: None,
+            notes: None,
+            created_by: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(run.next_serial_seq, 1);
+    assert_eq!(run.version, 1);
+
+    // allocate 3 → serials NB-R2026-014-00001..00003 (default template)
+    let a = s.allocate_units(run.id, 3).await.unwrap();
+    assert_eq!(a.first_seq, 1);
+    assert_eq!(a.count, 3);
+    let serials: Vec<String> = a.units.iter().map(|u| u.serial_number.clone()).collect();
+    assert_eq!(
+        serials,
+        vec!["NB-R2026-014-00001", "NB-R2026-014-00002", "NB-R2026-014-00003"]
+    );
+
+    // allocate 2 more → continues at 4,5
+    let b = s.allocate_units(run.id, 2).await.unwrap();
+    assert_eq!(b.first_seq, 4);
+    assert_eq!(b.units[1].serial_number, "NB-R2026-014-00005");
+
+    let after = s.get_run(run.id).await.unwrap().unwrap();
+    assert_eq!(after.qty_built, 5, "qty_built tracks distinct units");
+    assert_eq!(after.next_serial_seq, 6);
+    assert_eq!(after.version, run.version, "serial allocation must NOT bump version (§6)");
+
+    assert_eq!(s.list_run_units(run.id).await.unwrap().len(), 5);
+}
+
+/// EOL counters are re-test-safe (§5.4): a unit moves buckets on
+/// re-test instead of double-counting; untested units sit in neither.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Docker or DP_TEST_DATABASE_URL"]
+async fn eol_counters_are_retest_safe() {
+    let f = fixture().await;
+    let s = f.store();
+    let org = seed_org(s, 9500, "pm-eol").await;
+    let product_id = seed_product_for_runs(s, &org, "NB-EOL-1", Some("{prefix}-{seq:03}")).await;
+    let run = s
+        .create_run(&RunUpsert {
+            org_id: org.id,
+            product_id,
+            manufacturer_id: None,
+            run_code: "B1".into(),
+            status: RunStatus::InProgress,
+            qty_planned: 0,
+            started_at: None,
+            completed_at: None,
+            notes: None,
+            created_by: None,
+        })
+        .await
+        .unwrap();
+    let units = s.allocate_units(run.id, 2).await.unwrap().units;
+    let u0 = units[0].id;
+    let u1 = units[1].id;
+
+    // u0 fails → failed=1, passed=0
+    s.record_eol_report(u0, &EolTestUpsert {
+        result: EolResult::Fail, station: None, firmware: None,
+        measurements: json!({"v": 1}), log_blob_ref: None, notes: None, tested_by: Some("rig-A".into()),
+    }).await.unwrap();
+    let r1 = s.get_run(run.id).await.unwrap().unwrap();
+    assert_eq!((r1.qty_passed, r1.qty_failed), (0, 1));
+
+    // u0 re-tested pass → moves bucket: failed=0, passed=1 (NOT 1/1)
+    s.record_eol_report(u0, &EolTestUpsert {
+        result: EolResult::Pass, station: None, firmware: None,
+        measurements: json!({}), log_blob_ref: None, notes: None, tested_by: None,
+    }).await.unwrap();
+    let r2 = s.get_run(run.id).await.unwrap().unwrap();
+    assert_eq!((r2.qty_passed, r2.qty_failed), (1, 0), "re-test moves bucket, not double counts");
+
+    // u1 fails → passed=1, failed=1; invariant passed+failed<=built holds
+    s.record_eol_report(u1, &EolTestUpsert {
+        result: EolResult::Fail, station: None, firmware: None,
+        measurements: json!({}), log_blob_ref: None, notes: None, tested_by: None,
+    }).await.unwrap();
+    let r3 = s.get_run(run.id).await.unwrap().unwrap();
+    assert_eq!((r3.qty_passed, r3.qty_failed, r3.qty_built), (1, 1, 2));
+
+    // unit status flipped to tested; latest report is the current one
+    let u0_row = s.get_unit(u0).await.unwrap().unwrap();
+    assert_eq!(u0_row.status, UnitStatus::Tested);
+    let reports = s.list_unit_eol_reports(u0).await.unwrap();
+    assert_eq!(reports.len(), 2);
+    assert_eq!(reports[0].result, EolResult::Pass, "newest-first; latest is the re-test pass");
+
+    // run EOL sign-off summary snapshots the counters
+    let sum = s.upsert_run_eol_summary(run.id, &RunEolSummaryUpsert {
+        notes_md: Some("all good".into()),
+        sign_off: true,
+        signed_by: None,
+    }).await.unwrap();
+    assert_eq!((sum.built_count, sum.pass_count, sum.fail_count), (2, 1, 1));
+    assert!(sum.signed_at.is_some());
+}
+
+// ===================================================================
+// Product & Manufacturing — P3 RMA store coverage (§5.5)
+// ===================================================================
+
+/// RMA create + get + status-filtered list + CAS update (version bump +
+/// status transition), plus the §8 invariants: a duplicate rma_number
+/// in the same org → Conflict, and a unit from a different product is
+/// rejected as Invalid.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Docker or DP_TEST_DATABASE_URL"]
+async fn rma_crud_and_filters() {
+    let f = fixture().await;
+    let s = f.store();
+    let org = seed_org(s, 9600, "pm-rma").await;
+    let product_id = seed_product_for_runs(s, &org, "NB-RMA-1", None).await;
+
+    // A run + unit so we can exercise the unit-belongs-to-product check.
+    let run = s
+        .create_run(&RunUpsert {
+            org_id: org.id,
+            product_id,
+            manufacturer_id: None,
+            run_code: "RMA-RUN-1".into(),
+            status: RunStatus::InProgress,
+            qty_planned: 0,
+            started_at: None,
+            completed_at: None,
+            notes: None,
+            created_by: None,
+        })
+        .await
+        .unwrap();
+    let unit_id = s.allocate_units(run.id, 1).await.unwrap().units[0].id;
+
+    // Create an RMA against the product + its unit.
+    let rma = s
+        .create_rma(&RmaCreate {
+            org_id: org.id,
+            product_id,
+            unit_id: Some(unit_id),
+            customer_id: None,
+            rma_number: "RMA-2026-001".into(),
+            under_warranty: true,
+            status: RmaStatus::Open,
+            reason: Some("dead on arrival".into()),
+            created_by: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(rma.status, RmaStatus::Open);
+    assert_eq!(rma.version, 1);
+
+    // get round-trips.
+    let got = s.get_rma(rma.id).await.unwrap().unwrap();
+    assert_eq!(got.id, rma.id);
+    assert_eq!(got.unit_id, Some(unit_id));
+
+    // list with a status filter.
+    let open = s
+        .list_rma(&RmaFilter {
+            org_id: Some(org.id),
+            status: Some(RmaStatus::Open),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(open.len(), 1, "the one open RMA matches");
+    let received = s
+        .list_rma(&RmaFilter {
+            org_id: Some(org.id),
+            status: Some(RmaStatus::Received),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(received.is_empty(), "no received RMAs yet");
+
+    // CAS update: open → received, version bumps.
+    let updated = s
+        .update_rma(
+            rma.id,
+            rma.version,
+            &RmaUpdate {
+                unit_id: Some(unit_id),
+                customer_id: None,
+                under_warranty: true,
+                status: RmaStatus::Received,
+                reason: rma.reason.clone(),
+                diagnosis: Some("psu fault".into()),
+                resolution: None,
+                received_at: Some(Utc::now()),
+                resolved_at: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(updated.status, RmaStatus::Received);
+    assert_eq!(updated.version, rma.version + 1);
+
+    // Stale CAS → Conflict.
+    let stale = s
+        .update_rma(
+            rma.id,
+            rma.version, // old version
+            &RmaUpdate {
+                unit_id: None,
+                customer_id: None,
+                under_warranty: false,
+                status: RmaStatus::Closed,
+                reason: None,
+                diagnosis: None,
+                resolution: None,
+                received_at: None,
+                resolved_at: None,
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(stale, StoreError::Conflict(_)));
+
+    // Duplicate rma_number in the same org → Conflict.
+    let dup = s
+        .create_rma(&RmaCreate {
+            org_id: org.id,
+            product_id,
+            unit_id: None,
+            customer_id: None,
+            rma_number: "RMA-2026-001".into(), // same number
+            under_warranty: false,
+            status: RmaStatus::Open,
+            reason: None,
+            created_by: None,
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(dup, StoreError::Conflict(_)), "case-insensitive uniqueness");
+
+    // A unit from a DIFFERENT product is rejected (§8).
+    let other_product = seed_product_for_runs(s, &org, "NB-RMA-2", None).await;
+    let bad = s
+        .create_rma(&RmaCreate {
+            org_id: org.id,
+            product_id: other_product,
+            unit_id: Some(unit_id), // belongs to `product_id`, not `other_product`
+            customer_id: None,
+            rma_number: "RMA-2026-002".into(),
+            under_warranty: false,
+            status: RmaStatus::Open,
+            reason: None,
+            created_by: None,
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(bad, StoreError::Invalid(_)), "unit must belong to product");
 }

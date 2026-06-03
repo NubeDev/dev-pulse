@@ -149,6 +149,10 @@ export const ExecSummaryChangelogEntrySchema = z.object({
     .regex(/^\d{4}-\d{2}-\d{2}$/, "expected YYYY-MM-DD"),
   changed_by: z.string(),
   summary: z.string(),
+  /** True when the entry carries a content snapshot and can be
+   *  restored. Always present on responses from the snapshot-aware
+   *  backend (0057+). */
+  has_snapshot: z.boolean(),
   created_at: isoDateTime,
 });
 export type ExecSummaryChangelogEntry = z.infer<
@@ -228,6 +232,11 @@ export interface AddChangelogEntryRequest {
   changed_by: string;
   summary: string;
 }
+
+/** Body for restoring a previous revision. Same shape as
+ *  {@link AddChangelogEntryRequest} — it describes the *new* entry
+ *  that records the roll-back. */
+export type RestoreChangelogEntryRequest = AddChangelogEntryRequest;
 
 export interface ApproveExecSummaryRequest {
   approval_notes?: string | null;

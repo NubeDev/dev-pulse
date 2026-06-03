@@ -45,6 +45,12 @@ tokio-stream = "0.1"
 bytes        = "1"
 futures      = { workspace = true }
 secrecy      = "0.10"
+# Product & Manufacturing (§6): HMAC token for the public unit landing
+# + QR SVG generation for the printable label endpoint.
+hmac         = "0.12"
+sha2         = "0.10"
+hex          = "0.4"
+qrcode       = { version = "0.14", default-features = false, features = ["svg"] }
 
 [dev-dependencies]
 tower         = { version = "0.5", features = ["util"] }

@@ -680,11 +680,15 @@ function ApprovalBody({ data }: { data: ExecSummaryDto }): JSX.Element {
         items={[
           [
             "Submitted",
-            a.submitted_at ? new Date(a.submitted_at).toLocaleString() : null,
+            a.submitted_at
+              ? new Date(a.submitted_at).toLocaleString("en-AU")
+              : null,
           ],
           [
             "Approved",
-            a.approved_at ? new Date(a.approved_at).toLocaleString() : null,
+            a.approved_at
+              ? new Date(a.approved_at).toLocaleString("en-AU")
+              : null,
           ],
         ]}
       />
@@ -912,7 +916,7 @@ function statusLabel(s: string): string {
 }
 
 function fmtDate(d: Date): string {
-  return d.toLocaleDateString("en-US", {
+  return d.toLocaleDateString("en-AU", {
     year: "numeric",
     month: "long",
     day: "numeric",

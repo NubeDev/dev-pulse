@@ -40,6 +40,23 @@ use dp_domain::inbox::{InboxIssueRow, InboxStatus, UserIssueState};
 use dp_domain::membership::Membership;
 use dp_domain::milestone::{Milestone, MilestoneUpsert};
 use dp_domain::org::Org;
+use dp_domain::party::{
+    Customer, CustomerUpsert, Manufacturer, ManufacturerUpsert, PartyListFilter, Supplier,
+    SupplierUpsert,
+};
+use dp_domain::eol::{EolTestReport, EolTestUpsert, RunEolSummary, RunEolSummaryUpsert};
+use dp_domain::manufacturing::{
+    ManufacturingRun, ProductUnit, RunUpsert, UnitAllocation, UnitUpsert,
+};
+use dp_domain::product::{Product, ProductListFilter, ProductProjectLink, ProductUpsert};
+use dp_domain::product_doc::{BlobRefJson as ProductBlobRefJson, ProductDocument};
+use dp_domain::product_manual::{
+    ManualRevision, ManualUpsert, ProductManual, RevisionUpsert,
+};
+use dp_domain::product_release::{
+    ProductRelease, ProductReleaseCreate, ProductReleaseUpdate, ReleaseKind,
+};
+use dp_domain::rma::{Rma, RmaCreate, RmaFilter, RmaUpdate};
 use dp_domain::pin::{Pin, PinKind};
 use dp_domain::repo::Repo;
 use dp_domain::setting::UserSetting;
@@ -87,6 +104,12 @@ mod board_links;
 mod tags;
 mod milestones;
 mod project_exec_summary;
+mod parties;
+mod products;
+mod product_manuals;
+mod product_releases;
+mod manufacturing;
+mod rma;
 
 /// Postgres-backed [`Store`].
 ///
@@ -1378,11 +1401,234 @@ impl Store for PgStore {
         self.insert_exec_summary_changelog_impl(insert).await
     }
 
+    async fn get_exec_summary_changelog(
+        &self,
+        entry_id: Uuid,
+    ) -> Result<Option<dp_domain::project_exec_summary::ExecSummaryChangelogEntry>, StoreError> {
+        self.get_exec_summary_changelog_impl(entry_id).await
+    }
+
     async fn delete_exec_summary_changelog(
         &self,
         entry_id: Uuid,
     ) -> Result<(), StoreError> {
         self.delete_exec_summary_changelog_impl(entry_id).await
+    }
+
+    // ---- Product & Manufacturing P1: parties ----------------------
+
+    async fn list_manufacturers(&self, filter: &PartyListFilter) -> Result<Vec<Manufacturer>, StoreError> {
+        self.list_manufacturers_impl(filter).await
+    }
+    async fn count_manufacturers(&self, filter: &PartyListFilter) -> Result<i64, StoreError> {
+        self.count_manufacturers_impl(filter).await
+    }
+    async fn get_manufacturer(&self, id: Uuid) -> Result<Option<Manufacturer>, StoreError> {
+        self.get_manufacturer_impl(id).await
+    }
+    async fn create_manufacturer(&self, u: &ManufacturerUpsert) -> Result<Manufacturer, StoreError> {
+        self.create_manufacturer_impl(u).await
+    }
+    async fn update_manufacturer(&self, id: Uuid, ev: i64, u: &ManufacturerUpsert) -> Result<Manufacturer, StoreError> {
+        self.update_manufacturer_impl(id, ev, u).await
+    }
+    async fn archive_manufacturer(&self, id: Uuid, ev: i64) -> Result<Manufacturer, StoreError> {
+        self.archive_manufacturer_impl(id, ev).await
+    }
+
+    async fn list_suppliers(&self, filter: &PartyListFilter) -> Result<Vec<Supplier>, StoreError> {
+        self.list_suppliers_impl(filter).await
+    }
+    async fn count_suppliers(&self, filter: &PartyListFilter) -> Result<i64, StoreError> {
+        self.count_suppliers_impl(filter).await
+    }
+    async fn get_supplier(&self, id: Uuid) -> Result<Option<Supplier>, StoreError> {
+        self.get_supplier_impl(id).await
+    }
+    async fn create_supplier(&self, u: &SupplierUpsert) -> Result<Supplier, StoreError> {
+        self.create_supplier_impl(u).await
+    }
+    async fn update_supplier(&self, id: Uuid, ev: i64, u: &SupplierUpsert) -> Result<Supplier, StoreError> {
+        self.update_supplier_impl(id, ev, u).await
+    }
+    async fn archive_supplier(&self, id: Uuid, ev: i64) -> Result<Supplier, StoreError> {
+        self.archive_supplier_impl(id, ev).await
+    }
+
+    async fn list_customers(&self, filter: &PartyListFilter) -> Result<Vec<Customer>, StoreError> {
+        self.list_customers_impl(filter).await
+    }
+    async fn count_customers(&self, filter: &PartyListFilter) -> Result<i64, StoreError> {
+        self.count_customers_impl(filter).await
+    }
+    async fn get_customer(&self, id: Uuid) -> Result<Option<Customer>, StoreError> {
+        self.get_customer_impl(id).await
+    }
+    async fn create_customer(&self, u: &CustomerUpsert) -> Result<Customer, StoreError> {
+        self.create_customer_impl(u).await
+    }
+    async fn update_customer(&self, id: Uuid, ev: i64, u: &CustomerUpsert) -> Result<Customer, StoreError> {
+        self.update_customer_impl(id, ev, u).await
+    }
+    async fn archive_customer(&self, id: Uuid, ev: i64) -> Result<Customer, StoreError> {
+        self.archive_customer_impl(id, ev).await
+    }
+
+    // ---- Product & Manufacturing P1: products ---------------------
+
+    async fn list_products(&self, filter: &ProductListFilter) -> Result<Vec<Product>, StoreError> {
+        self.list_products_impl(filter).await
+    }
+    async fn count_products(&self, filter: &ProductListFilter) -> Result<i64, StoreError> {
+        self.count_products_impl(filter).await
+    }
+    async fn get_product(&self, id: Uuid) -> Result<Option<Product>, StoreError> {
+        self.get_product_impl(id).await
+    }
+    async fn create_product(&self, u: &ProductUpsert) -> Result<Product, StoreError> {
+        self.create_product_impl(u).await
+    }
+    async fn update_product(&self, id: Uuid, ev: i64, u: &ProductUpsert) -> Result<Product, StoreError> {
+        self.update_product_impl(id, ev, u).await
+    }
+    async fn archive_product(&self, id: Uuid, ev: i64) -> Result<Product, StoreError> {
+        self.archive_product_impl(id, ev).await
+    }
+
+    async fn link_product_project(&self, product_id: Uuid, project_id: Uuid, linked_by: Option<Uuid>) -> Result<ProductProjectLink, StoreError> {
+        self.link_product_project_impl(product_id, project_id, linked_by).await
+    }
+    async fn unlink_product_project(&self, product_id: Uuid, project_id: Uuid) -> Result<(), StoreError> {
+        self.unlink_product_project_impl(product_id, project_id).await
+    }
+    async fn list_product_projects(&self, product_id: Uuid) -> Result<Vec<Project>, StoreError> {
+        self.list_product_projects_impl(product_id).await
+    }
+    async fn list_project_products(&self, project_id: Uuid) -> Result<Vec<Product>, StoreError> {
+        self.list_project_products_impl(project_id).await
+    }
+
+    async fn list_product_documents(&self, product_id: Uuid) -> Result<Vec<ProductDocument>, StoreError> {
+        self.list_product_documents_impl(product_id).await
+    }
+    async fn get_product_document(&self, document_id: Uuid) -> Result<Option<ProductDocument>, StoreError> {
+        self.get_product_document_impl(document_id).await
+    }
+    async fn insert_product_document(
+        &self,
+        product_id: Uuid,
+        blob_ref: &ProductBlobRefJson,
+        title: &str,
+        doc_type: Option<&str>,
+        notes: Option<&str>,
+        uploaded_by: Option<&str>,
+    ) -> Result<ProductDocument, StoreError> {
+        self.insert_product_document_impl(product_id, blob_ref, title, doc_type, notes, uploaded_by).await
+    }
+    async fn delete_product_document(&self, document_id: Uuid) -> Result<(), StoreError> {
+        self.delete_product_document_impl(document_id).await
+    }
+
+    // ---- Product & Manufacturing P1: manuals ----------------------
+
+    async fn list_product_manuals(&self, product_id: Uuid) -> Result<Vec<ProductManual>, StoreError> {
+        self.list_product_manuals_impl(product_id).await
+    }
+    async fn get_product_manual(&self, manual_id: Uuid) -> Result<Option<ProductManual>, StoreError> {
+        self.get_product_manual_impl(manual_id).await
+    }
+    async fn create_product_manual(&self, u: &ManualUpsert) -> Result<ProductManual, StoreError> {
+        self.create_product_manual_impl(u).await
+    }
+    async fn list_manual_revisions(&self, manual_id: Uuid) -> Result<Vec<ManualRevision>, StoreError> {
+        self.list_manual_revisions_impl(manual_id).await
+    }
+    async fn get_manual_revision(&self, revision_id: Uuid) -> Result<Option<ManualRevision>, StoreError> {
+        self.get_manual_revision_impl(revision_id).await
+    }
+    async fn create_manual_revision(&self, manual_id: Uuid, u: &RevisionUpsert) -> Result<ManualRevision, StoreError> {
+        self.create_manual_revision_impl(manual_id, u).await
+    }
+    async fn publish_manual_revision(&self, manual_id: Uuid, revision_id: Uuid) -> Result<ManualRevision, StoreError> {
+        self.publish_manual_revision_impl(manual_id, revision_id).await
+    }
+    async fn list_published_manuals_for_product(
+        &self,
+        product_id: Uuid,
+    ) -> Result<Vec<(ProductManual, ManualRevision)>, StoreError> {
+        self.list_published_manuals_for_product_impl(product_id).await
+    }
+
+    // ---- Product & Manufacturing P1: software/firmware releases ----
+
+    async fn list_product_releases(&self, product_id: Uuid, kind: Option<ReleaseKind>) -> Result<Vec<ProductRelease>, StoreError> {
+        self.list_product_releases_impl(product_id, kind).await
+    }
+    async fn get_product_release(&self, id: Uuid) -> Result<Option<ProductRelease>, StoreError> {
+        self.get_product_release_impl(id).await
+    }
+    async fn create_product_release(&self, c: &ProductReleaseCreate) -> Result<ProductRelease, StoreError> {
+        self.create_product_release_impl(c).await
+    }
+    async fn update_product_release(&self, id: Uuid, ev: i64, u: &ProductReleaseUpdate) -> Result<ProductRelease, StoreError> {
+        self.update_product_release_impl(id, ev, u).await
+    }
+    async fn archive_product_release(&self, id: Uuid, ev: i64) -> Result<ProductRelease, StoreError> {
+        self.archive_product_release_impl(id, ev).await
+    }
+
+    // ---- Product & Manufacturing P2: runs / units / EOL -----------
+
+    async fn list_runs(&self, product_id: Uuid) -> Result<Vec<ManufacturingRun>, StoreError> {
+        self.list_runs_impl(product_id).await
+    }
+    async fn get_run(&self, id: Uuid) -> Result<Option<ManufacturingRun>, StoreError> {
+        self.get_run_impl(id).await
+    }
+    async fn create_run(&self, u: &RunUpsert) -> Result<ManufacturingRun, StoreError> {
+        self.create_run_impl(u).await
+    }
+    async fn update_run(&self, id: Uuid, ev: i64, u: &RunUpsert) -> Result<ManufacturingRun, StoreError> {
+        self.update_run_impl(id, ev, u).await
+    }
+    async fn list_run_units(&self, run_id: Uuid) -> Result<Vec<ProductUnit>, StoreError> {
+        self.list_run_units_impl(run_id).await
+    }
+    async fn get_unit(&self, id: Uuid) -> Result<Option<ProductUnit>, StoreError> {
+        self.get_unit_impl(id).await
+    }
+    async fn list_unit_eol_reports(&self, unit_id: Uuid) -> Result<Vec<EolTestReport>, StoreError> {
+        self.list_unit_eol_reports_impl(unit_id).await
+    }
+    async fn allocate_units(&self, run_id: Uuid, count: i32) -> Result<UnitAllocation, StoreError> {
+        self.allocate_units_impl(run_id, count).await
+    }
+    async fn update_unit(&self, id: Uuid, ev: i64, u: &UnitUpsert) -> Result<ProductUnit, StoreError> {
+        self.update_unit_impl(id, ev, u).await
+    }
+    async fn record_eol_report(&self, unit_id: Uuid, u: &EolTestUpsert) -> Result<EolTestReport, StoreError> {
+        self.record_eol_report_impl(unit_id, u).await
+    }
+    async fn get_run_eol_summary(&self, run_id: Uuid) -> Result<Option<RunEolSummary>, StoreError> {
+        self.get_run_eol_summary_impl(run_id).await
+    }
+    async fn upsert_run_eol_summary(&self, run_id: Uuid, u: &RunEolSummaryUpsert) -> Result<RunEolSummary, StoreError> {
+        self.upsert_run_eol_summary_impl(run_id, u).await
+    }
+
+    // ---- Product & Manufacturing P3: RMA returns ------------------
+
+    async fn list_rma(&self, filter: &RmaFilter) -> Result<Vec<Rma>, StoreError> {
+        self.list_rma_impl(filter).await
+    }
+    async fn get_rma(&self, id: Uuid) -> Result<Option<Rma>, StoreError> {
+        self.get_rma_impl(id).await
+    }
+    async fn create_rma(&self, c: &RmaCreate) -> Result<Rma, StoreError> {
+        self.create_rma_impl(c).await
+    }
+    async fn update_rma(&self, id: Uuid, ev: i64, u: &RmaUpdate) -> Result<Rma, StoreError> {
+        self.update_rma_impl(id, ev, u).await
     }
 }
 

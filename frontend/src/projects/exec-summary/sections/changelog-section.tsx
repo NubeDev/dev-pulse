@@ -1,5 +1,7 @@
 import { useState } from "react";
-import { PlusIcon, TrashIcon } from "lucide-react";
+import { PlusIcon, RotateCcwIcon, TrashIcon } from "lucide-react";
+
+import { useAuth } from "@nube/starter-ui-core/auth";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -23,7 +25,11 @@ import { formatAu } from "../../view-wizard/date-display.js";
 import {
   useAddExecSummaryChangelog,
   useDeleteExecSummaryChangelog,
+  useRestoreExecSummaryChangelog,
 } from "../hooks/use-exec-summary.js";
+import { computeNextVersion } from "../version.js";
+
+type ChangelogEntry = ExecSummaryDto["changelog"][number];
 
 export function ChangelogSection({
   projectId,
@@ -32,9 +38,37 @@ export function ChangelogSection({
   projectId: string;
   data: ExecSummaryDto;
 }): JSX.Element {
+  const auth = useAuth();
   const add = useAddExecSummaryChangelog(projectId);
   const remove = useDeleteExecSummaryChangelog(projectId);
+  const restore = useRestoreExecSummaryChangelog(projectId);
   const [deleteId, setDeleteId] = useState<string | null>(null);
+  const [restoreEntry, setRestoreEntry] = useState<ChangelogEntry | null>(null);
+
+  const restoredBy = (() => {
+    const email = auth.user?.email;
+    if (!email) return "unknown";
+    return email.split("@")[0] || email;
+  })();
+
+  const doRestore = (e: React.MouseEvent): void => {
+    // Keep the dialog open while the mutation runs (and on error) —
+    // Radix's action button would otherwise close it immediately.
+    e.preventDefault();
+    if (!restoreEntry) return;
+    restore.mutate(
+      {
+        entryId: restoreEntry.id,
+        body: {
+          version: computeNextVersion(data.changelog, "minor"),
+          changed_at: new Date().toISOString().slice(0, 10),
+          changed_by: restoredBy,
+          summary: `Restored ${restoreEntry.version}`,
+        },
+      },
+      { onSuccess: () => setRestoreEntry(null) },
+    );
+  };
 
   const [version, setVersion] = useState("");
   const [changedAt, setChangedAt] = useState(() =>
@@ -158,14 +192,26 @@ export function ChangelogSection({
                 {entry.changed_by}
               </span>
               <span className="whitespace-pre-wrap">{entry.summary}</span>
-              <button
-                type="button"
-                className="self-start text-muted-foreground hover:text-destructive"
-                title="Delete entry"
-                onClick={() => setDeleteId(entry.id)}
-              >
-                <TrashIcon className="h-3.5 w-3.5" />
-              </button>
+              <div className="flex items-start gap-2 self-start">
+                {entry.has_snapshot && (
+                  <button
+                    type="button"
+                    className="text-muted-foreground hover:text-foreground"
+                    title="Restore this version"
+                    onClick={() => setRestoreEntry(entry)}
+                  >
+                    <RotateCcwIcon className="h-3.5 w-3.5" />
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="text-muted-foreground hover:text-destructive"
+                  title="Delete entry"
+                  onClick={() => setDeleteId(entry.id)}
+                >
+                  <TrashIcon className="h-3.5 w-3.5" />
+                </button>
+              </div>
             </li>
           ))}
         </ul>
@@ -199,6 +245,41 @@ export function ChangelogSection({
               }}
             >
               {remove.isPending ? "Deleting…" : "Delete"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={restoreEntry !== null}
+        onOpenChange={(open) => {
+          if (!open) setRestoreEntry(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Restore {restoreEntry?.version}?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              This overwrites the current summary content with the
+              snapshot taken at {restoreEntry?.version}. Your approval
+              state is untouched, and the change log is preserved — a new
+              entry is added recording the restore, so you can always
+              roll forward again.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {restore.isError && (
+            <Alert variant="destructive">
+              <AlertDescription>{restore.error.message}</AlertDescription>
+            </Alert>
+          )}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={restore.isPending}>
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction disabled={restore.isPending} onClick={doRestore}>
+              {restore.isPending ? "Restoring…" : "Restore"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

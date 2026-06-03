@@ -175,6 +175,20 @@ pub fn register_dev_pulse_resources(registry: &StaticRegistry) {
          `PUT` and `DELETE`. Pinned key catalogue lives in \
          `dp_rest::settings::KEYS`.",
     ));
+    registry.register_spec(ResourceSpec::from_static(
+        "manufacturing",
+        &["read", "write"],
+        Ownership::None,
+        "Manufacturing",
+        "Product & Manufacturing surface — products, parties (customers / \
+         manufacturers / suppliers), manuals + revisions, manufacturing runs, \
+         serialised units, EOL test reports, and RMA / warranty returns \
+         (DOCS/ideas/product-manufacturing.md §8). One umbrella resource for \
+         v1; `read` gates the GET surface, `write` gates create / patch / \
+         archive / upload / publish / allocate / record. The token-gated \
+         public unit landing `/u/{id}` is intentionally NOT gated by this \
+         resource (it authenticates via an HMAC token instead).",
+    ));
 }
 
 /// Load + compile the policy file, wrap it in

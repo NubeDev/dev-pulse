@@ -665,7 +665,7 @@ impl PgStore {
         project_id: Uuid,
     ) -> Result<Vec<ExecSummaryChangelogEntry>, StoreError> {
         let rows = sqlx::query(
-            r#"SELECT id, project_id, version, changed_at, changed_by, summary, created_at
+            r#"SELECT id, project_id, version, changed_at, changed_by, summary, snapshot, created_at
                  FROM dp_project_exec_summary_changelog
                 WHERE project_id = $1
                 ORDER BY changed_at DESC, created_at DESC"#,
@@ -677,21 +677,38 @@ impl PgStore {
         rows.iter().map(row_to_exec_summary_changelog).collect()
     }
 
+    pub(super) async fn get_exec_summary_changelog_impl(
+        &self,
+        entry_id: Uuid,
+    ) -> Result<Option<ExecSummaryChangelogEntry>, StoreError> {
+        let row = sqlx::query(
+            r#"SELECT id, project_id, version, changed_at, changed_by, summary, snapshot, created_at
+                 FROM dp_project_exec_summary_changelog
+                WHERE id = $1"#,
+        )
+        .bind(entry_id)
+        .fetch_optional(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        row.as_ref().map(row_to_exec_summary_changelog).transpose()
+    }
+
     pub(super) async fn insert_exec_summary_changelog_impl(
         &self,
         insert: &ExecSummaryChangelogInsert,
     ) -> Result<ExecSummaryChangelogEntry, StoreError> {
         let row = sqlx::query(
             r#"INSERT INTO dp_project_exec_summary_changelog
-                   (project_id, version, changed_at, changed_by, summary)
-               VALUES ($1, $2, $3, $4, $5)
-            RETURNING id, project_id, version, changed_at, changed_by, summary, created_at"#,
+                   (project_id, version, changed_at, changed_by, summary, snapshot)
+               VALUES ($1, $2, $3, $4, $5, $6)
+            RETURNING id, project_id, version, changed_at, changed_by, summary, snapshot, created_at"#,
         )
         .bind(insert.project_id)
         .bind(&insert.version)
         .bind(insert.changed_at)
         .bind(&insert.changed_by)
         .bind(&insert.summary)
+        .bind(insert.snapshot.as_ref())
         .fetch_one(self.pool.sqlx())
         .await
         .map_err(map_sqlx)?;
@@ -821,6 +838,7 @@ fn row_to_exec_summary_changelog(
         changed_at: r.try_get("changed_at").map_err(map_sqlx)?,
         changed_by: r.try_get("changed_by").map_err(map_sqlx)?,
         summary: r.try_get("summary").map_err(map_sqlx)?,
+        snapshot: r.try_get::<Option<JsonValue>, _>("snapshot").map_err(map_sqlx)?,
         created_at: r.try_get("created_at").map_err(map_sqlx)?,
     })
 }

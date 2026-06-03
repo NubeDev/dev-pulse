@@ -372,6 +372,8 @@ impl TestApp {
             milestone_writer: None,
             projectv2_mirror: None,
             org_projects_picker: None,
+            public_base_url: None,
+            manufacturing_qr_secret: None,
         };
 
         let router = build(BuildConfig {

@@ -1791,6 +1791,15 @@ pub trait Store: Send + Sync {
         ))
     }
 
+    /// Fetch one change-log entry by surrogate id — used by the
+    /// restore path to read the entry's content snapshot.
+    async fn get_exec_summary_changelog(
+        &self,
+        _entry_id: Uuid,
+    ) -> Result<Option<crate::project_exec_summary::ExecSummaryChangelogEntry>, StoreError> {
+        Ok(None)
+    }
+
     /// Delete a change-log entry. Reserved for the admin-only
     /// confirm path; the regular UI never reaches this.
     async fn delete_exec_summary_changelog(
@@ -2664,6 +2673,580 @@ pub trait Store: Send + Sync {
         _outcome: crate::board_link::BoardItemMirrorOutcome<'_>,
     ) -> Result<(), StoreError> {
         Ok(())
+    }
+
+    // ===============================================================
+    // Product & Manufacturing — P1 (DOCS/ideas/product-manufacturing.md)
+    // Master data parties, products, project links, documents, manuals.
+    // ===============================================================
+
+    // ---- manufacturers --------------------------------------------
+
+    /// List manufacturers for the filter. Default impl: empty.
+    async fn list_manufacturers(
+        &self,
+        _filter: &crate::party::PartyListFilter,
+    ) -> Result<Vec<crate::party::Manufacturer>, StoreError> {
+        Ok(Vec::new())
+    }
+
+    /// Count manufacturers for the filter. Default impl: 0.
+    async fn count_manufacturers(
+        &self,
+        _filter: &crate::party::PartyListFilter,
+    ) -> Result<i64, StoreError> {
+        Ok(0)
+    }
+
+    /// Fetch one manufacturer. Default impl: None.
+    async fn get_manufacturer(
+        &self,
+        _id: Uuid,
+    ) -> Result<Option<crate::party::Manufacturer>, StoreError> {
+        Ok(None)
+    }
+
+    /// Create a manufacturer.
+    async fn create_manufacturer(
+        &self,
+        _upsert: &crate::party::ManufacturerUpsert,
+    ) -> Result<crate::party::Manufacturer, StoreError> {
+        Err(StoreError::Invalid("manufacturers not supported".into()))
+    }
+
+    /// Update a manufacturer (CAS on `expected_version`).
+    async fn update_manufacturer(
+        &self,
+        _id: Uuid,
+        _expected_version: i64,
+        _upsert: &crate::party::ManufacturerUpsert,
+    ) -> Result<crate::party::Manufacturer, StoreError> {
+        Err(StoreError::Invalid("manufacturers not supported".into()))
+    }
+
+    /// Archive a manufacturer (CAS, idempotent).
+    async fn archive_manufacturer(
+        &self,
+        _id: Uuid,
+        _expected_version: i64,
+    ) -> Result<crate::party::Manufacturer, StoreError> {
+        Err(StoreError::Invalid("manufacturers not supported".into()))
+    }
+
+    // ---- suppliers ------------------------------------------------
+
+    /// List suppliers. Default impl: empty.
+    async fn list_suppliers(
+        &self,
+        _filter: &crate::party::PartyListFilter,
+    ) -> Result<Vec<crate::party::Supplier>, StoreError> {
+        Ok(Vec::new())
+    }
+
+    /// Count suppliers. Default impl: 0.
+    async fn count_suppliers(
+        &self,
+        _filter: &crate::party::PartyListFilter,
+    ) -> Result<i64, StoreError> {
+        Ok(0)
+    }
+
+    /// Fetch one supplier. Default impl: None.
+    async fn get_supplier(
+        &self,
+        _id: Uuid,
+    ) -> Result<Option<crate::party::Supplier>, StoreError> {
+        Ok(None)
+    }
+
+    /// Create a supplier.
+    async fn create_supplier(
+        &self,
+        _upsert: &crate::party::SupplierUpsert,
+    ) -> Result<crate::party::Supplier, StoreError> {
+        Err(StoreError::Invalid("suppliers not supported".into()))
+    }
+
+    /// Update a supplier (CAS).
+    async fn update_supplier(
+        &self,
+        _id: Uuid,
+        _expected_version: i64,
+        _upsert: &crate::party::SupplierUpsert,
+    ) -> Result<crate::party::Supplier, StoreError> {
+        Err(StoreError::Invalid("suppliers not supported".into()))
+    }
+
+    /// Archive a supplier (CAS, idempotent).
+    async fn archive_supplier(
+        &self,
+        _id: Uuid,
+        _expected_version: i64,
+    ) -> Result<crate::party::Supplier, StoreError> {
+        Err(StoreError::Invalid("suppliers not supported".into()))
+    }
+
+    // ---- customers ------------------------------------------------
+
+    /// List customers. Default impl: empty.
+    async fn list_customers(
+        &self,
+        _filter: &crate::party::PartyListFilter,
+    ) -> Result<Vec<crate::party::Customer>, StoreError> {
+        Ok(Vec::new())
+    }
+
+    /// Count customers. Default impl: 0.
+    async fn count_customers(
+        &self,
+        _filter: &crate::party::PartyListFilter,
+    ) -> Result<i64, StoreError> {
+        Ok(0)
+    }
+
+    /// Fetch one customer. Default impl: None.
+    async fn get_customer(
+        &self,
+        _id: Uuid,
+    ) -> Result<Option<crate::party::Customer>, StoreError> {
+        Ok(None)
+    }
+
+    /// Create a customer.
+    async fn create_customer(
+        &self,
+        _upsert: &crate::party::CustomerUpsert,
+    ) -> Result<crate::party::Customer, StoreError> {
+        Err(StoreError::Invalid("customers not supported".into()))
+    }
+
+    /// Update a customer (CAS).
+    async fn update_customer(
+        &self,
+        _id: Uuid,
+        _expected_version: i64,
+        _upsert: &crate::party::CustomerUpsert,
+    ) -> Result<crate::party::Customer, StoreError> {
+        Err(StoreError::Invalid("customers not supported".into()))
+    }
+
+    /// Archive a customer (CAS, idempotent).
+    async fn archive_customer(
+        &self,
+        _id: Uuid,
+        _expected_version: i64,
+    ) -> Result<crate::party::Customer, StoreError> {
+        Err(StoreError::Invalid("customers not supported".into()))
+    }
+
+    // ---- products -------------------------------------------------
+
+    /// List products for the filter. Default impl: empty.
+    async fn list_products(
+        &self,
+        _filter: &crate::product::ProductListFilter,
+    ) -> Result<Vec<crate::product::Product>, StoreError> {
+        Ok(Vec::new())
+    }
+
+    /// Count products for the filter. Default impl: 0.
+    async fn count_products(
+        &self,
+        _filter: &crate::product::ProductListFilter,
+    ) -> Result<i64, StoreError> {
+        Ok(0)
+    }
+
+    /// Fetch one product. Default impl: None.
+    async fn get_product(
+        &self,
+        _id: Uuid,
+    ) -> Result<Option<crate::product::Product>, StoreError> {
+        Ok(None)
+    }
+
+    /// Create a product.
+    async fn create_product(
+        &self,
+        _upsert: &crate::product::ProductUpsert,
+    ) -> Result<crate::product::Product, StoreError> {
+        Err(StoreError::Invalid("products not supported".into()))
+    }
+
+    /// Update a product (CAS).
+    async fn update_product(
+        &self,
+        _id: Uuid,
+        _expected_version: i64,
+        _upsert: &crate::product::ProductUpsert,
+    ) -> Result<crate::product::Product, StoreError> {
+        Err(StoreError::Invalid("products not supported".into()))
+    }
+
+    /// Archive a product (CAS, idempotent).
+    async fn archive_product(
+        &self,
+        _id: Uuid,
+        _expected_version: i64,
+    ) -> Result<crate::product::Product, StoreError> {
+        Err(StoreError::Invalid("products not supported".into()))
+    }
+
+    // ---- product ↔ project links ----------------------------------
+
+    /// Link a product to a project. Idempotent on the unique pair.
+    async fn link_product_project(
+        &self,
+        _product_id: Uuid,
+        _project_id: Uuid,
+        _linked_by: Option<Uuid>,
+    ) -> Result<crate::product::ProductProjectLink, StoreError> {
+        Err(StoreError::Invalid("products not supported".into()))
+    }
+
+    /// Unlink a product from a project.
+    async fn unlink_product_project(
+        &self,
+        _product_id: Uuid,
+        _project_id: Uuid,
+    ) -> Result<(), StoreError> {
+        Err(StoreError::Invalid("products not supported".into()))
+    }
+
+    /// List the projects linked to a product. Default impl: empty.
+    async fn list_product_projects(
+        &self,
+        _product_id: Uuid,
+    ) -> Result<Vec<crate::project::Project>, StoreError> {
+        Ok(Vec::new())
+    }
+
+    /// List the products linked to a project (reverse). Default: empty.
+    async fn list_project_products(
+        &self,
+        _project_id: Uuid,
+    ) -> Result<Vec<crate::product::Product>, StoreError> {
+        Ok(Vec::new())
+    }
+
+    // ---- product documents (blob upload, mirrors exec-summary) ----
+
+    /// List a product's documents newest-first. Default impl: empty.
+    async fn list_product_documents(
+        &self,
+        _product_id: Uuid,
+    ) -> Result<Vec<crate::product_doc::ProductDocument>, StoreError> {
+        Ok(Vec::new())
+    }
+
+    /// Fetch a single product document (for the blob proxy).
+    async fn get_product_document(
+        &self,
+        _document_id: Uuid,
+    ) -> Result<Option<crate::product_doc::ProductDocument>, StoreError> {
+        Ok(None)
+    }
+
+    /// Insert a product document row referencing an opaque blob.
+    async fn insert_product_document(
+        &self,
+        _product_id: Uuid,
+        _blob_ref: &crate::product_doc::BlobRefJson,
+        _title: &str,
+        _doc_type: Option<&str>,
+        _notes: Option<&str>,
+        _uploaded_by: Option<&str>,
+    ) -> Result<crate::product_doc::ProductDocument, StoreError> {
+        Err(StoreError::Invalid("products not supported".into()))
+    }
+
+    /// Delete a product document row (bytes reaped separately).
+    async fn delete_product_document(
+        &self,
+        _document_id: Uuid,
+    ) -> Result<(), StoreError> {
+        Err(StoreError::Invalid("products not supported".into()))
+    }
+
+    // ---- product manuals + revisions ------------------------------
+
+    /// List a product's manuals. Default impl: empty.
+    async fn list_product_manuals(
+        &self,
+        _product_id: Uuid,
+    ) -> Result<Vec<crate::product_manual::ProductManual>, StoreError> {
+        Ok(Vec::new())
+    }
+
+    /// Fetch one manual. Default impl: None.
+    async fn get_product_manual(
+        &self,
+        _manual_id: Uuid,
+    ) -> Result<Option<crate::product_manual::ProductManual>, StoreError> {
+        Ok(None)
+    }
+
+    /// Create a manual container.
+    async fn create_product_manual(
+        &self,
+        _upsert: &crate::product_manual::ManualUpsert,
+    ) -> Result<crate::product_manual::ProductManual, StoreError> {
+        Err(StoreError::Invalid("manuals not supported".into()))
+    }
+
+    /// List a manual's revisions newest-first. Default impl: empty.
+    async fn list_manual_revisions(
+        &self,
+        _manual_id: Uuid,
+    ) -> Result<Vec<crate::product_manual::ManualRevision>, StoreError> {
+        Ok(Vec::new())
+    }
+
+    /// Fetch one revision. Default impl: None.
+    async fn get_manual_revision(
+        &self,
+        _revision_id: Uuid,
+    ) -> Result<Option<crate::product_manual::ManualRevision>, StoreError> {
+        Ok(None)
+    }
+
+    /// Create a new (draft) revision on a manual.
+    async fn create_manual_revision(
+        &self,
+        _manual_id: Uuid,
+        _upsert: &crate::product_manual::RevisionUpsert,
+    ) -> Result<crate::product_manual::ManualRevision, StoreError> {
+        Err(StoreError::Invalid("manuals not supported".into()))
+    }
+
+    /// Publish a revision: flips the prior published revision (if any)
+    /// to `superseded` and this one to `published`, in one tx.
+    async fn publish_manual_revision(
+        &self,
+        _manual_id: Uuid,
+        _revision_id: Uuid,
+    ) -> Result<crate::product_manual::ManualRevision, StoreError> {
+        Err(StoreError::Invalid("manuals not supported".into()))
+    }
+
+    /// List the published revisions of a product's manuals — the lean
+    /// read used by the public token-gated unit landing (§7.4 scr.5).
+    /// Returns `(manual_title, revision)` pairs. Default impl: empty.
+    async fn list_published_manuals_for_product(
+        &self,
+        _product_id: Uuid,
+    ) -> Result<Vec<(crate::product_manual::ProductManual, crate::product_manual::ManualRevision)>, StoreError>
+    {
+        Ok(Vec::new())
+    }
+
+    // ---- product releases (software / firmware history) -----------
+
+    /// List a product's non-archived releases (optionally one kind),
+    /// ordered kind, major DESC, minor DESC. Default impl: empty.
+    async fn list_product_releases(
+        &self,
+        _product_id: Uuid,
+        _kind: Option<crate::product_release::ReleaseKind>,
+    ) -> Result<Vec<crate::product_release::ProductRelease>, StoreError> {
+        Ok(Vec::new())
+    }
+
+    /// Fetch one release (for §8 parent checks). Default impl: None.
+    async fn get_product_release(
+        &self,
+        _id: Uuid,
+    ) -> Result<Option<crate::product_release::ProductRelease>, StoreError> {
+        Ok(None)
+    }
+
+    /// Create a release.
+    async fn create_product_release(
+        &self,
+        _create: &crate::product_release::ProductReleaseCreate,
+    ) -> Result<crate::product_release::ProductRelease, StoreError> {
+        Err(StoreError::Invalid("product releases not supported".into()))
+    }
+
+    /// Update a release (CAS).
+    async fn update_product_release(
+        &self,
+        _id: Uuid,
+        _expected_version: i64,
+        _update: &crate::product_release::ProductReleaseUpdate,
+    ) -> Result<crate::product_release::ProductRelease, StoreError> {
+        Err(StoreError::Invalid("product releases not supported".into()))
+    }
+
+    /// Archive a release (set `archived_at`, CAS, idempotent-friendly).
+    async fn archive_product_release(
+        &self,
+        _id: Uuid,
+        _expected_version: i64,
+    ) -> Result<crate::product_release::ProductRelease, StoreError> {
+        Err(StoreError::Invalid("product releases not supported".into()))
+    }
+
+    // ===============================================================
+    // Product & Manufacturing — P2: runs, units, serial alloc, EOL
+    // ===============================================================
+
+    // ---- manufacturing runs ---------------------------------------
+
+    /// List a product's runs newest-first. Default impl: empty.
+    async fn list_runs(
+        &self,
+        _product_id: Uuid,
+    ) -> Result<Vec<crate::manufacturing::ManufacturingRun>, StoreError> {
+        Ok(Vec::new())
+    }
+
+    /// Fetch one run. Default impl: None.
+    async fn get_run(
+        &self,
+        _id: Uuid,
+    ) -> Result<Option<crate::manufacturing::ManufacturingRun>, StoreError> {
+        Ok(None)
+    }
+
+    /// Create a run.
+    async fn create_run(
+        &self,
+        _upsert: &crate::manufacturing::RunUpsert,
+    ) -> Result<crate::manufacturing::ManufacturingRun, StoreError> {
+        Err(StoreError::Invalid("runs not supported".into()))
+    }
+
+    /// Update a run (CAS). Does NOT touch counters or `next_serial_seq`.
+    async fn update_run(
+        &self,
+        _id: Uuid,
+        _expected_version: i64,
+        _upsert: &crate::manufacturing::RunUpsert,
+    ) -> Result<crate::manufacturing::ManufacturingRun, StoreError> {
+        Err(StoreError::Invalid("runs not supported".into()))
+    }
+
+    // ---- serialised units -----------------------------------------
+
+    /// List a run's units. Default impl: empty.
+    async fn list_run_units(
+        &self,
+        _run_id: Uuid,
+    ) -> Result<Vec<crate::manufacturing::ProductUnit>, StoreError> {
+        Ok(Vec::new())
+    }
+
+    /// Fetch one unit. Default impl: None.
+    async fn get_unit(
+        &self,
+        _id: Uuid,
+    ) -> Result<Option<crate::manufacturing::ProductUnit>, StoreError> {
+        Ok(None)
+    }
+
+    /// List EOL reports for a unit (newest-first). Default impl: empty.
+    async fn list_unit_eol_reports(
+        &self,
+        _unit_id: Uuid,
+    ) -> Result<Vec<crate::eol::EolTestReport>, StoreError> {
+        Ok(Vec::new())
+    }
+
+    /// Allocate `count` serialised units against a run: reserve a
+    /// contiguous serial block via the atomic `next_serial_seq`
+    /// reservation (§6, NOT the version CAS), format serials per the
+    /// product's `serial_format`, bulk-insert the units, and bump
+    /// `qty_built`. Caps `count` at [`crate::manufacturing::MAX_UNIT_ALLOC`].
+    async fn allocate_units(
+        &self,
+        _run_id: Uuid,
+        _count: i32,
+    ) -> Result<crate::manufacturing::UnitAllocation, StoreError> {
+        Err(StoreError::Invalid("units not supported".into()))
+    }
+
+    /// Patch a unit's status / customer / ship fields (CAS).
+    async fn update_unit(
+        &self,
+        _id: Uuid,
+        _expected_version: i64,
+        _upsert: &crate::manufacturing::UnitUpsert,
+    ) -> Result<crate::manufacturing::ProductUnit, StoreError> {
+        Err(StoreError::Invalid("units not supported".into()))
+    }
+
+    // ---- EOL test reports + run counters --------------------------
+
+    /// Record an EOL report for a unit and maintain the run's
+    /// re-test-safe counters (§5.4): adjust `qty_passed` / `qty_failed`
+    /// only when this report changes the unit's *latest* outcome, set
+    /// the unit status to `tested`. Returns the new report.
+    async fn record_eol_report(
+        &self,
+        _unit_id: Uuid,
+        _upsert: &crate::eol::EolTestUpsert,
+    ) -> Result<crate::eol::EolTestReport, StoreError> {
+        Err(StoreError::Invalid("eol not supported".into()))
+    }
+
+    // ---- run EOL sign-off summary (LOCKED DECISION #3) ------------
+
+    /// Fetch a run's EOL sign-off summary. Default impl: None.
+    async fn get_run_eol_summary(
+        &self,
+        _run_id: Uuid,
+    ) -> Result<Option<crate::eol::RunEolSummary>, StoreError> {
+        Ok(None)
+    }
+
+    /// Upsert a run's EOL sign-off summary: snapshot the run's current
+    /// built/pass/fail counters, store notes, and (when `sign_off`)
+    /// stamp `signed_by`/`signed_at`.
+    async fn upsert_run_eol_summary(
+        &self,
+        _run_id: Uuid,
+        _upsert: &crate::eol::RunEolSummaryUpsert,
+    ) -> Result<crate::eol::RunEolSummary, StoreError> {
+        Err(StoreError::Invalid("eol summary not supported".into()))
+    }
+
+    // ===============================================================
+    // Product & Manufacturing — P3: RMA returns (§5.5)
+    // ===============================================================
+
+    /// List RMAs matching `filter` (newest-first). Default impl: empty.
+    async fn list_rma(
+        &self,
+        _filter: &crate::rma::RmaFilter,
+    ) -> Result<Vec<crate::rma::Rma>, StoreError> {
+        Ok(Vec::new())
+    }
+
+    /// Fetch one RMA. Default impl: None.
+    async fn get_rma(
+        &self,
+        _id: Uuid,
+    ) -> Result<Option<crate::rma::Rma>, StoreError> {
+        Ok(None)
+    }
+
+    /// Create an RMA (validates product / unit parentage, §8).
+    async fn create_rma(
+        &self,
+        _create: &crate::rma::RmaCreate,
+    ) -> Result<crate::rma::Rma, StoreError> {
+        Err(StoreError::Invalid("rma not supported".into()))
+    }
+
+    /// Update an RMA (CAS).
+    async fn update_rma(
+        &self,
+        _id: Uuid,
+        _expected_version: i64,
+        _update: &crate::rma::RmaUpdate,
+    ) -> Result<crate::rma::Rma, StoreError> {
+        Err(StoreError::Invalid("rma not supported".into()))
     }
 }
 

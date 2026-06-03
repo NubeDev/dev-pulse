@@ -18,6 +18,14 @@ use dp_domain::board_link::{
     BoardItem, BoardLink,
 };
 use dp_domain::issue_dates::{IssueDates, ProjectV2MirrorTask, ProjectV2MirrorTaskKind};
+use dp_domain::eol::{EolTestReport, RunEolSummary};
+use dp_domain::manufacturing::{ManufacturingRun, ProductUnit};
+use dp_domain::party::{Customer, Manufacturer, Supplier};
+use dp_domain::product::{Product, ProductProjectLink};
+use dp_domain::product_doc::ProductDocument;
+use dp_domain::product_manual::{ManualRevision, ProductManual};
+use dp_domain::product_release::ProductRelease;
+use dp_domain::rma::Rma;
 use dp_domain::project::{
     PortfolioRawRow, Project, ProjectStatus,
 };
@@ -38,6 +46,9 @@ use crate::encode::{
     actor_role_from_text, event_kind_from_text,
     tag_link_kind_from_text, tag_scope_kind_from_text,
     fetch_run_kind_from_text, membership_role_from_text, resource_kind_from_text,
+    product_status_from_text, revision_status_from_text, release_kind_from_text,
+    run_status_from_text, unit_status_from_text, eol_result_from_text,
+    rma_status_from_text,
 };
 
 use super::{invalid, map_sqlx};
@@ -650,5 +661,279 @@ pub(super) fn row_to_issue_mutation(r: &sqlx::postgres::PgRow) -> Result<IssueMu
         error: r.try_get("error").map_err(map_sqlx)?,
         created_at: r.try_get("created_at").map_err(map_sqlx)?,
         finished_at: r.try_get("finished_at").map_err(map_sqlx)?,
+    })
+}
+
+// ===================================================================
+// Product & Manufacturing — P1 row mappers
+// ===================================================================
+
+pub(super) fn row_to_manufacturer(r: &sqlx::postgres::PgRow) -> Result<Manufacturer, StoreError> {
+    Ok(Manufacturer {
+        id: r.try_get("id").map_err(map_sqlx)?,
+        org_id: r.try_get("org_id").map_err(map_sqlx)?,
+        name: r.try_get("name").map_err(map_sqlx)?,
+        contact_name: r.try_get("contact_name").map_err(map_sqlx)?,
+        email: r.try_get("email").map_err(map_sqlx)?,
+        phone: r.try_get("phone").map_err(map_sqlx)?,
+        address: r.try_get("address").map_err(map_sqlx)?,
+        website: r.try_get("website").map_err(map_sqlx)?,
+        notes: r.try_get("notes").map_err(map_sqlx)?,
+        archived_at: r.try_get("archived_at").map_err(map_sqlx)?,
+        created_by: r.try_get("created_by").map_err(map_sqlx)?,
+        created_at: r.try_get("created_at").map_err(map_sqlx)?,
+        updated_at: r.try_get("updated_at").map_err(map_sqlx)?,
+        version: r.try_get("version").map_err(map_sqlx)?,
+    })
+}
+
+pub(super) fn row_to_supplier(r: &sqlx::postgres::PgRow) -> Result<Supplier, StoreError> {
+    Ok(Supplier {
+        id: r.try_get("id").map_err(map_sqlx)?,
+        org_id: r.try_get("org_id").map_err(map_sqlx)?,
+        name: r.try_get("name").map_err(map_sqlx)?,
+        contact_name: r.try_get("contact_name").map_err(map_sqlx)?,
+        email: r.try_get("email").map_err(map_sqlx)?,
+        phone: r.try_get("phone").map_err(map_sqlx)?,
+        address: r.try_get("address").map_err(map_sqlx)?,
+        website: r.try_get("website").map_err(map_sqlx)?,
+        notes: r.try_get("notes").map_err(map_sqlx)?,
+        archived_at: r.try_get("archived_at").map_err(map_sqlx)?,
+        created_by: r.try_get("created_by").map_err(map_sqlx)?,
+        created_at: r.try_get("created_at").map_err(map_sqlx)?,
+        updated_at: r.try_get("updated_at").map_err(map_sqlx)?,
+        version: r.try_get("version").map_err(map_sqlx)?,
+    })
+}
+
+pub(super) fn row_to_customer(r: &sqlx::postgres::PgRow) -> Result<Customer, StoreError> {
+    Ok(Customer {
+        id: r.try_get("id").map_err(map_sqlx)?,
+        org_id: r.try_get("org_id").map_err(map_sqlx)?,
+        name: r.try_get("name").map_err(map_sqlx)?,
+        contact_name: r.try_get("contact_name").map_err(map_sqlx)?,
+        email: r.try_get("email").map_err(map_sqlx)?,
+        phone: r.try_get("phone").map_err(map_sqlx)?,
+        address: r.try_get("address").map_err(map_sqlx)?,
+        website: r.try_get("website").map_err(map_sqlx)?,
+        notes: r.try_get("notes").map_err(map_sqlx)?,
+        account_ref: r.try_get("account_ref").map_err(map_sqlx)?,
+        archived_at: r.try_get("archived_at").map_err(map_sqlx)?,
+        created_by: r.try_get("created_by").map_err(map_sqlx)?,
+        created_at: r.try_get("created_at").map_err(map_sqlx)?,
+        updated_at: r.try_get("updated_at").map_err(map_sqlx)?,
+        version: r.try_get("version").map_err(map_sqlx)?,
+    })
+}
+
+pub(super) fn row_to_product(r: &sqlx::postgres::PgRow) -> Result<Product, StoreError> {
+    let status_text: String = r.try_get("status").map_err(map_sqlx)?;
+    let status = product_status_from_text(&status_text).map_err(invalid)?;
+    Ok(Product {
+        id: r.try_get("id").map_err(map_sqlx)?,
+        org_id: r.try_get("org_id").map_err(map_sqlx)?,
+        name: r.try_get("name").map_err(map_sqlx)?,
+        model_number: r.try_get("model_number").map_err(map_sqlx)?,
+        description: r.try_get("description").map_err(map_sqlx)?,
+        manufacturer_id: r.try_get("manufacturer_id").map_err(map_sqlx)?,
+        status,
+        serial_prefix: r.try_get("serial_prefix").map_err(map_sqlx)?,
+        serial_format: r.try_get("serial_format").map_err(map_sqlx)?,
+        archived_at: r.try_get("archived_at").map_err(map_sqlx)?,
+        created_by: r.try_get("created_by").map_err(map_sqlx)?,
+        created_at: r.try_get("created_at").map_err(map_sqlx)?,
+        updated_at: r.try_get("updated_at").map_err(map_sqlx)?,
+        version: r.try_get("version").map_err(map_sqlx)?,
+    })
+}
+
+pub(super) fn row_to_product_project_link(
+    r: &sqlx::postgres::PgRow,
+) -> Result<ProductProjectLink, StoreError> {
+    Ok(ProductProjectLink {
+        id: r.try_get("id").map_err(map_sqlx)?,
+        product_id: r.try_get("product_id").map_err(map_sqlx)?,
+        project_id: r.try_get("project_id").map_err(map_sqlx)?,
+        linked_by: r.try_get("linked_by").map_err(map_sqlx)?,
+        linked_at: r.try_get("linked_at").map_err(map_sqlx)?,
+    })
+}
+
+pub(super) fn row_to_product_document(
+    r: &sqlx::postgres::PgRow,
+) -> Result<ProductDocument, StoreError> {
+    Ok(ProductDocument {
+        id: r.try_get("id").map_err(map_sqlx)?,
+        product_id: r.try_get("product_id").map_err(map_sqlx)?,
+        blob_ref: r.try_get("blob_ref").map_err(map_sqlx)?,
+        title: r.try_get("title").map_err(map_sqlx)?,
+        doc_type: r.try_get("doc_type").map_err(map_sqlx)?,
+        notes: r.try_get("notes").map_err(map_sqlx)?,
+        uploaded_by: r.try_get("uploaded_by").map_err(map_sqlx)?,
+        created_at: r.try_get("created_at").map_err(map_sqlx)?,
+    })
+}
+
+pub(super) fn row_to_product_manual(
+    r: &sqlx::postgres::PgRow,
+) -> Result<ProductManual, StoreError> {
+    Ok(ProductManual {
+        id: r.try_get("id").map_err(map_sqlx)?,
+        product_id: r.try_get("product_id").map_err(map_sqlx)?,
+        title: r.try_get("title").map_err(map_sqlx)?,
+        created_by: r.try_get("created_by").map_err(map_sqlx)?,
+        created_at: r.try_get("created_at").map_err(map_sqlx)?,
+        updated_at: r.try_get("updated_at").map_err(map_sqlx)?,
+        version: r.try_get("version").map_err(map_sqlx)?,
+    })
+}
+
+pub(super) fn row_to_manual_revision(
+    r: &sqlx::postgres::PgRow,
+) -> Result<ManualRevision, StoreError> {
+    let status_text: String = r.try_get("status").map_err(map_sqlx)?;
+    let status = revision_status_from_text(&status_text).map_err(invalid)?;
+    Ok(ManualRevision {
+        id: r.try_get("id").map_err(map_sqlx)?,
+        manual_id: r.try_get("manual_id").map_err(map_sqlx)?,
+        revision: r.try_get("revision").map_err(map_sqlx)?,
+        status,
+        body_md: r.try_get("body_md").map_err(map_sqlx)?,
+        change_note: r.try_get("change_note").map_err(map_sqlx)?,
+        authored_by: r.try_get("authored_by").map_err(map_sqlx)?,
+        created_at: r.try_get("created_at").map_err(map_sqlx)?,
+    })
+}
+
+pub(super) fn row_to_product_release(
+    r: &sqlx::postgres::PgRow,
+) -> Result<ProductRelease, StoreError> {
+    let kind_text: String = r.try_get("kind").map_err(map_sqlx)?;
+    let kind = release_kind_from_text(&kind_text).map_err(invalid)?;
+    Ok(ProductRelease {
+        id: r.try_get("id").map_err(map_sqlx)?,
+        org_id: r.try_get("org_id").map_err(map_sqlx)?,
+        product_id: r.try_get("product_id").map_err(map_sqlx)?,
+        kind,
+        major: r.try_get("major").map_err(map_sqlx)?,
+        minor: r.try_get("minor").map_err(map_sqlx)?,
+        release_notes: r.try_get("release_notes").map_err(map_sqlx)?,
+        released_at: r.try_get("released_at").map_err(map_sqlx)?,
+        links: {
+            let v: serde_json::Value = r.try_get("links").map_err(map_sqlx)?;
+            serde_json::from_value(v).unwrap_or_default()
+        },
+        archived_at: r.try_get("archived_at").map_err(map_sqlx)?,
+        created_by: r.try_get("created_by").map_err(map_sqlx)?,
+        created_at: r.try_get("created_at").map_err(map_sqlx)?,
+        updated_at: r.try_get("updated_at").map_err(map_sqlx)?,
+        version: r.try_get("version").map_err(map_sqlx)?,
+    })
+}
+
+// ---- P2: runs / units / EOL ----------------------------------------
+
+pub(super) fn row_to_run(r: &sqlx::postgres::PgRow) -> Result<ManufacturingRun, StoreError> {
+    let status_text: String = r.try_get("status").map_err(map_sqlx)?;
+    let status = run_status_from_text(&status_text).map_err(invalid)?;
+    Ok(ManufacturingRun {
+        id: r.try_get("id").map_err(map_sqlx)?,
+        org_id: r.try_get("org_id").map_err(map_sqlx)?,
+        product_id: r.try_get("product_id").map_err(map_sqlx)?,
+        manufacturer_id: r.try_get("manufacturer_id").map_err(map_sqlx)?,
+        run_code: r.try_get("run_code").map_err(map_sqlx)?,
+        status,
+        qty_planned: r.try_get("qty_planned").map_err(map_sqlx)?,
+        qty_built: r.try_get("qty_built").map_err(map_sqlx)?,
+        qty_passed: r.try_get("qty_passed").map_err(map_sqlx)?,
+        qty_failed: r.try_get("qty_failed").map_err(map_sqlx)?,
+        next_serial_seq: r.try_get("next_serial_seq").map_err(map_sqlx)?,
+        started_at: r.try_get("started_at").map_err(map_sqlx)?,
+        completed_at: r.try_get("completed_at").map_err(map_sqlx)?,
+        notes: r.try_get("notes").map_err(map_sqlx)?,
+        created_by: r.try_get("created_by").map_err(map_sqlx)?,
+        created_at: r.try_get("created_at").map_err(map_sqlx)?,
+        updated_at: r.try_get("updated_at").map_err(map_sqlx)?,
+        version: r.try_get("version").map_err(map_sqlx)?,
+    })
+}
+
+pub(super) fn row_to_unit(r: &sqlx::postgres::PgRow) -> Result<ProductUnit, StoreError> {
+    let status_text: String = r.try_get("status").map_err(map_sqlx)?;
+    let status = unit_status_from_text(&status_text).map_err(invalid)?;
+    Ok(ProductUnit {
+        id: r.try_get("id").map_err(map_sqlx)?,
+        org_id: r.try_get("org_id").map_err(map_sqlx)?,
+        product_id: r.try_get("product_id").map_err(map_sqlx)?,
+        run_id: r.try_get("run_id").map_err(map_sqlx)?,
+        serial_number: r.try_get("serial_number").map_err(map_sqlx)?,
+        status,
+        customer_id: r.try_get("customer_id").map_err(map_sqlx)?,
+        built_at: r.try_get("built_at").map_err(map_sqlx)?,
+        shipped_at: r.try_get("shipped_at").map_err(map_sqlx)?,
+        created_at: r.try_get("created_at").map_err(map_sqlx)?,
+        updated_at: r.try_get("updated_at").map_err(map_sqlx)?,
+        version: r.try_get("version").map_err(map_sqlx)?,
+    })
+}
+
+pub(super) fn row_to_eol_report(r: &sqlx::postgres::PgRow) -> Result<EolTestReport, StoreError> {
+    let result_text: String = r.try_get("result").map_err(map_sqlx)?;
+    let result = eol_result_from_text(&result_text).map_err(invalid)?;
+    Ok(EolTestReport {
+        id: r.try_get("id").map_err(map_sqlx)?,
+        unit_id: r.try_get("unit_id").map_err(map_sqlx)?,
+        result,
+        station: r.try_get("station").map_err(map_sqlx)?,
+        firmware: r.try_get("firmware").map_err(map_sqlx)?,
+        measurements: r.try_get("measurements").map_err(map_sqlx)?,
+        log_blob_ref: r.try_get("log_blob_ref").map_err(map_sqlx)?,
+        notes: r.try_get("notes").map_err(map_sqlx)?,
+        tested_by: r.try_get("tested_by").map_err(map_sqlx)?,
+        tested_at: r.try_get("tested_at").map_err(map_sqlx)?,
+        created_at: r.try_get("created_at").map_err(map_sqlx)?,
+    })
+}
+
+// ---- P3: RMA returns -----------------------------------------------
+
+pub(super) fn row_to_rma(r: &sqlx::postgres::PgRow) -> Result<Rma, StoreError> {
+    let status_text: String = r.try_get("status").map_err(map_sqlx)?;
+    let status = rma_status_from_text(&status_text).map_err(invalid)?;
+    Ok(Rma {
+        id: r.try_get("id").map_err(map_sqlx)?,
+        org_id: r.try_get("org_id").map_err(map_sqlx)?,
+        unit_id: r.try_get("unit_id").map_err(map_sqlx)?,
+        product_id: r.try_get("product_id").map_err(map_sqlx)?,
+        customer_id: r.try_get("customer_id").map_err(map_sqlx)?,
+        rma_number: r.try_get("rma_number").map_err(map_sqlx)?,
+        under_warranty: r.try_get("under_warranty").map_err(map_sqlx)?,
+        status,
+        reason: r.try_get("reason").map_err(map_sqlx)?,
+        diagnosis: r.try_get("diagnosis").map_err(map_sqlx)?,
+        resolution: r.try_get("resolution").map_err(map_sqlx)?,
+        received_at: r.try_get("received_at").map_err(map_sqlx)?,
+        resolved_at: r.try_get("resolved_at").map_err(map_sqlx)?,
+        created_by: r.try_get("created_by").map_err(map_sqlx)?,
+        created_at: r.try_get("created_at").map_err(map_sqlx)?,
+        updated_at: r.try_get("updated_at").map_err(map_sqlx)?,
+        version: r.try_get("version").map_err(map_sqlx)?,
+    })
+}
+
+pub(super) fn row_to_run_eol_summary(
+    r: &sqlx::postgres::PgRow,
+) -> Result<RunEolSummary, StoreError> {
+    Ok(RunEolSummary {
+        run_id: r.try_get("run_id").map_err(map_sqlx)?,
+        built_count: r.try_get("built_count").map_err(map_sqlx)?,
+        pass_count: r.try_get("pass_count").map_err(map_sqlx)?,
+        fail_count: r.try_get("fail_count").map_err(map_sqlx)?,
+        notes_md: r.try_get("notes_md").map_err(map_sqlx)?,
+        signed_by: r.try_get("signed_by").map_err(map_sqlx)?,
+        signed_at: r.try_get("signed_at").map_err(map_sqlx)?,
+        created_at: r.try_get("created_at").map_err(map_sqlx)?,
+        updated_at: r.try_get("updated_at").map_err(map_sqlx)?,
+        version: r.try_get("version").map_err(map_sqlx)?,
     })
 }

@@ -266,6 +266,10 @@ pub const PROJECT_EXEC_SUMMARY_CHANGELOG_ADD: &str = "project.exec_summary.chang
 /// Target carries `<project_id>:<entry_id>`.
 pub const PROJECT_EXEC_SUMMARY_CHANGELOG_REMOVE: &str = "project.exec_summary.changelog_remove";
 
+/// `project.exec_summary.changelog_restore` — `POST /projects/{id}/exec-summary/changelog/{entry_id}/restore`.
+/// Target carries `<project_id>:<entry_id>` of the restored-from entry.
+pub const PROJECT_EXEC_SUMMARY_CHANGELOG_RESTORE: &str = "project.exec_summary.changelog_restore";
+
 /// `issue.pending_remote_timeout` — emitted by the §8.5 sweeper
 /// when a `dp_issues.pending_remote` flag has lingered past
 /// `issues.pending_remote_timeout_secs`. The audit target carries
@@ -273,6 +277,55 @@ pub const PROJECT_EXEC_SUMMARY_CHANGELOG_REMOVE: &str = "project.exec_summary.ch
 /// row (if one was recorded) is updated to
 /// `pending_remote_timeout` in the same tick.
 pub const ISSUE_PENDING_REMOTE_TIMEOUT: &str = "issue.pending_remote_timeout";
+
+// ---- Product & Manufacturing (DOCS/ideas/product-manufacturing.md) --
+
+/// `manufacturing.product.create` — `POST /products`.
+pub const PRODUCT_CREATE: &str = "manufacturing.product.create";
+/// `manufacturing.product.update` — `PATCH /products/{id}`.
+pub const PRODUCT_UPDATE: &str = "manufacturing.product.update";
+/// `manufacturing.product.archive` — `DELETE /products/{id}`.
+pub const PRODUCT_ARCHIVE: &str = "manufacturing.product.archive";
+/// `manufacturing.product.link_project` — `POST /products/{id}/projects/{project_id}`.
+pub const PRODUCT_LINK_PROJECT: &str = "manufacturing.product.link_project";
+/// `manufacturing.product.unlink_project` — `DELETE /products/{id}/projects/{project_id}`.
+pub const PRODUCT_UNLINK_PROJECT: &str = "manufacturing.product.unlink_project";
+/// `manufacturing.product.document_add` — `POST /products/{id}/documents`.
+pub const PRODUCT_DOCUMENT_ADD: &str = "manufacturing.product.document_add";
+/// `manufacturing.product.document_remove` — `DELETE /products/{id}/documents/{doc_id}`.
+pub const PRODUCT_DOCUMENT_REMOVE: &str = "manufacturing.product.document_remove";
+/// `manufacturing.product_release.create` — `POST /products/{id}/releases`.
+pub const PRODUCT_RELEASE_CREATE: &str = "manufacturing.product_release.create";
+/// `manufacturing.product_release.update` — `PATCH/DELETE …/releases/{rid}`.
+pub const PRODUCT_RELEASE_UPDATE: &str = "manufacturing.product_release.update";
+/// `manufacturing.manual.create` — `POST /products/{id}/manuals`.
+pub const MANUAL_CREATE: &str = "manufacturing.manual.create";
+/// `manufacturing.manual.revision_add` — `POST …/manuals/{m}/revisions`.
+pub const MANUAL_REVISION_ADD: &str = "manufacturing.manual.revision_add";
+/// `manufacturing.manual.revision_publish` — `POST …/revisions/{r}/publish`.
+pub const MANUAL_REVISION_PUBLISH: &str = "manufacturing.manual.revision_publish";
+/// `manufacturing.party.create` — `POST /{customers,manufacturers,suppliers}`.
+pub const PARTY_CREATE: &str = "manufacturing.party.create";
+/// `manufacturing.party.update` — `PATCH /{party}/{id}`.
+pub const PARTY_UPDATE: &str = "manufacturing.party.update";
+/// `manufacturing.party.archive` — `DELETE /{party}/{id}`.
+pub const PARTY_ARCHIVE: &str = "manufacturing.party.archive";
+/// `manufacturing.run.create` — `POST /products/{id}/runs` (P2).
+pub const RUN_CREATE: &str = "manufacturing.run.create";
+/// `manufacturing.run.update` — `PATCH /runs/{id}` (P2).
+pub const RUN_UPDATE: &str = "manufacturing.run.update";
+/// `manufacturing.run.allocate_units` — `POST /runs/{id}/units` (P2).
+pub const RUN_ALLOCATE_UNITS: &str = "manufacturing.run.allocate_units";
+/// `manufacturing.unit.update` — `PATCH /units/{id}` (P2).
+pub const UNIT_UPDATE: &str = "manufacturing.unit.update";
+/// `manufacturing.eol.record` — `POST /units/{id}/eol` (P2).
+pub const EOL_RECORD: &str = "manufacturing.eol.record";
+/// `manufacturing.run.eol_sign_off` — `POST /runs/{id}/eol-summary` (P2).
+pub const RUN_EOL_SIGN_OFF: &str = "manufacturing.run.eol_sign_off";
+/// `manufacturing.rma.create` — `POST /rma` (P3).
+pub const RMA_CREATE: &str = "manufacturing.rma.create";
+/// `manufacturing.rma.update` — `PATCH /rma/{id}` (P3).
+pub const RMA_UPDATE: &str = "manufacturing.rma.update";
 
 /// Pick the §8.5 audit verb for a given
 /// [`IssueMutationOp`][dp_domain::issue_mutation::IssueMutationOp].

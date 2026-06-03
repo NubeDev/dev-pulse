@@ -9,6 +9,12 @@
 use dp_domain::event::{ActorRole, EventKind};
 use dp_domain::fetch::{FetchRunKind, ResourceKind};
 use dp_domain::membership::MembershipRole;
+use dp_domain::eol::EolResult;
+use dp_domain::manufacturing::{RunStatus, UnitStatus};
+use dp_domain::product::ProductStatus;
+use dp_domain::rma::RmaStatus;
+use dp_domain::product_manual::RevisionStatus;
+use dp_domain::product_release::ReleaseKind;
 use dp_domain::tag::TagScopeKind;
 use dp_domain::tag_link::TagLinkKind;
 
@@ -181,6 +187,75 @@ pub(crate) fn tag_link_kind_from_text(s: &str) -> Result<TagLinkKind, String> {
     })
 }
 
+// ---- ProductStatus (Product & Manufacturing P1) ---------------------
+
+#[allow(dead_code)] // symmetry with `*_from_text`; store writes use `.as_str()` directly.
+pub(crate) fn product_status_to_text(s: ProductStatus) -> &'static str {
+    s.as_str()
+}
+
+pub(crate) fn product_status_from_text(s: &str) -> Result<ProductStatus, String> {
+    ProductStatus::from_str(s).ok_or_else(|| format!("unknown product status: {s}"))
+}
+
+// ---- RevisionStatus (manual revisions, P1) --------------------------
+
+#[allow(dead_code)] // symmetry with `*_from_text`; store writes use `.as_str()` directly.
+pub(crate) fn revision_status_to_text(s: RevisionStatus) -> &'static str {
+    s.as_str()
+}
+
+pub(crate) fn revision_status_from_text(s: &str) -> Result<RevisionStatus, String> {
+    RevisionStatus::from_str(s).ok_or_else(|| format!("unknown revision status: {s}"))
+}
+
+// ---- ReleaseKind (software / firmware history, P1) ------------------
+
+#[allow(dead_code)] // symmetry with `*_from_text`; store writes use `.as_str()` directly.
+pub(crate) fn release_kind_to_text(s: ReleaseKind) -> &'static str {
+    s.as_str()
+}
+
+pub(crate) fn release_kind_from_text(s: &str) -> Result<ReleaseKind, String> {
+    ReleaseKind::from_str(s).ok_or_else(|| format!("unknown release kind: {s}"))
+}
+
+// ---- RunStatus / UnitStatus / EolResult (P2) ------------------------
+
+#[allow(dead_code)]
+pub(crate) fn run_status_to_text(s: RunStatus) -> &'static str {
+    s.as_str()
+}
+pub(crate) fn run_status_from_text(s: &str) -> Result<RunStatus, String> {
+    RunStatus::from_str(s).ok_or_else(|| format!("unknown run status: {s}"))
+}
+
+#[allow(dead_code)]
+pub(crate) fn unit_status_to_text(s: UnitStatus) -> &'static str {
+    s.as_str()
+}
+pub(crate) fn unit_status_from_text(s: &str) -> Result<UnitStatus, String> {
+    UnitStatus::from_str(s).ok_or_else(|| format!("unknown unit status: {s}"))
+}
+
+#[allow(dead_code)]
+pub(crate) fn eol_result_to_text(s: EolResult) -> &'static str {
+    s.as_str()
+}
+pub(crate) fn eol_result_from_text(s: &str) -> Result<EolResult, String> {
+    EolResult::from_str(s).ok_or_else(|| format!("unknown eol result: {s}"))
+}
+
+// ---- RmaStatus (returns / RMA, P3) ----------------------------------
+
+#[allow(dead_code)]
+pub(crate) fn rma_status_to_text(s: RmaStatus) -> &'static str {
+    s.as_str()
+}
+pub(crate) fn rma_status_from_text(s: &str) -> Result<RmaStatus, String> {
+    RmaStatus::from_str(s).ok_or_else(|| format!("unknown rma status: {s}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,5 +332,81 @@ mod tests {
                 k
             );
         }
+    }
+
+    #[test]
+    fn product_status_round_trips_for_every_variant() {
+        for s in [
+            ProductStatus::Draft,
+            ProductStatus::Active,
+            ProductStatus::Eol,
+            ProductStatus::Archived,
+        ] {
+            assert_eq!(product_status_from_text(product_status_to_text(s)).unwrap(), s);
+        }
+        assert!(product_status_from_text("bogus").is_err());
+    }
+
+    #[test]
+    fn revision_status_round_trips_for_every_variant() {
+        for s in [
+            RevisionStatus::Draft,
+            RevisionStatus::Published,
+            RevisionStatus::Superseded,
+        ] {
+            assert_eq!(revision_status_from_text(revision_status_to_text(s)).unwrap(), s);
+        }
+        assert!(revision_status_from_text("bogus").is_err());
+    }
+
+    #[test]
+    fn release_kind_round_trips_for_every_variant() {
+        for s in [ReleaseKind::Software, ReleaseKind::Firmware] {
+            assert_eq!(release_kind_from_text(release_kind_to_text(s)).unwrap(), s);
+        }
+        assert!(release_kind_from_text("bogus").is_err());
+    }
+
+    #[test]
+    fn run_unit_eol_enums_round_trip() {
+        for s in [
+            RunStatus::Planned,
+            RunStatus::InProgress,
+            RunStatus::Completed,
+            RunStatus::Cancelled,
+        ] {
+            assert_eq!(run_status_from_text(run_status_to_text(s)).unwrap(), s);
+        }
+        for s in [
+            UnitStatus::Built,
+            UnitStatus::Tested,
+            UnitStatus::Shipped,
+            UnitStatus::Returned,
+            UnitStatus::Scrapped,
+        ] {
+            assert_eq!(unit_status_from_text(unit_status_to_text(s)).unwrap(), s);
+        }
+        for s in [EolResult::Pass, EolResult::Fail] {
+            assert_eq!(eol_result_from_text(eol_result_to_text(s)).unwrap(), s);
+        }
+        assert!(run_status_from_text("bogus").is_err());
+        assert!(unit_status_from_text("bogus").is_err());
+        assert!(eol_result_from_text("bogus").is_err());
+    }
+
+    #[test]
+    fn rma_status_round_trips_for_every_variant() {
+        for s in [
+            RmaStatus::Open,
+            RmaStatus::Received,
+            RmaStatus::Diagnosed,
+            RmaStatus::Repaired,
+            RmaStatus::Replaced,
+            RmaStatus::Rejected,
+            RmaStatus::Closed,
+        ] {
+            assert_eq!(rma_status_from_text(rma_status_to_text(s)).unwrap(), s);
+        }
+        assert!(rma_status_from_text("bogus").is_err());
     }
 }

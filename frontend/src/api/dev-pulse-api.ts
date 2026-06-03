@@ -115,6 +115,65 @@ import {
   type OrgProjectPickerDto,
 } from "./schemas/projects.js";
 import {
+  ProductDtoSchema,
+  ProductListResponseSchema,
+  ProductDocumentDtoSchema,
+  PartyDtoSchema,
+  PartyListResponseSchema,
+  CustomerDtoSchema,
+  CustomerListResponseSchema,
+  ManualDtoSchema,
+  ManualRevisionDtoSchema,
+  RunDtoSchema,
+  UnitDtoSchema,
+  UnitAllocationDtoSchema,
+  EolReportDtoSchema,
+  RunEolSummaryDtoSchema,
+  RmaDtoSchema,
+  ProductReleaseDtoSchema,
+  type RunDto,
+  type CreateRunRequest,
+  type PatchRunRequest,
+  type UnitDto,
+  type UnitAllocationDto,
+  type AllocateUnitsRequest,
+  type PatchUnitRequest,
+  type EolReportDto,
+  type RecordEolRequest,
+  type RunEolSummaryDto,
+  type RunEolSummaryRequest,
+  type ProductDto,
+  type ProductListResponse,
+  type ListProductsQuery,
+  type CreateProductRequest,
+  type PatchProductRequest,
+  type ArchiveProductRequest,
+  type ProductDocumentDto,
+  type PartyDto,
+  type PartyListResponse,
+  type CustomerDto,
+  type CustomerListResponse,
+  type ListPartiesQuery,
+  type CreatePartyRequest,
+  type PatchPartyRequest,
+  type CreateCustomerRequest,
+  type PatchCustomerRequest,
+  type ArchivePartyRequest,
+  type ManualDto,
+  type ManualRevisionDto,
+  type CreateManualRequest,
+  type CreateRevisionRequest,
+  type RmaDto,
+  type ListRmaQuery,
+  type CreateRmaRequest,
+  type PatchRmaRequest,
+  type ProductReleaseDto,
+  type ReleaseKind,
+  type CreateReleaseRequest,
+  type PatchReleaseRequest,
+  type ArchiveReleaseRequest,
+} from "./schemas/products.js";
+import {
   SettingDtoSchema,
   TestGithubPatResponseSchema,
   type SettingDto,
@@ -149,6 +208,7 @@ import {
   type ExecSummaryChangelogEntry,
   type PatchExecSummaryRequest,
   type AddChangelogEntryRequest,
+  type RestoreChangelogEntryRequest,
   type ApproveExecSummaryRequest,
 } from "./schemas/exec-summary.js";
 
@@ -923,6 +983,363 @@ export class DevPulseApi {
       "DELETE",
       `/projects/${encodeURIComponent(projectId)}/exec-summary/changelog/${encodeURIComponent(entryId)}`,
       undefined,
+    );
+  }
+
+  /** Roll the summary back to the snapshot stored on `entryId`. The
+   *  body describes the new entry that records the restore; the
+   *  response is the refreshed full summary. */
+  async restoreProjectExecSummaryChangelog(
+    projectId: string,
+    entryId: string,
+    body: RestoreChangelogEntryRequest,
+  ): Promise<ExecSummaryDto> {
+    return this.sendJson(
+      "POST",
+      `/projects/${encodeURIComponent(projectId)}/exec-summary/changelog/${encodeURIComponent(entryId)}/restore`,
+      body,
+      ExecSummaryDtoSchema,
+    );
+  }
+
+  // -- Product & Manufacturing — products -----------------------------------
+
+  async listProducts(q: ListProductsQuery = {}): Promise<ProductListResponse> {
+    const params = new URLSearchParams();
+    if (q.org_id) params.set("org_id", q.org_id);
+    if (q.status) params.set("status", q.status);
+    if (q.q) params.set("q", q.q);
+    if (q.limit !== undefined) params.set("limit", String(q.limit));
+    if (q.offset !== undefined) params.set("offset", String(q.offset));
+    if (q.count_only) params.set("count_only", "1");
+    const qs = params.toString();
+    return this.getJson(`/products${qs ? `?${qs}` : ""}`, ProductListResponseSchema);
+  }
+
+  async getProduct(id: string): Promise<ProductDto | null> {
+    try {
+      return await this.getJson(`/products/${encodeURIComponent(id)}`, ProductDtoSchema);
+    } catch (e) {
+      if (e instanceof DpRestError && e.status === 404) return null;
+      throw e;
+    }
+  }
+
+  async createProduct(body: CreateProductRequest): Promise<ProductDto> {
+    return this.sendJson("POST", "/products", body, ProductDtoSchema);
+  }
+
+  async patchProduct(id: string, body: PatchProductRequest): Promise<ProductDto> {
+    return this.sendJson("PATCH", `/products/${encodeURIComponent(id)}`, body, ProductDtoSchema);
+  }
+
+  async archiveProduct(id: string, body: ArchiveProductRequest): Promise<ProductDto> {
+    return this.sendJson("DELETE", `/products/${encodeURIComponent(id)}`, body, ProductDtoSchema);
+  }
+
+  async listProductProjects(productId: string): Promise<ProjectDto[]> {
+    return this.getJson(
+      `/products/${encodeURIComponent(productId)}/projects`,
+      z.array(ProjectDtoSchema),
+    );
+  }
+
+  async listProjectProducts(projectId: string): Promise<ProductDto[]> {
+    return this.getJson(
+      `/projects/${encodeURIComponent(projectId)}/products`,
+      z.array(ProductDtoSchema),
+    );
+  }
+
+  async linkProductProject(productId: string, projectId: string): Promise<void> {
+    await this.sendNoContent(
+      "POST",
+      `/products/${encodeURIComponent(productId)}/projects/${encodeURIComponent(projectId)}`,
+      undefined,
+    );
+  }
+
+  async unlinkProductProject(productId: string, projectId: string): Promise<void> {
+    await this.sendNoContent(
+      "DELETE",
+      `/products/${encodeURIComponent(productId)}/projects/${encodeURIComponent(projectId)}`,
+      undefined,
+    );
+  }
+
+  async listProductDocuments(productId: string): Promise<ProductDocumentDto[]> {
+    return this.getJson(
+      `/products/${encodeURIComponent(productId)}/documents`,
+      z.array(ProductDocumentDtoSchema),
+    );
+  }
+
+  async uploadProductDocument(
+    productId: string,
+    file: File,
+    fields: { title?: string; doc_type?: string; notes?: string },
+  ): Promise<ProductDocumentDto> {
+    const clean: Record<string, string> = {};
+    for (const [k, v] of Object.entries(fields)) {
+      if (v !== undefined) clean[k] = v;
+    }
+    return this.uploadMultipart(
+      `/products/${encodeURIComponent(productId)}/documents`,
+      file,
+      ProductDocumentDtoSchema,
+      clean,
+    );
+  }
+
+  async deleteProductDocument(productId: string, documentId: string): Promise<void> {
+    await this.sendNoContent(
+      "DELETE",
+      `/products/${encodeURIComponent(productId)}/documents/${encodeURIComponent(documentId)}`,
+      undefined,
+    );
+  }
+
+  // -- Product & Manufacturing — parties ------------------------------------
+
+  private partyListQs(q: ListPartiesQuery): string {
+    const params = new URLSearchParams();
+    if (q.org_id) params.set("org_id", q.org_id);
+    if (q.q) params.set("q", q.q);
+    if (q.include_archived) params.set("include_archived", "true");
+    if (q.limit !== undefined) params.set("limit", String(q.limit));
+    if (q.offset !== undefined) params.set("offset", String(q.offset));
+    if (q.count_only) params.set("count_only", "1");
+    const s = params.toString();
+    return s ? `?${s}` : "";
+  }
+
+  async listManufacturers(q: ListPartiesQuery = {}): Promise<PartyListResponse> {
+    return this.getJson(`/manufacturers${this.partyListQs(q)}`, PartyListResponseSchema);
+  }
+  async getManufacturer(id: string): Promise<PartyDto> {
+    return this.getJson(`/manufacturers/${encodeURIComponent(id)}`, PartyDtoSchema);
+  }
+  async createManufacturer(body: CreatePartyRequest): Promise<PartyDto> {
+    return this.sendJson("POST", "/manufacturers", body, PartyDtoSchema);
+  }
+  async patchManufacturer(id: string, body: PatchPartyRequest): Promise<PartyDto> {
+    return this.sendJson("PATCH", `/manufacturers/${encodeURIComponent(id)}`, body, PartyDtoSchema);
+  }
+  async archiveManufacturer(id: string, body: ArchivePartyRequest): Promise<PartyDto> {
+    return this.sendJson("DELETE", `/manufacturers/${encodeURIComponent(id)}`, body, PartyDtoSchema);
+  }
+
+  async listSuppliers(q: ListPartiesQuery = {}): Promise<PartyListResponse> {
+    return this.getJson(`/suppliers${this.partyListQs(q)}`, PartyListResponseSchema);
+  }
+  async getSupplier(id: string): Promise<PartyDto> {
+    return this.getJson(`/suppliers/${encodeURIComponent(id)}`, PartyDtoSchema);
+  }
+  async createSupplier(body: CreatePartyRequest): Promise<PartyDto> {
+    return this.sendJson("POST", "/suppliers", body, PartyDtoSchema);
+  }
+  async patchSupplier(id: string, body: PatchPartyRequest): Promise<PartyDto> {
+    return this.sendJson("PATCH", `/suppliers/${encodeURIComponent(id)}`, body, PartyDtoSchema);
+  }
+  async archiveSupplier(id: string, body: ArchivePartyRequest): Promise<PartyDto> {
+    return this.sendJson("DELETE", `/suppliers/${encodeURIComponent(id)}`, body, PartyDtoSchema);
+  }
+
+  async listCustomers(q: ListPartiesQuery = {}): Promise<CustomerListResponse> {
+    return this.getJson(`/customers${this.partyListQs(q)}`, CustomerListResponseSchema);
+  }
+  async getCustomer(id: string): Promise<CustomerDto> {
+    return this.getJson(`/customers/${encodeURIComponent(id)}`, CustomerDtoSchema);
+  }
+  async createCustomer(body: CreateCustomerRequest): Promise<CustomerDto> {
+    return this.sendJson("POST", "/customers", body, CustomerDtoSchema);
+  }
+  async patchCustomer(id: string, body: PatchCustomerRequest): Promise<CustomerDto> {
+    return this.sendJson("PATCH", `/customers/${encodeURIComponent(id)}`, body, CustomerDtoSchema);
+  }
+  async archiveCustomer(id: string, body: ArchivePartyRequest): Promise<CustomerDto> {
+    return this.sendJson("DELETE", `/customers/${encodeURIComponent(id)}`, body, CustomerDtoSchema);
+  }
+
+  // -- Product & Manufacturing — manuals ------------------------------------
+
+  async listProductManuals(productId: string): Promise<ManualDto[]> {
+    return this.getJson(
+      `/products/${encodeURIComponent(productId)}/manuals`,
+      z.array(ManualDtoSchema),
+    );
+  }
+  async createProductManual(productId: string, body: CreateManualRequest): Promise<ManualDto> {
+    return this.sendJson(
+      "POST",
+      `/products/${encodeURIComponent(productId)}/manuals`,
+      body,
+      ManualDtoSchema,
+    );
+  }
+  async listManualRevisions(productId: string, manualId: string): Promise<ManualRevisionDto[]> {
+    return this.getJson(
+      `/products/${encodeURIComponent(productId)}/manuals/${encodeURIComponent(manualId)}/revisions`,
+      z.array(ManualRevisionDtoSchema),
+    );
+  }
+  async createManualRevision(
+    productId: string,
+    manualId: string,
+    body: CreateRevisionRequest,
+  ): Promise<ManualRevisionDto> {
+    return this.sendJson(
+      "POST",
+      `/products/${encodeURIComponent(productId)}/manuals/${encodeURIComponent(manualId)}/revisions`,
+      body,
+      ManualRevisionDtoSchema,
+    );
+  }
+  async publishManualRevision(
+    productId: string,
+    manualId: string,
+    revisionId: string,
+  ): Promise<ManualRevisionDto> {
+    return this.sendJson(
+      "POST",
+      `/products/${encodeURIComponent(productId)}/manuals/${encodeURIComponent(manualId)}/revisions/${encodeURIComponent(revisionId)}/publish`,
+      undefined,
+      ManualRevisionDtoSchema,
+    );
+  }
+
+  // -- Product & Manufacturing — runs / units / EOL (P2) --------------------
+
+  async listProductRuns(productId: string): Promise<RunDto[]> {
+    return this.getJson(`/products/${encodeURIComponent(productId)}/runs`, z.array(RunDtoSchema));
+  }
+  async createRun(productId: string, body: CreateRunRequest): Promise<RunDto> {
+    return this.sendJson("POST", `/products/${encodeURIComponent(productId)}/runs`, body, RunDtoSchema);
+  }
+  async getRun(runId: string): Promise<RunDto | null> {
+    try {
+      return await this.getJson(`/runs/${encodeURIComponent(runId)}`, RunDtoSchema);
+    } catch (e) {
+      if (e instanceof DpRestError && e.status === 404) return null;
+      throw e;
+    }
+  }
+  async patchRun(runId: string, body: PatchRunRequest): Promise<RunDto> {
+    return this.sendJson("PATCH", `/runs/${encodeURIComponent(runId)}`, body, RunDtoSchema);
+  }
+  async listRunUnits(runId: string): Promise<UnitDto[]> {
+    return this.getJson(`/runs/${encodeURIComponent(runId)}/units`, z.array(UnitDtoSchema));
+  }
+  async allocateUnits(runId: string, body: AllocateUnitsRequest): Promise<UnitAllocationDto> {
+    return this.sendJson("POST", `/runs/${encodeURIComponent(runId)}/units`, body, UnitAllocationDtoSchema);
+  }
+  async getUnit(unitId: string): Promise<UnitDto | null> {
+    try {
+      return await this.getJson(`/units/${encodeURIComponent(unitId)}`, UnitDtoSchema);
+    } catch (e) {
+      if (e instanceof DpRestError && e.status === 404) return null;
+      throw e;
+    }
+  }
+  async patchUnit(unitId: string, body: PatchUnitRequest): Promise<UnitDto> {
+    return this.sendJson("PATCH", `/units/${encodeURIComponent(unitId)}`, body, UnitDtoSchema);
+  }
+  /** Absolute URL of the printable QR SVG label for a unit. */
+  unitQrSvgUrl(unitId: string): string {
+    return `${this.client.baseUrl}/units/${encodeURIComponent(unitId)}/qr.svg`;
+  }
+  async listUnitEol(unitId: string): Promise<EolReportDto[]> {
+    return this.getJson(`/units/${encodeURIComponent(unitId)}/eol`, z.array(EolReportDtoSchema));
+  }
+  async recordEol(unitId: string, body: RecordEolRequest): Promise<EolReportDto> {
+    return this.sendJson("POST", `/units/${encodeURIComponent(unitId)}/eol`, body, EolReportDtoSchema);
+  }
+  async getRunEolSummary(runId: string): Promise<RunEolSummaryDto | null> {
+    try {
+      return await this.getJson(`/runs/${encodeURIComponent(runId)}/eol-summary`, RunEolSummaryDtoSchema);
+    } catch (e) {
+      if (e instanceof DpRestError && e.status === 404) return null;
+      throw e;
+    }
+  }
+  async upsertRunEolSummary(runId: string, body: RunEolSummaryRequest): Promise<RunEolSummaryDto> {
+    return this.sendJson("POST", `/runs/${encodeURIComponent(runId)}/eol-summary`, body, RunEolSummaryDtoSchema);
+  }
+
+  // -- Product & Manufacturing — RMA / Returns (P3) -------------------------
+
+  async listRma(q: ListRmaQuery = {}): Promise<RmaDto[]> {
+    const params = new URLSearchParams();
+    if (q.org_id) params.set("org_id", q.org_id);
+    if (q.status) params.set("status", q.status);
+    if (q.product_id) params.set("product_id", q.product_id);
+    if (q.customer_id) params.set("customer_id", q.customer_id);
+    if (q.unit_id) params.set("unit_id", q.unit_id);
+    const qs = params.toString();
+    return this.getJson(`/rma${qs ? `?${qs}` : ""}`, z.array(RmaDtoSchema));
+  }
+
+  async getRma(id: string): Promise<RmaDto | null> {
+    try {
+      return await this.getJson(`/rma/${encodeURIComponent(id)}`, RmaDtoSchema);
+    } catch (e) {
+      if (e instanceof DpRestError && e.status === 404) return null;
+      throw e;
+    }
+  }
+
+  async createRma(body: CreateRmaRequest): Promise<RmaDto> {
+    return this.sendJson("POST", "/rma", body, RmaDtoSchema);
+  }
+
+  async patchRma(id: string, body: PatchRmaRequest): Promise<RmaDto> {
+    return this.sendJson("PATCH", `/rma/${encodeURIComponent(id)}`, body, RmaDtoSchema);
+  }
+
+  // -- Product & Manufacturing — firmware/software releases ------------------
+
+  async listProductReleases(productId: string, kind?: ReleaseKind): Promise<ProductReleaseDto[]> {
+    const params = new URLSearchParams();
+    if (kind) params.set("kind", kind);
+    const qs = params.toString();
+    return this.getJson(
+      `/products/${encodeURIComponent(productId)}/releases${qs ? `?${qs}` : ""}`,
+      z.array(ProductReleaseDtoSchema),
+    );
+  }
+
+  async createProductRelease(productId: string, body: CreateReleaseRequest): Promise<ProductReleaseDto> {
+    return this.sendJson(
+      "POST",
+      `/products/${encodeURIComponent(productId)}/releases`,
+      body,
+      ProductReleaseDtoSchema,
+    );
+  }
+
+  async patchProductRelease(
+    productId: string,
+    releaseId: string,
+    body: PatchReleaseRequest,
+  ): Promise<ProductReleaseDto> {
+    return this.sendJson(
+      "PATCH",
+      `/products/${encodeURIComponent(productId)}/releases/${encodeURIComponent(releaseId)}`,
+      body,
+      ProductReleaseDtoSchema,
+    );
+  }
+
+  async archiveProductRelease(
+    productId: string,
+    releaseId: string,
+    body: ArchiveReleaseRequest,
+  ): Promise<ProductReleaseDto> {
+    return this.sendJson(
+      "DELETE",
+      `/products/${encodeURIComponent(productId)}/releases/${encodeURIComponent(releaseId)}`,
+      body,
+      ProductReleaseDtoSchema,
     );
   }
 

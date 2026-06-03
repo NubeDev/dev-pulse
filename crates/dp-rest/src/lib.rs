@@ -45,7 +45,12 @@ pub mod issues_read;
 pub mod issues_write;
 pub mod me_identities;
 pub mod openapi;
+pub mod manufacturing;
+pub mod parties;
 pub mod pins;
+pub mod product_manuals;
+pub mod product_releases;
+pub mod products;
 pub mod project_exec_summary;
 pub mod project_issues;
 pub mod project_milestones;
@@ -54,6 +59,7 @@ pub mod project_views;
 pub mod projects;
 pub mod reports;
 pub mod repos;
+pub mod rma;
 pub mod settings;
 pub mod state;
 pub mod tags;
@@ -132,6 +138,12 @@ pub use projects::{
     ArchiveProjectRequest, CreateProjectRequest, ListProjectsQuery, PatchProjectRequest,
     ProjectDto, ProjectListResponse, ProjectStatusDto,
 };
+pub use parties::parties_router;
+pub use products::products_router;
+pub use product_manuals::product_manuals_router;
+pub use product_releases::product_releases_router;
+pub use manufacturing::{manufacturing_public_router, manufacturing_router};
+pub use rma::rma_router;
 pub use project_issues::{
     bulk_add_issues, get_project_for_issue, list_project_issues, project_issues_router,
     remove_project_issue, BulkAddIssuesRequest, BulkAddResult, BulkAddSkipDto,
@@ -146,10 +158,11 @@ pub use project_exec_summary::{
     delete_exec_summary_changelog, delete_exec_summary_document, delete_exec_summary_image,
     get_project_exec_summary, patch_exec_summary_document, patch_project_exec_summary,
     project_exec_summary_blob_router, project_exec_summary_router, proxy_exec_summary_blob,
-    revert_project_exec_summary, submit_project_exec_summary,
+    restore_exec_summary_changelog, revert_project_exec_summary, submit_project_exec_summary,
     upload_exec_summary_document, upload_exec_summary_image,
     ExecSummaryApprovalDto, ExecSummaryApprovalPatch, ExecSummaryApproveBody,
-    ExecSummaryChangelogEntryDto, ExecSummaryChangelogInsertBody, ExecSummaryCommercialDto,
+    ExecSummaryChangelogEntryDto, ExecSummaryChangelogInsertBody,
+    ExecSummaryChangelogRestoreBody, ExecSummaryCommercialDto,
     ExecSummaryCommercialPatch, ExecSummaryCompletionDto, ExecSummaryDocumentDto,
     ExecSummaryDocumentPatchBody, ExecSummaryDto, ExecSummaryHardwareDto,
     ExecSummaryHardwarePatch, ExecSummaryImageDto, ExecSummaryPatchBody,
