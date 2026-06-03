@@ -43,7 +43,7 @@ import type {
   ProjectViewWriteBody,
 } from "../api/schemas/projects.js";
 import { navigate, projectDetailRouteWithParams } from "../routes.js";
-import { orderGateViews } from "./icon-for-name.js";
+import { gateMetaForName, orderGateViews } from "./icon-for-name.js";
 import { useProjectViews, useUpdateProjectView } from "./use-projects-data.js";
 
 const DAY_MS = 86_400_000;
@@ -88,6 +88,16 @@ function toYmd(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
+/** Display label for a view. Gate views (`G1`…`G8`) expand to the
+ *  full gate title — e.g. `G1 — Executive Summary` — so the Gantt
+ *  reads like the wizard/strip rather than bare codes. Non-gate views
+ *  keep their stored name. gantt-task-react also surfaces this in its
+ *  default hover tooltip, so the full label shows on hover too. */
+function viewLabel(v: ProjectViewDto): string {
+  const meta = gateMetaForName(v.name);
+  return meta ? `${v.name} — ${meta.tooltip}` : v.name;
+}
+
 function viewProgress(v: ProjectViewDto): number {
   const total = v.total_issue_count ?? 0;
   const open = v.open_issue_count ?? 0;
@@ -117,11 +127,12 @@ function viewToTask(
       : parseYmd(v.start_date!).getTime() + DEFAULT_SPAN_MS;
   }
 
+  const label = viewLabel(v);
   return {
     task: {
       id: v.id,
       type: "task",
-      name: pending ? `${v.name} · unscheduled` : v.name,
+      name: pending ? `${label} · unscheduled` : label,
       start: new Date(startMs),
       end: new Date(Math.max(endMs, startMs + DAY_MS)),
       progress: viewProgress(v),
@@ -345,7 +356,7 @@ export function ProjectViewsGantt({
                 data-testid={`project-views-gantt-schedule-${v.id}`}
                 title={`Schedule "${v.name}" at the suggested dates`}
               >
-                <span className="truncate max-w-[12rem]">{v.name}</span>
+                <span className="truncate max-w-[16rem]">{viewLabel(v)}</span>
                 <span className="opacity-70">· Schedule</span>
               </Button>
             ))}
@@ -488,7 +499,9 @@ function EditViewDatesDialog({
         data-testid="edit-view-dates-dialog"
       >
         <DialogHeader>
-          <DialogTitle>Schedule “{view?.name}”</DialogTitle>
+          <DialogTitle>
+            Schedule “{view ? viewLabel(view) : ""}”
+          </DialogTitle>
           <DialogDescription>
             Set this view's start and due dates. Leave both blank to
             un-schedule it (it returns to the amber pending state).
