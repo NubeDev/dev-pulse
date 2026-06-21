@@ -72,6 +72,27 @@ export function RequirementsSection({
           placeholder="CE, FCC, UL"
         />
       </div>
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        <TextField
+          id="es-lora"
+          label="LoRa"
+          value={r.lora}
+          onCommit={(lora) => patch({ requirements: { lora } })}
+          placeholder="e.g. AU915, SF7–SF12"
+        />
+        <TextField
+          id="es-wifi"
+          label="WiFi"
+          value={r.wifi}
+          onCommit={(wifi) => patch({ requirements: { wifi } })}
+          placeholder="e.g. 2.4 GHz b/g/n, WPA2"
+        />
+      </div>
+      <MarkdownField
+        label="Notes"
+        value={r.notes}
+        onCommit={(notes) => patch({ requirements: { notes } })}
+      />
     </div>
   );
 }

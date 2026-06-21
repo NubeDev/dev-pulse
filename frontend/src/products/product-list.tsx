@@ -21,7 +21,11 @@ import { cn } from "@/lib/utils";
 
 import { api } from "../api/client.js";
 import type { OrgDto } from "../api/client.js";
-import type { ProductDto, ProductStatus } from "../api/schemas/products.js";
+import type {
+  ProductDto,
+  ProductKind,
+  ProductStatus,
+} from "../api/schemas/products.js";
 import { PageHeading } from "../components/page-heading.jsx";
 import {
   navigate,
@@ -32,7 +36,7 @@ import {
   type ProductStatusRoute,
 } from "../routes.js";
 
-import { NewProductDialog } from "./new-product-dialog.js";
+import { KIND_LABEL, NewProductDialog } from "./new-product-dialog.js";
 import { useProducts } from "./use-products-data.js";
 
 const STATUS_LABEL: Record<ProductStatus, string> = {
@@ -51,6 +55,32 @@ export const PRODUCT_STATUS_VARIANT: Record<
   eol: "outline",
   archived: "outline",
 };
+
+/** Colour-code by who makes the product (feedback #1): an in-house
+ *  Nube iO product reads as the brand colour; an OEM product as amber.
+ *  Used by the dot on each card + the detail header. */
+export const PRODUCT_KIND_DOT: Record<ProductKind, string> = {
+  nube_io: "bg-sky-500",
+  oem: "bg-amber-500",
+};
+
+/** Small "Nube iO" / "OEM" pill with a leading colour dot. */
+export function ProductKindBadge({
+  kind,
+}: {
+  kind: ProductKind;
+}): JSX.Element {
+  return (
+    <span
+      className="inline-flex items-center gap-1.5 rounded-full border border-border px-2 py-0.5 text-xs font-medium text-muted-foreground"
+      data-testid="product-kind-badge"
+      data-kind={kind}
+    >
+      <span className={cn("h-1.5 w-1.5 rounded-full", PRODUCT_KIND_DOT[kind])} />
+      {KIND_LABEL[kind]}
+    </span>
+  );
+}
 
 const FILTERS: Array<{ value: ProductStatusRoute | null; label: string }> = [
   { value: null, label: "All" },
@@ -217,13 +247,16 @@ function ProductCard({
             </Badge>
           </div>
         </CardHeader>
-        <CardContent className="flex flex-col gap-1 px-4">
+        <CardContent className="flex flex-col gap-1.5 px-4">
           <span className="font-mono text-xs text-muted-foreground">
             {product.model_number || "—"}
           </span>
-          <span className="truncate text-xs text-muted-foreground">
-            {manufacturer ? manufacturer : "No manufacturer"}
-          </span>
+          <div className="flex items-center justify-between gap-2">
+            <span className="truncate text-xs text-muted-foreground">
+              {manufacturer ? manufacturer : "No manufacturer"}
+            </span>
+            <ProductKindBadge kind={product.kind} />
+          </div>
         </CardContent>
       </Card>
     </a>

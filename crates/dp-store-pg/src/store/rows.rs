@@ -46,7 +46,7 @@ use crate::encode::{
     actor_role_from_text, event_kind_from_text,
     tag_link_kind_from_text, tag_scope_kind_from_text,
     fetch_run_kind_from_text, membership_role_from_text, resource_kind_from_text,
-    product_status_from_text, revision_status_from_text, release_kind_from_text,
+    product_status_from_text, product_kind_from_text, revision_status_from_text, release_kind_from_text,
     run_status_from_text, unit_status_from_text, eol_result_from_text,
     rma_status_from_text,
 };
@@ -729,6 +729,8 @@ pub(super) fn row_to_customer(r: &sqlx::postgres::PgRow) -> Result<Customer, Sto
 pub(super) fn row_to_product(r: &sqlx::postgres::PgRow) -> Result<Product, StoreError> {
     let status_text: String = r.try_get("status").map_err(map_sqlx)?;
     let status = product_status_from_text(&status_text).map_err(invalid)?;
+    let kind_text: String = r.try_get("kind").map_err(map_sqlx)?;
+    let kind = product_kind_from_text(&kind_text).map_err(invalid)?;
     Ok(Product {
         id: r.try_get("id").map_err(map_sqlx)?,
         org_id: r.try_get("org_id").map_err(map_sqlx)?,
@@ -737,6 +739,7 @@ pub(super) fn row_to_product(r: &sqlx::postgres::PgRow) -> Result<Product, Store
         description: r.try_get("description").map_err(map_sqlx)?,
         manufacturer_id: r.try_get("manufacturer_id").map_err(map_sqlx)?,
         status,
+        kind,
         serial_prefix: r.try_get("serial_prefix").map_err(map_sqlx)?,
         serial_format: r.try_get("serial_format").map_err(map_sqlx)?,
         archived_at: r.try_get("archived_at").map_err(map_sqlx)?,

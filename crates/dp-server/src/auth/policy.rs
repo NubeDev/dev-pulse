@@ -292,6 +292,7 @@ mod tests {
             scopes: Vec::new(),
             tenant_id: None,
             teams: Vec::new(),
+            tenant_scope: Vec::new(),
             extra: json!({
                 "oauth": {
                     "github_orgs": if in_allowed { vec!["NubeIO"] } else { vec![] },
@@ -385,6 +386,7 @@ mod tests {
             scopes: Vec::new(),
             tenant_id: None,
             teams: Vec::new(),
+            tenant_scope: Vec::new(),
             extra: json!({
                 "oauth": { "github_orgs": vec!["NubeIO"], "in_allowed_org": true }
             }),

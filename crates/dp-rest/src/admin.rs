@@ -1237,6 +1237,7 @@ mod tests {
             scopes: Vec::new(),
             tenant_id: None,
             teams: Vec::new(),
+            tenant_scope: Vec::new(),
             extra: serde_json::Value::Null,
         };
         admin_router(state)
@@ -1787,6 +1788,7 @@ mod tests {
             scopes: Vec::new(),
             tenant_id: None,
             teams: Vec::new(),
+            tenant_scope: Vec::new(),
             extra: serde_json::Value::Null,
         };
         let app = admin_router(admin_state)

@@ -51,6 +51,45 @@ impl ProductStatus {
     }
 }
 
+/// Who makes the product — an in-house Nube iO product or a re-badged
+/// OEM product. Distinct from [`Product::manufacturer_id`], which
+/// records *which* manufacturer builds it; this is the in-house/OEM
+/// split used to colour-code the catalogue. Mirrors the
+/// `dp_products.kind` text column constrained by the migration CHECK.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductKind {
+    /// In-house Nube iO product. Default for new + backfilled rows.
+    NubeIo,
+    /// Third-party / re-badged OEM product.
+    Oem,
+}
+
+impl ProductKind {
+    /// Wire form used by the SQL column and the JSON envelope.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            ProductKind::NubeIo => "nube_io",
+            ProductKind::Oem => "oem",
+        }
+    }
+
+    /// Parse the SQL / JSON form. Unknown values map to `None`.
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "nube_io" => Some(Self::NubeIo),
+            "oem" => Some(Self::Oem),
+            _ => None,
+        }
+    }
+}
+
+impl Default for ProductKind {
+    fn default() -> Self {
+        Self::NubeIo
+    }
+}
+
 /// One row in `dp_products`. Read shape for the products hub / detail.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Product {
@@ -68,6 +107,8 @@ pub struct Product {
     pub manufacturer_id: Option<Uuid>,
     /// Lifecycle state.
     pub status: ProductStatus,
+    /// In-house Nube iO vs OEM (feedback #1).
+    pub kind: ProductKind,
     /// Serial prefix, e.g. `NB`.
     pub serial_prefix: Option<String>,
     /// Serial template, e.g. `{prefix}-{run_code}-{seq:05}` (§6).
@@ -100,6 +141,8 @@ pub struct ProductUpsert {
     pub manufacturer_id: Option<Uuid>,
     /// Lifecycle state.
     pub status: ProductStatus,
+    /// In-house Nube iO vs OEM (feedback #1).
+    pub kind: ProductKind,
     /// Optional serial prefix.
     pub serial_prefix: Option<String>,
     /// Optional serial template.

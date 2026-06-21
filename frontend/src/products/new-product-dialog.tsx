@@ -34,7 +34,11 @@ import { Spinner } from "@/components/ui/spinner";
 
 import { api } from "../api/client.js";
 import type { OrgDto } from "../api/client.js";
-import type { ProductDto, ProductStatus } from "../api/schemas/products.js";
+import type {
+  ProductDto,
+  ProductKind,
+  ProductStatus,
+} from "../api/schemas/products.js";
 import { navigate, productDetailRoute } from "../routes.js";
 
 import { ManufacturerField } from "./manufacturer-field.js";
@@ -46,6 +50,12 @@ const STATUS_LABEL: Record<ProductStatus, string> = {
   active: "Active",
   eol: "EOL",
   archived: "Archived",
+};
+
+export const KINDS: ProductKind[] = ["nube_io", "oem"];
+export const KIND_LABEL: Record<ProductKind, string> = {
+  nube_io: "Nube iO",
+  oem: "OEM",
 };
 
 // Sentinel for "no manufacturer" — radix Select can't hold an empty
@@ -81,6 +91,7 @@ export function NewProductDialog({
   const [orgId, setOrgId] = useState("");
   const [manufacturerId, setManufacturerId] = useState<string>(NO_MFG);
   const [status, setStatus] = useState<ProductStatus>("draft");
+  const [kind, setKind] = useState<ProductKind>("nube_io");
 
   useEffect(() => {
     if (!open) return;
@@ -88,6 +99,7 @@ export function NewProductDialog({
     setModelNumber("");
     setManufacturerId(NO_MFG);
     setStatus("draft");
+    setKind("nube_io");
     create.reset();
     setOrgId(defaultOrgId ?? orgsQ.data?.[0]?.id ?? "");
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -122,6 +134,7 @@ export function NewProductDialog({
         model_number: modelNumber.trim(),
         manufacturer_id: manufacturerId === NO_MFG ? null : manufacturerId,
         status,
+        kind,
       },
       {
         onSuccess: (product) => {
@@ -217,6 +230,22 @@ export function NewProductDialog({
                 {STATUSES.map((s) => (
                   <SelectItem key={s} value={s}>
                     {STATUS_LABEL[s]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="new-product-kind">Type</Label>
+            <Select value={kind} onValueChange={(v) => setKind(v as ProductKind)}>
+              <SelectTrigger id="new-product-kind" data-testid="new-product-kind">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {KINDS.map((k) => (
+                  <SelectItem key={k} value={k}>
+                    {KIND_LABEL[k]}
                   </SelectItem>
                 ))}
               </SelectContent>

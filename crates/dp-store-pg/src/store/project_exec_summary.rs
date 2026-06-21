@@ -199,6 +199,9 @@ impl PgStore {
         let (power, power_set) = opt_pair!(patch.power);
         let (mounting, mounting_set) = opt_pair!(patch.mounting);
         let (certification, certification_set) = opt_pair!(patch.certification);
+        let (lora, lora_set) = opt_pair!(patch.lora);
+        let (wifi, wifi_set) = opt_pair!(patch.wifi);
+        let (req_notes, req_notes_set) = opt_pair!(patch.req_notes);
 
         let (hardware_features, hardware_features_set) = opt_pair!(patch.hardware_features);
         let (physical_notes, physical_notes_set) = opt_pair!(patch.physical_notes);
@@ -281,6 +284,10 @@ impl PgStore {
 
                 skipped_sections    = CASE WHEN $76 THEN $77 ELSE skipped_sections    END,
 
+                lora                = CASE WHEN $78 THEN $79 ELSE lora                END,
+                wifi                = CASE WHEN $80 THEN $81 ELSE wifi                END,
+                req_notes           = CASE WHEN $82 THEN $83 ELSE req_notes           END,
+
                 updated_at          = now()
             WHERE project_id = $1
             RETURNING *
@@ -325,6 +332,9 @@ impl PgStore {
         .bind(review_notes_set).bind(review_notes)
         .bind(approval_notes_set).bind(approval_notes)
         .bind(skipped_sections_set).bind(&skipped_sections_val)
+        .bind(lora_set).bind(lora)
+        .bind(wifi_set).bind(wifi)
+        .bind(req_notes_set).bind(req_notes)
         .fetch_optional(self.pool.sqlx())
         .await
         .map_err(map_sqlx)?;
@@ -767,6 +777,9 @@ fn row_to_exec_summary(r: &sqlx::postgres::PgRow) -> Result<ProjectExecSummary, 
         power: r.try_get("power").map_err(map_sqlx)?,
         mounting: r.try_get("mounting").map_err(map_sqlx)?,
         certification: r.try_get("certification").map_err(map_sqlx)?,
+        lora: r.try_get("lora").map_err(map_sqlx)?,
+        wifi: r.try_get("wifi").map_err(map_sqlx)?,
+        req_notes: r.try_get("req_notes").map_err(map_sqlx)?,
 
         hardware_features: r.try_get("hardware_features").map_err(map_sqlx)?,
         physical_notes: r.try_get("physical_notes").map_err(map_sqlx)?,

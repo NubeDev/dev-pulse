@@ -29,6 +29,7 @@ import { PackageIcon, PlusIcon, XIcon } from "lucide-react";
 
 import { navigate, productDetailRoute } from "../routes.js";
 
+import { ProductKindBadge } from "./product-list.js";
 import {
   useLinkProductProject,
   useProducts,
@@ -96,6 +97,7 @@ export function ProjectProductsPanel({
                 <span className="shrink-0 font-mono text-xs text-muted-foreground">
                   {p.model_number}
                 </span>
+                <ProductKindBadge kind={p.kind} />
                 <Button
                   variant="ghost"
                   size="icon"

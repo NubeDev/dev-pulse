@@ -44,6 +44,7 @@ async fn boxed_authenticator_forwards_verify_to_inner() {
                 scopes: Vec::new(),
                 tenant_id: None,
                 teams: Vec::new(),
+                tenant_scope: Vec::new(),
                 extra: serde_json::Value::Null,
             })
         }

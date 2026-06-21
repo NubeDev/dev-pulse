@@ -81,7 +81,7 @@ use serde_json::json;
 use dp_domain::eol::{EolResult, EolTestUpsert, RunEolSummaryUpsert};
 use dp_domain::manufacturing::{RunStatus, RunUpsert, UnitStatus};
 use dp_domain::party::{CustomerUpsert, ManufacturerUpsert, PartyListFilter, SupplierUpsert};
-use dp_domain::product::{ProductListFilter, ProductStatus, ProductUpsert};
+use dp_domain::product::{ProductKind, ProductListFilter, ProductStatus, ProductUpsert};
 use dp_domain::product_manual::{ManualUpsert, RevisionStatus, RevisionUpsert};
 use dp_domain::product_release::{ProductReleaseCreate, ProductReleaseUpdate, ReleaseKind};
 use dp_domain::rma::{RmaCreate, RmaFilter, RmaStatus, RmaUpdate};
@@ -2670,6 +2670,7 @@ async fn products_crud_links_and_documents() {
             description: Some("md".into()),
             manufacturer_id: None,
             status: ProductStatus::Active,
+            kind: ProductKind::NubeIo,
             serial_prefix: Some("NB".into()),
             serial_format: Some("{prefix}-{run_code}-{seq:05}".into()),
             created_by: Some(lead.id),
@@ -2688,6 +2689,7 @@ async fn products_crud_links_and_documents() {
             description: None,
             manufacturer_id: None,
             status: ProductStatus::Active,
+            kind: ProductKind::NubeIo,
             serial_prefix: None,
             serial_format: None,
             created_by: None,
@@ -2764,6 +2766,7 @@ async fn manuals_publish_supersedes_prior() {
             description: None,
             manufacturer_id: None,
             status: ProductStatus::Active,
+            kind: ProductKind::NubeIo,
             serial_prefix: None,
             serial_format: None,
             created_by: None,
@@ -2845,6 +2848,7 @@ async fn product_releases_crud() {
             description: None,
             manufacturer_id: None,
             status: ProductStatus::Active,
+            kind: ProductKind::NubeIo,
             serial_prefix: None,
             serial_format: None,
             created_by: Some(lead.id),
@@ -2862,6 +2866,7 @@ async fn product_releases_crud() {
             minor: 0,
             release_notes: Some("initial".into()),
             released_at: None,
+            links: vec![],
             created_by: Some(lead.id),
         })
         .await
@@ -2876,6 +2881,7 @@ async fn product_releases_crud() {
         minor: 2,
         release_notes: None,
         released_at: None,
+        links: vec![],
         created_by: None,
     })
     .await
@@ -2889,6 +2895,7 @@ async fn product_releases_crud() {
         minor: 3,
         release_notes: None,
         released_at: None,
+        links: vec![],
         created_by: None,
     })
     .await
@@ -2914,6 +2921,7 @@ async fn product_releases_crud() {
             minor: 1,
             release_notes: Some("patch".into()),
             released_at: None,
+            links: vec![],
         })
         .await
         .unwrap();
@@ -2928,6 +2936,7 @@ async fn product_releases_crud() {
             minor: 9,
             release_notes: None,
             released_at: None,
+            links: vec![],
         })
         .await;
     assert!(matches!(stale, Err(StoreError::Conflict(_))));
@@ -2942,6 +2951,7 @@ async fn product_releases_crud() {
             minor: 2,
             release_notes: None,
             released_at: None,
+            links: vec![],
             created_by: None,
         })
         .await;
@@ -2956,6 +2966,7 @@ async fn product_releases_crud() {
             description: None,
             manufacturer_id: None,
             status: ProductStatus::Active,
+            kind: ProductKind::NubeIo,
             serial_prefix: None,
             serial_format: None,
             created_by: None,
@@ -2975,6 +2986,7 @@ async fn product_releases_crud() {
             minor: 1,
             release_notes: None,
             released_at: None,
+            links: vec![],
             created_by: None,
         })
         .await;
@@ -3000,6 +3012,7 @@ async fn seed_product_for_runs(s: &PgStore, org: &Org, model: &str, fmt: Option<
         description: None,
         manufacturer_id: None,
         status: ProductStatus::Active,
+        kind: ProductKind::NubeIo,
         serial_prefix: Some("NB".into()),
         serial_format: fmt.map(str::to_string),
         created_by: None,

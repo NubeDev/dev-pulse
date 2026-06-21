@@ -147,6 +147,12 @@ pub struct ExecSummaryRequirementsDto {
     #[allow(missing_docs)] pub power: Option<String>,
     #[allow(missing_docs)] pub mounting: Option<String>,
     #[allow(missing_docs)] pub certification: Option<String>,
+    /// LoRa details — free text (feedback #3).
+    #[allow(missing_docs)] pub lora: Option<String>,
+    /// WiFi details — free text (feedback #3).
+    #[allow(missing_docs)] pub wifi: Option<String>,
+    /// General free-text notes on the section (feedback #3).
+    #[allow(missing_docs)] pub notes: Option<String>,
 }
 
 /// Hardware section (form tab 04). Reference images live in
@@ -436,6 +442,9 @@ fn build_exec_summary_dto(
                 power: s.power,
                 mounting: s.mounting,
                 certification: s.certification,
+                lora: s.lora,
+                wifi: s.wifi,
+                notes: s.req_notes,
             },
             ExecSummaryHardwareDto {
                 hardware_features: s.hardware_features,
@@ -554,6 +563,9 @@ pub struct ExecSummaryRequirementsPatch {
     #[allow(missing_docs)] #[serde(default, skip_serializing_if = "Option::is_none")] pub power: Option<Option<String>>,
     #[allow(missing_docs)] #[serde(default, skip_serializing_if = "Option::is_none")] pub mounting: Option<Option<String>>,
     #[allow(missing_docs)] #[serde(default, skip_serializing_if = "Option::is_none")] pub certification: Option<Option<String>>,
+    #[allow(missing_docs)] #[serde(default, skip_serializing_if = "Option::is_none")] pub lora: Option<Option<String>>,
+    #[allow(missing_docs)] #[serde(default, skip_serializing_if = "Option::is_none")] pub wifi: Option<Option<String>>,
+    #[allow(missing_docs)] #[serde(default, skip_serializing_if = "Option::is_none")] pub notes: Option<Option<String>>,
 }
 
 /// Patch payload for the Hardware section.
@@ -642,6 +654,9 @@ impl ExecSummaryPatchBody {
             out.power = r.power;
             out.mounting = r.mounting;
             out.certification = r.certification;
+            out.lora = r.lora;
+            out.wifi = r.wifi;
+            out.req_notes = r.notes;
         }
         if let Some(h) = self.hardware {
             out.hardware_features = h.hardware_features;

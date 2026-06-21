@@ -17,6 +17,11 @@ import { isoDateTime, uuid } from "./common.js";
 export const ProductStatusSchema = z.enum(["draft", "active", "eol", "archived"]);
 export type ProductStatus = z.infer<typeof ProductStatusSchema>;
 
+/** In-house Nube iO vs re-badged OEM product (feedback #1). Distinct
+ *  from `manufacturer_id`, which records *which* manufacturer. */
+export const ProductKindSchema = z.enum(["nube_io", "oem"]);
+export type ProductKind = z.infer<typeof ProductKindSchema>;
+
 export const ProductDtoSchema = z.object({
   id: uuid,
   org_id: uuid,
@@ -25,6 +30,7 @@ export const ProductDtoSchema = z.object({
   description: z.string().nullable().optional(),
   manufacturer_id: uuid.nullable().optional(),
   status: ProductStatusSchema,
+  kind: ProductKindSchema,
   serial_prefix: z.string().nullable().optional(),
   serial_format: z.string().nullable().optional(),
   archived_at: isoDateTime.nullable().optional(),
@@ -59,6 +65,7 @@ export type CreateProductRequest = {
   description?: string | null;
   manufacturer_id?: string | null;
   status?: ProductStatus;
+  kind?: ProductKind;
   serial_prefix?: string | null;
   serial_format?: string | null;
 };
@@ -70,6 +77,7 @@ export type PatchProductRequest = {
   description?: string | null;
   manufacturer_id?: string | null;
   status: ProductStatus;
+  kind: ProductKind;
   serial_prefix?: string | null;
   serial_format?: string | null;
 };

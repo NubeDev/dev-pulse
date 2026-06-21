@@ -60,6 +60,7 @@ import { api } from "../api/client.js";
 import type {
   PatchProductRequest,
   ProductDto,
+  ProductKind,
   ProductStatus,
 } from "../api/schemas/products.js";
 import { Markdown } from "../components/markdown.jsx";
@@ -74,8 +75,9 @@ import {
 } from "../routes.js";
 import { MarkdownField, TextField } from "./../projects/exec-summary/form-fields.js";
 
+import { KIND_LABEL, KINDS } from "./new-product-dialog.js";
 import { ManufacturerField } from "./manufacturer-field.js";
-import { PRODUCT_STATUS_VARIANT } from "./product-list.js";
+import { PRODUCT_STATUS_VARIANT, ProductKindBadge } from "./product-list.js";
 import { ProductDocumentsSection } from "./product-documents-section.js";
 import { ProductManualsSection } from "./product-manuals-section.js";
 import { ProductProjectsSection } from "./product-projects-section.js";
@@ -109,6 +111,7 @@ function fullPatchBody(
     name: product.name,
     model_number: product.model_number,
     status: product.status,
+    kind: product.kind,
     description: product.description ?? null,
     manufacturer_id: product.manufacturer_id ?? null,
     serial_prefix: product.serial_prefix ?? null,
@@ -234,6 +237,7 @@ function ProductDetailBody({ product }: { product: ProductDto }): JSX.Element {
             {product.manufacturer_id ? (
               <span>· {manufacturer.data?.name ?? "…"}</span>
             ) : null}
+            <ProductKindBadge kind={product.kind} />
           </span>
         }
         trailing={
@@ -421,6 +425,29 @@ function OverviewTab({ product }: { product: ProductDto }): JSX.Element {
                   {STATUSES.map((s) => (
                     <SelectItem key={s} value={s}>
                       {STATUS_LABEL[s]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label className="text-xs font-medium text-muted-foreground">
+                Type
+              </Label>
+              <Select
+                value={product.kind}
+                onValueChange={(v) => {
+                  if (v === product.kind) return;
+                  commit({ kind: v as ProductKind });
+                }}
+              >
+                <SelectTrigger data-testid="product-overview-kind">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {KINDS.map((k) => (
+                    <SelectItem key={k} value={k}>
+                      {KIND_LABEL[k]}
                     </SelectItem>
                   ))}
                 </SelectContent>

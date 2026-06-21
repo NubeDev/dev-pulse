@@ -118,6 +118,12 @@ pub struct ProjectExecSummary {
     pub mounting: Option<String>,
     /// Certification notes (short text).
     pub certification: Option<String>,
+    /// LoRa details — free text, e.g. "AU915, SF7–SF12" (feedback #3).
+    pub lora: Option<String>,
+    /// WiFi details — free text, e.g. "2.4 GHz b/g/n, WPA2" (feedback #3).
+    pub wifi: Option<String>,
+    /// General free-text notes on the Requirements section (feedback #3).
+    pub req_notes: Option<String>,
 
     // Hardware section ---------------------------------------------
     /// Hardware features (markdown).
@@ -334,6 +340,15 @@ pub struct ProjectExecSummaryPatch {
     #[allow(missing_docs)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub certification: Option<Option<String>>,
+    #[allow(missing_docs)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lora: Option<Option<String>>,
+    #[allow(missing_docs)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wifi: Option<Option<String>>,
+    #[allow(missing_docs)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub req_notes: Option<Option<String>>,
 
     // Hardware
     #[allow(missing_docs)]
@@ -434,6 +449,9 @@ impl ProjectExecSummaryPatch {
             power: Some(s.power.clone()),
             mounting: Some(s.mounting.clone()),
             certification: Some(s.certification.clone()),
+            lora: Some(s.lora.clone()),
+            wifi: Some(s.wifi.clone()),
+            req_notes: Some(s.req_notes.clone()),
 
             hardware_features: Some(s.hardware_features.clone()),
             physical_notes: Some(s.physical_notes.clone()),

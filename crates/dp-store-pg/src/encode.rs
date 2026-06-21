@@ -11,7 +11,7 @@ use dp_domain::fetch::{FetchRunKind, ResourceKind};
 use dp_domain::membership::MembershipRole;
 use dp_domain::eol::EolResult;
 use dp_domain::manufacturing::{RunStatus, UnitStatus};
-use dp_domain::product::ProductStatus;
+use dp_domain::product::{ProductKind, ProductStatus};
 use dp_domain::rma::RmaStatus;
 use dp_domain::product_manual::RevisionStatus;
 use dp_domain::product_release::ReleaseKind;
@@ -196,6 +196,15 @@ pub(crate) fn product_status_to_text(s: ProductStatus) -> &'static str {
 
 pub(crate) fn product_status_from_text(s: &str) -> Result<ProductStatus, String> {
     ProductStatus::from_str(s).ok_or_else(|| format!("unknown product status: {s}"))
+}
+
+#[allow(dead_code)] // symmetry with `*_from_text`; store writes use `.as_str()` directly.
+pub(crate) fn product_kind_to_text(s: ProductKind) -> &'static str {
+    s.as_str()
+}
+
+pub(crate) fn product_kind_from_text(s: &str) -> Result<ProductKind, String> {
+    ProductKind::from_str(s).ok_or_else(|| format!("unknown product kind: {s}"))
 }
 
 // ---- RevisionStatus (manual revisions, P1) --------------------------

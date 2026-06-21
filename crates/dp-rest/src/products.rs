@@ -23,7 +23,7 @@ use starter_spi::blob::{meta_keys, BlobKey, BlobRef, PutOptions};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-use dp_domain::product::{Product, ProductListFilter, ProductStatus, ProductUpsert};
+use dp_domain::product::{Product, ProductKind, ProductListFilter, ProductStatus, ProductUpsert};
 use dp_domain::store::{StoreError, DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT};
 
 use crate::audit::{self, Principal};
@@ -71,6 +71,33 @@ impl From<ProductStatusDto> for ProductStatus {
     }
 }
 
+/// Wire form of [`ProductKind`] — in-house Nube iO vs OEM (feedback #1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductKindDto {
+    /// In-house Nube iO product.
+    NubeIo,
+    /// Third-party / re-badged OEM product.
+    Oem,
+}
+
+impl From<ProductKind> for ProductKindDto {
+    fn from(k: ProductKind) -> Self {
+        match k {
+            ProductKind::NubeIo => Self::NubeIo,
+            ProductKind::Oem => Self::Oem,
+        }
+    }
+}
+impl From<ProductKindDto> for ProductKind {
+    fn from(k: ProductKindDto) -> Self {
+        match k {
+            ProductKindDto::NubeIo => Self::NubeIo,
+            ProductKindDto::Oem => Self::Oem,
+        }
+    }
+}
+
 /// One product row on the wire.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ProductDto {
@@ -88,6 +115,8 @@ pub struct ProductDto {
     pub manufacturer_id: Option<Uuid>,
     /// Lifecycle status.
     pub status: ProductStatusDto,
+    /// In-house Nube iO vs OEM (feedback #1).
+    pub kind: ProductKindDto,
     /// Serial prefix.
     pub serial_prefix: Option<String>,
     /// Serial template.
@@ -114,6 +143,7 @@ impl From<Product> for ProductDto {
             description: p.description,
             manufacturer_id: p.manufacturer_id,
             status: p.status.into(),
+            kind: p.kind.into(),
             serial_prefix: p.serial_prefix,
             serial_format: p.serial_format,
             archived_at: p.archived_at,
@@ -215,6 +245,9 @@ pub struct CreateProductRequest {
     /// Optional status; defaults to `active`.
     #[serde(default)]
     pub status: Option<ProductStatusDto>,
+    /// Optional kind; defaults to `nube_io`.
+    #[serde(default)]
+    pub kind: Option<ProductKindDto>,
     /// Optional serial prefix.
     #[serde(default)]
     pub serial_prefix: Option<String>,
@@ -240,6 +273,8 @@ pub struct PatchProductRequest {
     pub manufacturer_id: Option<Uuid>,
     /// Status.
     pub status: ProductStatusDto,
+    /// Kind — in-house Nube iO vs OEM (feedback #1).
+    pub kind: ProductKindDto,
     /// Optional serial prefix.
     #[serde(default)]
     pub serial_prefix: Option<String>,
@@ -417,6 +452,7 @@ pub async fn create_product(
         description: body.description,
         manufacturer_id: body.manufacturer_id,
         status: body.status.map(Into::into).unwrap_or(ProductStatus::Active),
+        kind: body.kind.map(Into::into).unwrap_or(ProductKind::NubeIo),
         serial_prefix: body.serial_prefix,
         serial_format: body.serial_format,
         created_by: Some(principal.actor_user_id),
@@ -448,6 +484,7 @@ pub async fn patch_product(
         description: body.description,
         manufacturer_id: body.manufacturer_id,
         status: body.status.into(),
+        kind: body.kind.into(),
         serial_prefix: body.serial_prefix,
         serial_format: body.serial_format,
         created_by: None,

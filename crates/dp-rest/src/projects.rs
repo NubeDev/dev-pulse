@@ -56,6 +56,7 @@ use uuid::Uuid;
 use dp_domain::project::{
     Project, ProjectListFilter, ProjectStatus, ProjectUpsert,
 };
+use dp_domain::project_exec_summary::ProjectExecSummaryPatch;
 use dp_domain::store::{StoreError, DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT};
 
 use crate::audit::{self, Principal};
@@ -500,6 +501,32 @@ pub async fn create_project(
         project.id.to_string(),
     )
     .await?;
+    // Feedback #6: seed the exec summary's target release date from the
+    // project's due date on create — one initial source of truth. Both
+    // fields then edit independently (seed-once, not a live mirror), so
+    // the ES can deliberately diverge later. Best-effort: a seed failure
+    // must not fail project creation, so we log-and-continue.
+    if let Some(due_at) = project.due_at {
+        let patch = ProjectExecSummaryPatch {
+            target_release_date: Some(Some(due_at.date_naive())),
+            ..Default::default()
+        };
+        if let Err(e) = async {
+            state.store.upsert_project_exec_summary(project.id).await?;
+            state
+                .store
+                .patch_project_exec_summary(project.id, &patch)
+                .await
+        }
+        .await
+        {
+            tracing::warn!(
+                project_id = %project.id,
+                error = %e,
+                "failed to seed exec summary target_release_date from project due_at",
+            );
+        }
+    }
     Ok(Json(project.into()))
 }
 
@@ -980,6 +1007,7 @@ mod tests {
             scopes: Vec::new(),
             tenant_id: None,
             teams: Vec::new(),
+            tenant_scope: Vec::new(),
             extra: serde_json::Value::Null,
         };
         projects_router(app_state)

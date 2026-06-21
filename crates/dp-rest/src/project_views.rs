@@ -1002,6 +1002,7 @@ mod tests {
             scopes: Vec::new(),
             tenant_id: None,
             teams: Vec::new(),
+            tenant_scope: Vec::new(),
             extra: serde_json::Value::Null,
         };
         project_views_router(app_state)

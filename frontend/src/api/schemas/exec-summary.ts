@@ -65,6 +65,12 @@ export const ExecSummaryRequirementsSchema = z.object({
   power: z.string().nullable().optional(),
   mounting: z.string().nullable().optional(),
   certification: z.string().nullable().optional(),
+  /** LoRa details — free text, e.g. "AU915, SF7–SF12" (feedback #3). */
+  lora: z.string().nullable().optional(),
+  /** WiFi details — free text, e.g. "2.4 GHz b/g/n, WPA2" (feedback #3). */
+  wifi: z.string().nullable().optional(),
+  /** General free-text notes on the Requirements section (feedback #3). */
+  notes: z.string().nullable().optional(),
 });
 export type ExecSummaryRequirements = z.infer<
   typeof ExecSummaryRequirementsSchema

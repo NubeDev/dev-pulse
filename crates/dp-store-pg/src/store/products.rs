@@ -20,7 +20,7 @@ use super::rows::{
 use super::{map_sqlx, not_found, PgStore};
 
 const PRODUCT_COLS: &str = "id, org_id, name, model_number, description, manufacturer_id, \
-    status, serial_prefix, serial_format, archived_at, created_by, created_at, \
+    status, kind, serial_prefix, serial_format, archived_at, created_by, created_at, \
     updated_at, version";
 
 impl PgStore {
@@ -103,9 +103,9 @@ impl PgStore {
     ) -> Result<Product, StoreError> {
         let sql = format!(
             r#"INSERT INTO dp_products
-                   (org_id, name, model_number, description, manufacturer_id, status,
+                   (org_id, name, model_number, description, manufacturer_id, status, kind,
                     serial_prefix, serial_format, created_by)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
                RETURNING {PRODUCT_COLS}"#
         );
         let row = sqlx::query(&sql)
@@ -115,6 +115,7 @@ impl PgStore {
             .bind(u.description.as_deref())
             .bind(u.manufacturer_id)
             .bind(u.status.as_str())
+            .bind(u.kind.as_str())
             .bind(u.serial_prefix.as_deref())
             .bind(u.serial_format.as_deref())
             .bind(u.created_by)
@@ -133,7 +134,7 @@ impl PgStore {
         let sql = format!(
             r#"UPDATE dp_products
                   SET name=$3, model_number=$4, description=$5, manufacturer_id=$6,
-                      status=$7, serial_prefix=$8, serial_format=$9,
+                      status=$7, serial_prefix=$8, serial_format=$9, kind=$10,
                       version = version + 1, updated_at = now()
                 WHERE id=$1 AND version=$2
                RETURNING {PRODUCT_COLS}"#
@@ -148,6 +149,7 @@ impl PgStore {
             .bind(u.status.as_str())
             .bind(u.serial_prefix.as_deref())
             .bind(u.serial_format.as_deref())
+            .bind(u.kind.as_str())
             .fetch_optional(self.pool.sqlx())
             .await
             .map_err(map_sqlx)?;
