@@ -41,11 +41,14 @@
     description. Any per-view descriptive text is limited to the 8
     predefined gate labels.
 
-  **Proposed fix (why it's open):** if per-view descriptions are a real
+  **Proposed fix (why it's open):** Fix the frontend to loop and check each view is created successfully (not fail silently). The frontend creation of gate views fails ~50% of the time, possibly because it adds them too fast without confirmation.
+
+  Future idea if requested: Create a backend YAML/JSON configuration system for gates/views as an alternative approach.
+
+  As a secondary improvement, if per-view descriptions are a real
   requirement, add a nullable `description` column to `dp_project_views`,
   surface it in `ProjectViewDto` / `ProjectViewWriteBody`, and have the
-  tab strip prefer the stored value over the `GATE_META` fallback. Until
-  then, this is a documented limitation, not a code defect.
+  tab strip prefer the stored value over the `GATE_META` fallback.
 
   Related doc: [../projects/MANAGING-VIEWS.md](../projects/MANAGING-VIEWS.md)
   §1 (notes the absence of a description field, but predates the

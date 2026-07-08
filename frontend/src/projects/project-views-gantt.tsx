@@ -10,14 +10,14 @@
  * Dropping it onto the chart (or typing a date into its row) commits
  * the dates and graduates the view to "scheduled".
  *
- * SINGLE SOURCE OF TRUTH: every mutation (drag, inline cell edit,
- * dialog Save) funnels through `commitDates`, which optimistically
- * patches the shared react-query `views` cache *before* the network
- * round-trip. The chart bars, the inline table, and the edit dialog
- * all read from that one cache, so they can never drift apart — the
- * earlier bug (drag updated a private `overrides` map + the dialog
- * held a stale snapshot, so the dialog showed pre-drag dates until a
- * full page refresh) is structurally impossible now.
+ * SINGLE SOURCE OF TRUTH: every mutation (drag or inline cell edit)
+ * funnels through `commitDates`, which optimistically patches the
+ * shared react-query `views` cache *before* the network round-trip.
+ * The chart bars and the inline table both read from that one cache,
+ * so they can never drift apart. There is no separate date-edit
+ * dialog — the inline From/To cells are the editor, and a "hide
+ * dates" toggle in the toolbar collapses the panel to just the name
+ * column when the user wants more room for the chart.
  *
  * Adapted from the portfolio timeline
  * (`reports/portfolio/portfolio-gantt.tsx`) — same `gantt-task-react`
@@ -25,23 +25,14 @@
  * project row.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Gantt, ViewMode, type Task as GanttTask } from "gantt-task-react";
 import "gantt-task-react/dist/index.css";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { DateInput } from "@/components/ui/date-input";
-import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import {
   Empty,
@@ -181,55 +172,77 @@ function viewToTask(
 // calendar header and grid rows exactly.
 // ---------------------------------------------------------------------------
 
-/** Header row — mirrors the chart's `headerHeight`. */
-function ScheduleTaskListHeader({
-  headerHeight,
-  fontFamily,
-  fontSize,
-}: {
+/** Build the task-list header. Reads `minimizedRef` so it can hide the
+ *  From/To columns when the panel is collapsed to names-only; the
+ *  library measures the resulting DOM width, so the chart offsets
+ *  itself automatically. Like the table below, it is created through
+ *  a factory + `useMemo` so its identity is stable across data
+ *  changes (avoids needless reconciliation churn). */
+function makeScheduleTaskListHeader(
+  minimizedRef: React.MutableRefObject<boolean>,
+): React.FC<{
   headerHeight: number;
   rowWidth: string;
   fontFamily: string;
   fontSize: string;
-}): JSX.Element {
-  return (
-    <div
-      className="flex items-center border-b border-r border-border/70 bg-muted/40 text-xs font-medium text-muted-foreground"
-      style={{ height: headerHeight, fontFamily, fontSize, boxSizing: "border-box" }}
-      data-testid="project-views-gantt-table-header"
-    >
+}> {
+  return function ScheduleTaskListHeader({
+    headerHeight,
+    fontFamily,
+    fontSize,
+  }): JSX.Element {
+    const minimized = minimizedRef.current;
+    return (
       <div
-        className="px-3"
-        style={{ minWidth: COL_NAME_W, maxWidth: COL_NAME_W }}
+        className="flex items-center border-b border-r border-border/70 bg-muted/40 text-xs font-medium text-muted-foreground"
+        style={{ height: headerHeight, fontFamily, fontSize, boxSizing: "border-box" }}
+        data-testid="project-views-gantt-table-header"
       >
-        Name
+        <div
+          className="px-3"
+          style={{ minWidth: COL_NAME_W, maxWidth: COL_NAME_W }}
+        >
+          Name
+        </div>
+        {!minimized && (
+          <>
+            <div
+              className="px-2"
+              style={{ minWidth: COL_DATE_W, maxWidth: COL_DATE_W }}
+            >
+              From
+            </div>
+            <div
+              className="px-2"
+              style={{ minWidth: COL_DATE_W, maxWidth: COL_DATE_W }}
+            >
+              To
+            </div>
+          </>
+        )}
       </div>
-      <div
-        className="px-2"
-        style={{ minWidth: COL_DATE_W, maxWidth: COL_DATE_W }}
-      >
-        From
-      </div>
-      <div
-        className="px-2"
-        style={{ minWidth: COL_DATE_W, maxWidth: COL_DATE_W }}
-      >
-        To
-      </div>
-    </div>
-  );
+    );
+  };
 }
 
 /** Build a stable-identity table component. It reads the live view
- *  metadata and commit handler through refs, so the component never
- *  needs to be re-created on data change — the inline date inputs keep
- *  focus across the optimistic re-render that each edit triggers. The
- *  library re-invokes it with fresh `tasks` whenever the cache updates,
- *  so the *rendered* rows still track the latest dates. */
+ *  metadata, commit handler, minimise flag, and navigate handler
+ *  through refs, so the component never needs to be re-created on
+ *  data change — the inline date inputs keep focus across the
+ *  optimistic re-render that each edit triggers. The library
+ *  re-invokes it with fresh `tasks` whenever the cache updates, so
+ *  the *rendered* rows still track the latest dates.
+ *
+ *  When `minimizedRef.current` is true the From/To cells are omitted
+ *  entirely (the panel collapses to names-only); the user toggles
+ *  that from the toolbar. The date edits still come from — and write
+ *  to — the same `commitDates` source of truth as the chart bars, so
+ *  the two surfaces can never disagree regardless of mode. */
 function makeScheduleTaskListTable(
   metaRef: React.MutableRefObject<Map<string, RowMeta>>,
   commitRef: React.MutableRefObject<CommitFn>,
-  openRef: React.MutableRefObject<(viewId: string) => void>,
+  minimizedRef: React.MutableRefObject<boolean>,
+  navigateRef: React.MutableRefObject<(viewId: string) => void>,
 ): React.FC<{
   rowHeight: number;
   rowWidth: string;
@@ -242,6 +255,7 @@ function makeScheduleTaskListTable(
   onExpanderClick: (task: GanttTask) => void;
 }> {
   return function ScheduleTaskListTable({ rowHeight, fontFamily, fontSize, tasks }) {
+    const minimized = minimizedRef.current;
     return (
       <div style={{ fontFamily, fontSize }} data-testid="project-views-gantt-table">
         {tasks.map((t) => {
@@ -258,8 +272,8 @@ function makeScheduleTaskListTable(
             >
               <button
                 type="button"
-                onClick={() => openRef.current(view.id)}
-                title={label}
+                onClick={() => navigateRef.current(view.id)}
+                title={`Open “${label}”`}
                 className={cn(
                   "truncate px-3 text-left text-sm hover:underline",
                   pending && "italic text-muted-foreground",
@@ -268,40 +282,44 @@ function makeScheduleTaskListTable(
               >
                 {label}
               </button>
-              <div
-                className="px-2"
-                style={{ minWidth: COL_DATE_W, maxWidth: COL_DATE_W }}
-              >
-                <DateInput
-                  aria-label={`${view.name} start date`}
-                  data-testid={`project-views-gantt-start-${view.id}`}
-                  value={view.start_date ?? ""}
-                  onChange={(e) =>
-                    void commitRef.current(
-                      view,
-                      e.target.value || null,
-                      view.due_date ?? null,
-                    )
-                  }
-                />
-              </div>
-              <div
-                className="px-2"
-                style={{ minWidth: COL_DATE_W, maxWidth: COL_DATE_W }}
-              >
-                <DateInput
-                  aria-label={`${view.name} due date`}
-                  data-testid={`project-views-gantt-due-${view.id}`}
-                  value={view.due_date ?? ""}
-                  onChange={(e) =>
-                    void commitRef.current(
-                      view,
-                      view.start_date ?? null,
-                      e.target.value || null,
-                    )
-                  }
-                />
-              </div>
+              {!minimized && (
+                <>
+                  <div
+                    className="px-2"
+                    style={{ minWidth: COL_DATE_W, maxWidth: COL_DATE_W }}
+                  >
+                    <DateInput
+                      aria-label={`${view.name} start date`}
+                      data-testid={`project-views-gantt-start-${view.id}`}
+                      value={view.start_date ?? ""}
+                      onChange={(e) =>
+                        void commitRef.current(
+                          view,
+                          e.target.value || null,
+                          view.due_date ?? null,
+                        )
+                      }
+                    />
+                  </div>
+                  <div
+                    className="px-2"
+                    style={{ minWidth: COL_DATE_W, maxWidth: COL_DATE_W }}
+                  >
+                    <DateInput
+                      aria-label={`${view.name} due date`}
+                      data-testid={`project-views-gantt-due-${view.id}`}
+                      value={view.due_date ?? ""}
+                      onChange={(e) =>
+                        void commitRef.current(
+                          view,
+                          view.start_date ?? null,
+                          e.target.value || null,
+                        )
+                      }
+                    />
+                  </div>
+                </>
+              )}
             </div>
           );
         })}
@@ -323,11 +341,11 @@ export function ProjectViewsGantt({
   // workbench tab-strip order); "date" sorts by the bar's start date.
   // Defaults to "view" — we never silently order by date.
   const [orderBy, setOrderBy] = useState<"view" | "date">("view");
-  // The view whose dates are being edited in the click-to-edit dialog.
-  // Stored by *id* (not a snapshot object) so the dialog always renders
-  // from the freshest cached view — this is what keeps it in sync with a
-  // just-dragged / just-typed date instead of showing a stale snapshot.
-  const [editViewId, setEditViewId] = useState<string | null>(null);
+  // Whether the editable From/To date columns are shown alongside the
+  // name in the task-list panel. Collapsing to names-only gives the
+  // chart more horizontal room; the dates can still be adjusted by
+  // dragging the bars. Inline edits and drags share the same state.
+  const [datesMinimized, setDatesMinimized] = useState(false);
 
   // Anchor for pending bars: the project's own start, else its due
   // (back-dated a span), else today. Keeps unscheduled views near the
@@ -372,13 +390,6 @@ export function ProjectViewsGantt({
     });
     return { tasks: out, metaById: meta };
   }, [orderedViews, anchorMs, orderBy]);
-
-  // The view currently open in the dialog, resolved live from the cache
-  // (never a captured snapshot). After any edit the cache updates and
-  // this re-resolves to the fresh dates automatically.
-  const editView = editViewId
-    ? metaById.get(editViewId)?.view ?? null
-    : null;
 
   // Views with no dates yet — surfaced in the banner so they can be
   // scheduled with a click instead of having to find + drag the bar.
@@ -433,12 +444,26 @@ export function ProjectViewsGantt({
   metaRef.current = metaById;
   const commitRef = useRef<CommitFn>(commitDates);
   commitRef.current = commitDates;
-  const openRef = useRef((viewId: string) => setEditViewId(viewId));
-  openRef.current = (viewId: string) => setEditViewId(viewId);
+  const minimizedRef = useRef(datesMinimized);
+  minimizedRef.current = datesMinimized;
+  const navigateRef = useRef((viewId: string) =>
+    navigate(projectDetailRouteWithParams(project.id, { view: viewId })),
+  );
+  navigateRef.current = (viewId: string) =>
+    navigate(projectDetailRouteWithParams(project.id, { view: viewId }));
 
   const TaskListTable = useMemo(
-    () => makeScheduleTaskListTable(metaRef, commitRef, openRef),
+    () =>
+      makeScheduleTaskListTable(metaRef, commitRef, minimizedRef, navigateRef),
     [],
+  );
+  // `datesMinimized` is in the deps so the header is rebuilt on toggle
+  // (the body reads `minimizedRef.current`, but the rebuild is what
+  // actually forces a fresh render of the panel).
+  const TaskListHeader = useMemo(
+    () => makeScheduleTaskListHeader(minimizedRef),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [datesMinimized],
   );
 
   /** Schedule an unscheduled view at its suggested default span (the
@@ -579,16 +604,35 @@ export function ProjectViewsGantt({
             {m.label}
           </Button>
         ))}
+        <Button
+          size="sm"
+          variant="outline"
+          className="ml-3"
+          onClick={() => setDatesMinimized((v) => !v)}
+          data-testid="project-views-gantt-toggle-dates"
+          title={
+            datesMinimized
+              ? "Show the From/To date columns in the task list"
+              : "Hide the From/To date columns (chart bars still show dates)"
+          }
+        >
+          {datesMinimized ? "Show dates" : "Hide dates"}
+        </Button>
         <span className="ml-auto text-xs text-muted-foreground">
-          Edit dates inline or drag a bar · click a name to open · amber
-          bars are unscheduled
+          {datesMinimized
+            ? "Dates hidden — drag a bar to adjust, or show dates to edit inline"
+            : "Edit dates inline or drag a bar · amber bars are unscheduled"}
         </span>
       </div>
       <Gantt
         tasks={tasks}
         viewMode={viewMode}
-        listCellWidth={`${COL_NAME_W}px`}
-        TaskListHeader={ScheduleTaskListHeader}
+        listCellWidth={
+          datesMinimized
+            ? `${COL_NAME_W}px`
+            : `${COL_NAME_W + COL_DATE_W * 2}px`
+        }
+        TaskListHeader={TaskListHeader}
         TaskListTable={TaskListTable}
         columnWidth={
           viewMode === ViewMode.Year
@@ -604,173 +648,7 @@ export function ProjectViewsGantt({
         ganttHeight={Math.min(600, Math.max(180, tasks.length * 44 + 8))}
         preStepsCount={2}
         onDateChange={handleDateChange}
-        onClick={(t) => {
-          const m = metaById.get(t.id);
-          if (m) setEditViewId(m.view.id);
-        }}
-      />
-
-      <EditViewDatesDialog
-        view={editView}
-        saving={updateView.isPending}
-        suggestedStart={toYmd(new Date(anchorMs))}
-        suggestedDue={toYmd(new Date(anchorMs + DEFAULT_SPAN_MS))}
-        onOpenChange={(open) => {
-          if (!open) setEditViewId(null);
-        }}
-        onSave={(start, due) =>
-          editView
-            ? commitDates(editView, start, due)
-            : Promise.resolve(false)
-        }
-        onOpenView={() => {
-          if (editView) {
-            navigate(
-              projectDetailRouteWithParams(project.id, { view: editView.id }),
-            );
-          }
-        }}
       />
     </div>
-  );
-}
-
-/**
- * Click-to-edit date picker for a single view's schedule. Mirrors the
- * project-level "Edit timeline" dialog (Start / Due `DateInput`s,
- * blank clears the field). Clearing both dates un-schedules the view —
- * it returns to the amber "pending" state on the chart.
- *
- * `view` is resolved live from the query cache by the parent, so the
- * inputs are seeded from the freshest dates each time the dialog opens.
- * We seed once per opened view (`seededIdRef`) so a background refetch
- * of the same view can't clobber whatever the user is mid-typing.
- */
-function EditViewDatesDialog({
-  view,
-  saving,
-  suggestedStart,
-  suggestedDue,
-  onOpenChange,
-  onSave,
-  onOpenView,
-}: {
-  view: ProjectViewDto | null;
-  saving: boolean;
-  suggestedStart: string;
-  suggestedDue: string;
-  onOpenChange: (open: boolean) => void;
-  onSave: (start: string | null, due: string | null) => Promise<boolean>;
-  onOpenView: () => void;
-}): JSX.Element {
-  const [startDate, setStartDate] = useState("");
-  const [dueDate, setDueDate] = useState("");
-  const seededIdRef = useRef<string | null>(null);
-
-  // Seed the inputs when a view is opened (id transition), not on every
-  // object-identity change — so an optimistic patch / refetch of the
-  // same view doesn't wipe an in-progress edit. An unscheduled view
-  // pre-fills the suggested span so the user can just hit Save; a
-  // scheduled view shows its real dates.
-  useEffect(() => {
-    if (!view) {
-      seededIdRef.current = null;
-      return;
-    }
-    if (seededIdRef.current === view.id) return;
-    seededIdRef.current = view.id;
-    setStartDate(view.start_date ?? suggestedStart);
-    setDueDate(view.due_date ?? suggestedDue);
-  }, [view, suggestedStart, suggestedDue]);
-
-  const rangeError =
-    startDate && dueDate && parseYmd(startDate) > parseYmd(dueDate)
-      ? "Start must be on or before Due."
-      : null;
-
-  const onSubmit = async (e: React.FormEvent): Promise<void> => {
-    e.preventDefault();
-    if (rangeError) return;
-    const ok = await onSave(startDate || null, dueDate || null);
-    if (ok) onOpenChange(false);
-  };
-
-  return (
-    <Dialog open={view !== null} onOpenChange={onOpenChange}>
-      <DialogContent
-        className="sm:max-w-md"
-        data-testid="edit-view-dates-dialog"
-      >
-        <DialogHeader>
-          <DialogTitle>
-            Schedule “{view ? viewLabel(view) : ""}”
-          </DialogTitle>
-          <DialogDescription>
-            Set this view's start and due dates. Leave both blank to
-            un-schedule it (it returns to the amber pending state).
-          </DialogDescription>
-        </DialogHeader>
-
-        <form
-          className="flex flex-col gap-4"
-          onSubmit={(e) => void onSubmit(e)}
-        >
-          <div className="grid grid-cols-2 gap-3">
-            <div className="flex flex-col gap-2">
-              <Label htmlFor="edit-view-start">Start</Label>
-              <DateInput
-                id="edit-view-start"
-                data-testid="edit-view-start"
-                value={startDate}
-                onChange={(e) => setStartDate(e.target.value)}
-              />
-            </div>
-            <div className="flex flex-col gap-2">
-              <Label htmlFor="edit-view-due">Due</Label>
-              <DateInput
-                id="edit-view-due"
-                data-testid="edit-view-due"
-                value={dueDate}
-                onChange={(e) => setDueDate(e.target.value)}
-              />
-            </div>
-          </div>
-
-          {rangeError && (
-            <p className="text-xs text-destructive">{rangeError}</p>
-          )}
-
-          <DialogFooter className="items-center sm:justify-between">
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className="text-muted-foreground"
-              onClick={onOpenView}
-              data-testid="edit-view-open"
-            >
-              Open view →
-            </Button>
-            <div className="flex gap-2">
-              <Button
-                type="button"
-                variant="ghost"
-                onClick={() => onOpenChange(false)}
-                disabled={saving}
-              >
-                Cancel
-              </Button>
-              <Button
-                type="submit"
-                data-testid="edit-view-save"
-                disabled={saving || rangeError !== null}
-              >
-                {saving ? "Saving…" : "Save"}
-              </Button>
-            </div>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
   );
 }

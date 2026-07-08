@@ -3,9 +3,10 @@
 //! toolbar.
 //!
 //! Routes (all gated on `(projects, read|write)` — same lanes as
-//! the §7.1 project CRUD spine; v1 ships private-only views and
-//! the store layer scopes every read by `owner_user_id =
-//! principal`, so cross-user access is invisible at the SQL level):
+//! the §7.1 project CRUD spine; reads return the caller's own views
+//! UNION every `visibility='project'` row on the project, while
+//! writes — create/patch/delete/reorder — stay owner-scoped so only
+//! the gate's owner can mutate a shared view):
 //!
 //! | route                                            | what it does                              |
 //! |--------------------------------------------------|-------------------------------------------|
@@ -157,10 +158,19 @@ pub struct ProjectViewCreateBody {
     /// `[a-z0-9_-]{1,50}`. Validated by `validate_categories`.
     #[serde(default)]
     pub categories: Vec<String>,
+    /// Sharing scope. `"private"` (default — owner-only) or
+    /// `"project"` (visible to every caller with `projects:read`
+    /// on this project). Validated by `validate_visibility`.
+    #[serde(default = "default_visibility")]
+    pub visibility: String,
 }
 
 fn default_sort() -> String {
     "updated_desc".to_string()
+}
+
+fn default_visibility() -> String {
+    "private".to_string()
 }
 
 /// `PATCH /projects/{id}/views/{view_id}` body. v1 mutates all
@@ -245,6 +255,22 @@ fn validate_name(name: &str) -> Result<String, ApiError> {
     Ok(trimmed.to_string())
 }
 
+/// Parse + validate the sharing scope. Accepts (case-insensitive)
+/// `private` (owner-only) and `project` (visible to every project
+/// reader). Unknown values → 400 `invalid_visibility`.
+fn validate_visibility(v: &str) -> Result<ProjectViewVisibility, ApiError> {
+    let trimmed = v.trim();
+    match ProjectViewVisibility::from_str(trimmed) {
+        Some(vis) => Ok(vis),
+        None => Err(ApiError::BadRequest {
+            code: "invalid_visibility",
+            message: format!(
+                "unknown visibility `{trimmed}` (expected `private` or `project`)"
+            ),
+        }),
+    }
+}
+
 /// Decode + validate the raw JSON clauses into the canonical enum.
 /// On any unknown dim, missing required key, or invalid tag-key
 /// grammar, returns a 400 with a stable `invalid_filter` code.
@@ -324,14 +350,13 @@ fn body_to_upsert(body: ProjectViewCreateBody) -> Result<ProjectViewUpsert, ApiE
     validate_sort(&body.sort)?;
     let filter_clauses = validate_filter_clauses(&body.filter_clauses)?;
     let categories = validate_categories(&body.categories)?;
+    let visibility = validate_visibility(&body.visibility)?;
     Ok(ProjectViewUpsert {
         name,
         group_by: body.group_by,
         filter_clauses,
         sort: body.sort,
-        // v1 — private only. Reserved enum slot makes the future
-        // shared-view slice a body field change, not a migration.
-        visibility: ProjectViewVisibility::Private,
+        visibility,
         start_date: body.start_date,
         due_date: body.due_date,
         categories,
@@ -577,8 +602,8 @@ pub async fn update_project_view(
 ) -> Result<Json<ProjectViewDto>, ApiError> {
     ensure_project(&state, project_id).await?;
     // Force the view to actually belong to this project before
-    // we let the update through — the store's by-id+owner key
-    // doesn't enforce the path-project association.
+    // we let the update through — the store's by-id key doesn't
+    // enforce the path-project association.
     let existing = state
         .store
         .get_project_view(view_id, principal.actor_user_id)
@@ -588,6 +613,14 @@ pub async fn update_project_view(
             message: format!("no view with id {view_id}"),
         })?;
     if existing.project_id != project_id {
+        return Err(ApiError::NotFound {
+            code: "view_not_found",
+            message: format!("no view with id {view_id}"),
+        });
+    }
+    // Only the owner may mutate, even on shared (`visibility=project`)
+    // views — readers can consume but not edit someone else's gate.
+    if existing.owner_user_id != principal.actor_user_id {
         return Err(ApiError::NotFound {
             code: "view_not_found",
             message: format!("no view with id {view_id}"),
@@ -645,6 +678,13 @@ pub async fn delete_project_view(
             message: format!("no view with id {view_id}"),
         })?;
     if existing.project_id != project_id {
+        return Err(ApiError::NotFound {
+            code: "view_not_found",
+            message: format!("no view with id {view_id}"),
+        });
+    }
+    // Only the owner may delete, even on shared views.
+    if existing.owner_user_id != principal.actor_user_id {
         return Err(ApiError::NotFound {
             code: "view_not_found",
             message: format!("no view with id {view_id}"),
@@ -803,7 +843,11 @@ mod tests {
                 .lock()
                 .unwrap()
                 .iter()
-                .filter(|v| v.project_id == project_id && v.owner_user_id == owner_user_id)
+                .filter(|v| {
+                    v.project_id == project_id
+                        && (v.owner_user_id == owner_user_id
+                            || v.visibility == ProjectViewVisibility::Project)
+                })
                 .cloned()
                 .collect();
             rows.sort_by_key(|v| (v.position, v.created_at));
@@ -820,7 +864,11 @@ mod tests {
                 .lock()
                 .unwrap()
                 .iter()
-                .find(|v| v.id == id && v.owner_user_id == owner_user_id)
+                .find(|v| {
+                    v.id == id
+                        && (v.owner_user_id == owner_user_id
+                            || v.visibility == ProjectViewVisibility::Project)
+                })
                 .cloned())
         }
 

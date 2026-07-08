@@ -2372,9 +2372,10 @@ pub trait Store: Send + Sync {
     /// List the caller's saved views for a project, ordered by
     /// `position ASC` (then `created_at ASC` as a stable tiebreak
     /// for the unlikely case two rows share a position after a
-    /// partial reorder). v1 scopes to a single owner — shared
-    /// views (`visibility='project'`) are reserved for a later
-    /// slice and never returned here.
+    /// partial reorder). Returns the caller's own views (private
+    /// or project-scoped) UNION every `visibility='project'` row
+    /// on this project — shared views are visible to any reader.
+    /// Mutations remain owner-scoped.
     ///
     /// Default impl returns an empty vec.
     async fn list_project_views(
@@ -2386,9 +2387,9 @@ pub trait Store: Send + Sync {
     }
 
     /// Fetch a single saved view by id. Returns `None` when the
-    /// row is missing or `owner_user_id` does not match (so the
-    /// REST layer can collapse not-mine to 404 without leaking the
-    /// id's existence). Default impl returns `None`.
+    /// row is missing. Returns `Some` when the caller owns it OR
+    /// the row is shared (`visibility='project'`) — the REST layer
+    /// enforces owner-only mutations. Default impl returns `None`.
     async fn get_project_view(
         &self,
         _id: Uuid,

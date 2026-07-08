@@ -609,13 +609,17 @@ impl PgStore {
         project_id: Uuid,
         owner_user_id: Uuid,
     ) -> Result<Vec<ProjectView>, StoreError> {
+        // Caller's own views (private or project-scoped) UNION every
+        // `visibility='project'` row on this project — shared views
+        // are visible to any reader. Mutations stay owner-scoped.
         let rows = sqlx::query(
             r#"SELECT id, project_id, owner_user_id, name, group_by,
                       filter_json, sort, position, visibility,
                       start_date, due_date, categories,
                       created_at, updated_at
                  FROM dp_project_views
-                WHERE project_id = $1 AND owner_user_id = $2
+                WHERE project_id = $1
+                  AND (owner_user_id = $2 OR visibility = 'project')
              ORDER BY position ASC, created_at ASC"#,
         )
         .bind(project_id)
@@ -631,13 +635,17 @@ impl PgStore {
         id: Uuid,
         owner_user_id: Uuid,
     ) -> Result<Option<ProjectView>, StoreError> {
+        // Returns the row if the caller owns it OR it's shared
+        // (`visibility='project'`). Owner-only enforcement for
+        // mutations happens in the REST layer.
         let row_opt = sqlx::query(
             r#"SELECT id, project_id, owner_user_id, name, group_by,
                       filter_json, sort, position, visibility,
                       start_date, due_date, categories,
                       created_at, updated_at
                  FROM dp_project_views
-                WHERE id = $1 AND owner_user_id = $2"#,
+                WHERE id = $1
+                  AND (owner_user_id = $2 OR visibility = 'project')"#,
         )
         .bind(id)
         .bind(owner_user_id)
