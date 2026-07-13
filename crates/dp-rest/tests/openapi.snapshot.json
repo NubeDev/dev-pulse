@@ -142,6 +142,55 @@
         }
       }
     },
+    "/admin/users/{id}": {
+      "put": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "`PUT /admin/users/{id}` — operator edit of a user's profile\n(`name`, `email`) (issue #14). Admin-gated on the same\n`(users, admin)` pair as the role endpoint. Writes a\n`user.update` audit row naming the fields that actually changed.",
+        "operationId": "update_user",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "User id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateUserRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Updated user row",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No editable fields supplied"
+          },
+          "404": {
+            "description": "User not found or deleted"
+          }
+        }
+      }
+    },
     "/admin/users/{id}/anonymise": {
       "post": {
         "tags": [
@@ -11473,6 +11522,10 @@
             ],
             "format": "date",
             "description": "Optional start date for the view's timeline (AU\n`dd/mm/yyyy` in the picker, `YYYY-MM-DD` on the wire)."
+          },
+          "visibility": {
+            "type": "string",
+            "description": "Sharing scope. `\"private\"` (default — owner-only) or\n`\"project\"` (visible to every caller with `projects:read`\non this project). Validated by `validate_visibility`."
           }
         }
       },
@@ -13323,6 +13376,26 @@
               "null"
             ],
             "description": "New name (rename)."
+          }
+        }
+      },
+      "UpdateUserRequest": {
+        "type": "object",
+        "description": "Body for `PUT /admin/users/{id}` (issue #14). Only the\noperator-editable profile fields; `login`/`github_id` are\nGitHub-owned and `role` has its own endpoint. Each field is\noptional: omit to leave unchanged, send `null` to clear.",
+        "properties": {
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Email. Omit to leave unchanged; `null` to clear."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Display name. Omit to leave unchanged; `null` to clear."
           }
         }
       },

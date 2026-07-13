@@ -95,6 +95,7 @@ async fn webhook_github_stub() {}
         crate::admin::anonymise_user,
         crate::admin::export_user,
         crate::admin::set_user_role,
+        crate::admin::update_user,
         crate::me_identities::list_user_identities_admin,
         // Pins (SCOPE-PROJECTS §6).
         crate::pins::list_pins,
@@ -280,6 +281,7 @@ async fn webhook_github_stub() {}
         crate::admin::ExportEvent,
         crate::admin::MembershipDto,
         crate::admin::SetUserRoleRequest,
+        crate::admin::UpdateUserRequest,
         // Pins.
         crate::pins::PinDto,
         crate::pins::PinKindDto,

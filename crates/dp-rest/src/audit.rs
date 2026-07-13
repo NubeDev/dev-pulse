@@ -55,6 +55,11 @@ pub const USER_EXPORT: &str = "user.export";
 /// "every role change this user has gone through".
 /// (DOCS/SCOPE-AUTHZ-USERS.md §3.2).
 pub const USER_ROLE_SET: &str = "user.role_set";
+/// `user.update` — `PUT /admin/users/{id}` (name / email edit,
+/// issue #14). Target carries `user:<id>` plus a `fields:` list of
+/// the columns actually changed so a single query can answer
+/// "what profile edits has this user's row seen?".
+pub const USER_UPDATE: &str = "user.update";
 /// `user.identities_read` — `GET /admin/users/:id/identities`.
 /// Read auditing is deliberate here: the operator inspecting a
 /// user's identity set is a signal worth keeping in the trail

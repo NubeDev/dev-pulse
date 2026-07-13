@@ -99,6 +99,17 @@ export function mockSetUserRole(userId: string, role: UserRole): UserDto {
   return { ...row };
 }
 
+export function mockUpdateUser(
+  userId: string,
+  patch: { name?: string | null; email?: string | null },
+): UserDto {
+  const row = MOCK_USERS.find((u) => u.id === userId);
+  if (!row) throw new Error(`unknown mock user: ${userId}`);
+  if (patch.name !== undefined) row.name = patch.name;
+  if (patch.email !== undefined) row.email = patch.email;
+  return { ...row };
+}
+
 export function mockListUserIdentities(
   userId: string,
 ): AdminUserIdentitiesResponse {

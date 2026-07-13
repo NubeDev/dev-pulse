@@ -231,6 +231,15 @@ impl Store for PgStore {
         self.set_user_role_impl(id, role).await
     }
 
+    async fn update_user(
+        &self,
+        id: Uuid,
+        name: Option<Option<String>>,
+        email: Option<Option<String>>,
+    ) -> Result<User, StoreError> {
+        self.update_user_impl(id, name, email).await
+    }
+
     // ---- identities (users.md §4 Slice A) --------------------------
 
     async fn list_identities_for_user(

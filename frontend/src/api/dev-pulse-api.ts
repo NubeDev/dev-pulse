@@ -17,6 +17,7 @@ import {
   UserDtoSchema,
   SetHomeOrgRequestSchema,
   SetUserRoleRequestSchema,
+  UpdateUserRequestSchema,
   AdminUserIdentitiesResponseSchema,
   type OrgDto,
   type TeamDto,
@@ -24,6 +25,7 @@ import {
   type UserRole,
   type SetHomeOrgRequest,
   type SetUserRoleRequest,
+  type UpdateUserRequest,
   type AdminUserIdentitiesResponse,
 } from "./schemas/directory.js";
 import {
@@ -409,6 +411,17 @@ export class DevPulseApi {
       "PUT",
       `/admin/users/${encodeURIComponent(userId)}/role`,
       SetUserRoleRequestSchema.parse(body),
+      UserDtoSchema,
+    );
+  }
+
+  // Edit a user's profile fields (name / email), issue #14. Only
+  // supplied keys are sent, so the server leaves the rest unchanged.
+  async updateUser(userId: string, patch: UpdateUserRequest): Promise<UserDto> {
+    return this.sendJson(
+      "PUT",
+      `/admin/users/${encodeURIComponent(userId)}`,
+      UpdateUserRequestSchema.parse(patch),
       UserDtoSchema,
     );
   }

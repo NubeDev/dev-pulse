@@ -54,6 +54,14 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
   Table,
   TableBody,
   TableCell,
@@ -63,13 +71,14 @@ import {
 } from "@/components/ui/table";
 
 import { api, StarterError } from "../api/client.js";
-import type { UserDto, UserRole } from "../api/client.js";
+import type { UpdateUserRequest, UserDto, UserRole } from "../api/client.js";
 import { PageHeading } from "../components/page-heading.jsx";
 import {
   MOCK_USERS,
   USE_MOCK,
   mockListUserIdentities,
   mockSetUserRole,
+  mockUpdateUser,
   mockUserExport,
 } from "./mocks.js";
 
@@ -90,6 +99,11 @@ export function AdminUsersPage(): JSX.Element {
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [confirmTarget, setConfirmTarget] = useState<UserDto | null>(null);
   const [typedLogin, setTypedLogin] = useState("");
+  // Edit-profile dialog (issue #14). `editName`/`editEmail` seed from
+  // the target row when the dialog opens.
+  const [editTarget, setEditTarget] = useState<UserDto | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editEmail, setEditEmail] = useState("");
 
   const usersQuery = useQuery({
     queryKey: ["users"],
@@ -157,6 +171,40 @@ export function AdminUsersPage(): JSX.Element {
       setFeedback({
         kind: "ok",
         message: `${updated.login} is now ${updated.role}.`,
+      });
+    },
+  });
+
+  const updateMut = useMutation({
+    mutationFn: async ({
+      user,
+      patch,
+    }: {
+      user: UserDto;
+      patch: UpdateUserRequest;
+    }) => {
+      if (USE_MOCK) {
+        await new Promise((r) => setTimeout(r, 30));
+        return mockUpdateUser(user.id, patch);
+      }
+      return api.updateUser(user.id, patch);
+    },
+    onSuccess: (updated) => {
+      // Fold the canonical row back into the shared cache.
+      const cur = queryClient.getQueryData<UserDto[]>(["users"]);
+      if (cur) {
+        queryClient.setQueryData<UserDto[]>(
+          ["users"],
+          cur.map((u) => (u.id === updated.id ? updated : u)),
+        );
+      }
+      setEditTarget(null);
+      setFeedback({ kind: "ok", message: `Updated ${updated.login}.` });
+    },
+    onError: (err) => {
+      setFeedback({
+        kind: "err",
+        message: err instanceof Error ? err.message : String(err),
       });
     },
   });
@@ -392,6 +440,19 @@ export function AdminUsersPage(): JSX.Element {
                           <Button
                             size="sm"
                             variant="outline"
+                            data-testid={`admin-users-edit-${u.id}`}
+                            onClick={() => {
+                              setFeedback(null);
+                              setEditName(u.name ?? "");
+                              setEditEmail(u.email ?? "");
+                              setEditTarget(u);
+                            }}
+                          >
+                            Edit
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
                             data-testid={`admin-users-export-${u.id}`}
                             disabled={exportMut.isPending}
                             onClick={() => exportMut.mutate(u)}
@@ -433,6 +494,94 @@ export function AdminUsersPage(): JSX.Element {
             </Table>
           </div>
         </CardContent>
+
+        <Dialog
+          open={editTarget !== null}
+          onOpenChange={(open) => {
+            if (!open && !updateMut.isPending) setEditTarget(null);
+          }}
+        >
+          <DialogContent data-testid="edit-user-dialog">
+            <DialogHeader>
+              <DialogTitle>Edit user</DialogTitle>
+              <DialogDescription>
+                Update the display name and email.{" "}
+                <code className="font-mono text-xs">
+                  PUT /admin/users/:id
+                </code>{" "}
+                is gated on{" "}
+                <code className="font-mono text-xs">users:admin</code>. Login is
+                GitHub-owned and role has its own control.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="grid gap-3 py-1">
+              <div className="grid gap-1.5">
+                <Label htmlFor="edit-user-login">Login</Label>
+                <Input
+                  id="edit-user-login"
+                  value={editTarget?.login ?? ""}
+                  disabled
+                  readOnly
+                />
+              </div>
+              <div className="grid gap-1.5">
+                <Label htmlFor="edit-user-name">Name</Label>
+                <Input
+                  id="edit-user-name"
+                  data-testid="edit-user-name"
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  placeholder="Display name"
+                />
+              </div>
+              <div className="grid gap-1.5">
+                <Label htmlFor="edit-user-email">Email</Label>
+                <Input
+                  id="edit-user-email"
+                  data-testid="edit-user-email"
+                  type="email"
+                  value={editEmail}
+                  onChange={(e) => setEditEmail(e.target.value)}
+                  placeholder="user@example.com"
+                />
+              </div>
+            </div>
+            <DialogFooter>
+              <Button
+                variant="outline"
+                disabled={updateMut.isPending}
+                onClick={() => setEditTarget(null)}
+              >
+                Cancel
+              </Button>
+              <Button
+                data-testid="edit-user-save"
+                disabled={updateMut.isPending || editTarget === null}
+                onClick={() => {
+                  if (!editTarget) return;
+                  // Only send fields that actually changed. An emptied
+                  // input clears the field (sends null); the server
+                  // rejects a body with no changed fields, but the
+                  // diff below guarantees at least one when it fires.
+                  const patch: UpdateUserRequest = {};
+                  const nextName = editName.trim() === "" ? null : editName;
+                  const nextEmail = editEmail.trim() === "" ? null : editEmail;
+                  if (nextName !== (editTarget.name ?? null))
+                    patch.name = nextName;
+                  if (nextEmail !== (editTarget.email ?? null))
+                    patch.email = nextEmail;
+                  if (patch.name === undefined && patch.email === undefined) {
+                    setEditTarget(null);
+                    return;
+                  }
+                  updateMut.mutate({ user: editTarget, patch });
+                }}
+              >
+                {updateMut.isPending ? "Saving…" : "Save"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         <AlertDialog
           open={confirmTarget !== null}

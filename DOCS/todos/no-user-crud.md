@@ -2,6 +2,39 @@
 
 Ref: https://github.com/NubeDev/dev-pulse/issues/14
 
+## Resolved
+
+- [x] **Added `PUT /admin/users/{id}`** to edit `name` / `email`
+  (login/github_id stay GitHub-owned; role keeps its own endpoint).
+  Shipped across every layer:
+  - Store trait `update_user` with double-option
+    (`Option<Option<String>>`) semantics — omit = unchanged,
+    `null` = clear, value = set
+    ([crates/dp-domain/src/store.rs](../../crates/dp-domain/src/store.rs)),
+    plus the pg impl `update_user_impl`
+    ([crates/dp-store-pg/src/store/users.rs](../../crates/dp-store-pg/src/store/users.rs)).
+  - Audit verb `user.update` (`user:<id>;fields:<changed>`)
+    ([crates/dp-rest/src/audit.rs](../../crates/dp-rest/src/audit.rs)).
+  - Handler + route, admin-gated on the existing `(users, admin)`
+    pair (no policy change needed)
+    ([crates/dp-rest/src/admin.rs](../../crates/dp-rest/src/admin.rs));
+    OpenAPI path + schema registered and snapshot regenerated.
+  - Frontend: `api.updateUser` + `UpdateUserRequestSchema`
+    ([frontend/src/api/schemas/directory.ts](../../frontend/src/api/schemas/directory.ts)),
+    and an **Edit** dialog per row in the admin users page
+    ([frontend/src/admin/users-page.tsx](../../frontend/src/admin/users-page.tsx))
+    that sends only changed fields.
+  - Tests: `admin_can_update_user_name_and_email_and_audit_lands`,
+    `update_user_omitted_field_is_left_unchanged`,
+    `update_user_empty_body_is_400` (dp-rest), and
+    `update_user_edits_name_and_email` (dp-store-pg integration).
+
+  Note: still no `POST /users` create route — user creation stays
+  implicit via reconciler ingestion, which matches how GitHub owns
+  identity. That was not requested and is intentionally left out.
+
+## Original diagnosis
+
 ## Open
 
 - [ ] **There is no endpoint to update an existing user.** A user's

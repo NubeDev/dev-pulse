@@ -423,6 +423,45 @@ impl PgStore {
         }
     }
 
+    pub(super) async fn update_user_impl(
+        &self,
+        id: Uuid,
+        name: Option<Option<String>>,
+        email: Option<Option<String>>,
+    ) -> Result<User, StoreError> {
+        // COALESCE-free conditional update: each field is only
+        // rewritten when the caller passed `Some(..)`. The `$N::bool`
+        // flags let a single statement express "leave unchanged" vs
+        // "set (possibly to NULL)" without dynamic SQL.
+        let (set_name, name_val) = match name {
+            Some(v) => (true, v),
+            None => (false, None),
+        };
+        let (set_email, email_val) = match email {
+            Some(v) => (true, v),
+            None => (false, None),
+        };
+        let row = sqlx::query(
+            "UPDATE dp_users SET \
+                 name  = CASE WHEN $2 THEN $3 ELSE name  END, \
+                 email = CASE WHEN $4 THEN $5 ELSE email END \
+             WHERE id = $1 AND deleted_at IS NULL \
+             RETURNING id, github_id, login, email, name, role, deleted_at",
+        )
+        .bind(id)
+        .bind(set_name)
+        .bind(name_val)
+        .bind(set_email)
+        .bind(email_val)
+        .fetch_optional(self.pool.sqlx())
+        .await
+        .map_err(map_sqlx)?;
+        match row {
+            Some(r) => row_to_user(&r),
+            None => Err(not_found("user", id)),
+        }
+    }
+
     pub(super) async fn set_primary_identity_impl(
         &self,
         user_id: Uuid,

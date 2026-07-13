@@ -3298,3 +3298,85 @@ async fn rma_crud_and_filters() {
         .unwrap_err();
     assert!(matches!(bad, StoreError::Invalid(_)), "unit must belong to product");
 }
+
+/// Regression for issue #15: `list_users_for_org` must SELECT the
+/// `role` column. The shared `row_to_user` mapper does an
+/// unconditional `try_get("role")`, so a query that omitted the
+/// column failed *every* row and 500'd the whole request — which is
+/// why the assignee picker rendered zero options. This proves the
+/// org-scoped query returns 200 with a populated role.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Docker or DP_TEST_DATABASE_URL"]
+async fn list_users_for_org_includes_role() {
+    let f = fixture().await;
+    let s = f.store();
+
+    let org = seed_org(s, 51, "gh-org").await;
+    let user = seed_user(s, 5101, "member").await;
+    s.set_user_role(user.id, dp_domain::Role::Writer)
+        .await
+        .unwrap();
+    s.upsert_membership(&Membership {
+        user_id: user.id,
+        org_id: org.id,
+        role: MembershipRole::Member,
+        home_org: None,
+        joined_at: Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap(),
+    })
+    .await
+    .unwrap();
+
+    // Before the fix this returned Err(StoreError) → HTTP 500.
+    let listed = s.list_users_for_org(org.id).await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].id, user.id);
+    assert_eq!(
+        listed[0].role,
+        dp_domain::Role::Writer,
+        "role column is populated, not defaulted"
+    );
+}
+
+/// Issue #14: `update_user` edits `name`/`email` with double-option
+/// semantics — `None` leaves a field unchanged, `Some(None)` clears
+/// it, `Some(Some(v))` sets it — and never touches `login`/`role`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Docker or DP_TEST_DATABASE_URL"]
+async fn update_user_edits_name_and_email() {
+    let f = fixture().await;
+    let s = f.store();
+
+    let user = seed_user(s, 6101, "editme").await;
+    s.set_user_role(user.id, dp_domain::Role::Admin)
+        .await
+        .unwrap();
+
+    // Set both fields.
+    let updated = s
+        .update_user(
+            user.id,
+            Some(Some("Grace Hopper".into())),
+            Some(Some("grace@navy.mil".into())),
+        )
+        .await
+        .unwrap();
+    assert_eq!(updated.name.as_deref(), Some("Grace Hopper"));
+    assert_eq!(updated.email.as_deref(), Some("grace@navy.mil"));
+    assert_eq!(updated.login, "editme", "login is immutable here");
+    assert_eq!(updated.role, dp_domain::Role::Admin, "role untouched");
+
+    // Omit name (leave), clear email.
+    let cleared = s
+        .update_user(user.id, None, Some(None))
+        .await
+        .unwrap();
+    assert_eq!(cleared.name.as_deref(), Some("Grace Hopper"), "name kept");
+    assert!(cleared.email.is_none(), "email cleared");
+
+    // Missing user → NotFound.
+    let missing = s
+        .update_user(Uuid::new_v4(), Some(Some("x".into())), None)
+        .await
+        .unwrap_err();
+    assert!(matches!(missing, StoreError::NotFound { .. }));
+}
