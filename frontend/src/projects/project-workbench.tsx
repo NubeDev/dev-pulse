@@ -33,7 +33,12 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
-import type { IssueBucket, IssueListItem, ProjectDto } from "../api/client.js";
+import type {
+  IssueBucket,
+  IssueListItem,
+  ProjectDto,
+  ProjectViewDto,
+} from "../api/client.js";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -330,22 +335,30 @@ export function ProjectWorkbench({
   };
 
   /** Create-from-current — write the new view server-side and
-   *  pivot the URL onto it. The strip is fed by the same query so
-   *  the new tab pops into place on invalidation. */
-  const handleCreateView = (
-    body: Parameters<typeof createView.mutate>[0],
+   *  (optionally) pivot the URL onto it. The strip is fed by the
+   *  same query so the new tab pops into place on invalidation.
+   *
+   *  Awaitable so the wizard can sequence a batch (G1…G8) ONE AT A
+   *  TIME instead of firing eight concurrent POSTs that race (and
+   *  drop ~half the views). The returned DTO lets the caller decide
+   *  navigation: single/custom navigate immediately (`navigate:
+   *  true`); the batch path suppresses the per-view redirect to
+   *  avoid an 8-way URL fight and navigates once at the end. */
+  const handleCreateView = async (
+    body: Parameters<typeof createView.mutateAsync>[0],
     dateDisplay: DateDisplayMode,
-  ): void => {
-    createView.mutate(body, {
-      onSuccess: (v) => {
-        // The tab badge preference is machine-local (keyed by view
-        // id), so it can only be persisted now that the POST has
-        // handed us a real id. `writeDateDisplayMode` no-ops for
-        // the "week" default, so the common case writes nothing.
-        writeDateDisplayMode(v.id, dateDisplay);
-        patchUrl({ view: v.id, group: null, filter: null, sort: null });
-      },
-    });
+    navigateToView: boolean,
+  ): Promise<ProjectViewDto> => {
+    const v = await createView.mutateAsync(body);
+    // The tab badge preference is machine-local (keyed by view
+    // id), so it can only be persisted now that the POST has
+    // handed us a real id. `writeDateDisplayMode` no-ops for
+    // the "week" default, so the common case writes nothing.
+    writeDateDisplayMode(v.id, dateDisplay);
+    if (navigateToView) {
+      patchUrl({ view: v.id, group: null, filter: null, sort: null });
+    }
+    return v;
   };
 
   /** Create-many (the G1–G8 gate progression). Unlike the single

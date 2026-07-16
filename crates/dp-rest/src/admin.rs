@@ -864,6 +864,88 @@ pub async fn set_user_role(
 }
 
 // ---------------------------------------------------------------------------
+// PUT /admin/users/:id
+// ---------------------------------------------------------------------------
+
+/// Deserialize an optional-and-nullable field into `Option<Option<T>>`:
+/// key absent → `None` (leave unchanged), `key: null` → `Some(None)`
+/// (clear), `key: v` → `Some(Some(v))` (set). Paired with
+/// `#[serde(default)]` on the field.
+fn double_option<'de, T, D>(de: D) -> Result<Option<Option<T>>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    Option::<T>::deserialize(de).map(Some)
+}
+
+/// Body for `PUT /admin/users/{id}` (issue #14). Only the
+/// operator-editable profile fields; `login`/`github_id` are
+/// GitHub-owned and `role` has its own endpoint. Each field is
+/// optional: omit to leave unchanged, send `null` to clear.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, ToSchema)]
+pub struct UpdateUserRequest {
+    /// Display name. Omit to leave unchanged; `null` to clear.
+    #[serde(default, deserialize_with = "double_option")]
+    #[schema(nullable, value_type = Option<String>)]
+    pub name: Option<Option<String>>,
+    /// Email. Omit to leave unchanged; `null` to clear.
+    #[serde(default, deserialize_with = "double_option")]
+    #[schema(nullable, value_type = Option<String>)]
+    pub email: Option<Option<String>>,
+}
+
+/// `PUT /admin/users/{id}` — operator edit of a user's profile
+/// (`name`, `email`) (issue #14). Admin-gated on the same
+/// `(users, admin)` pair as the role endpoint. Writes a
+/// `user.update` audit row naming the fields that actually changed.
+#[utoipa::path(
+    put,
+    path = "/admin/users/{id}",
+    params(("id" = Uuid, Path, description = "User id")),
+    request_body = UpdateUserRequest,
+    responses(
+        (status = 200, description = "Updated user row", body = UserDto),
+        (status = 400, description = "No editable fields supplied"),
+        (status = 404, description = "User not found or deleted"),
+    ),
+    tag = "admin",
+)]
+pub async fn update_user(
+    State(state): State<Arc<AdminState>>,
+    Extension(principal): Extension<Principal>,
+    Path(user_id): Path<Uuid>,
+    Json(req): Json<UpdateUserRequest>,
+) -> Result<Json<UserDto>, ApiError> {
+    // Normalise empty strings to NULL-clears and record which fields
+    // are in play for the audit trail.
+    let mut changed: Vec<&str> = Vec::new();
+    let name = req.name.map(|v| {
+        changed.push("name");
+        v.filter(|s| !s.trim().is_empty())
+    });
+    let email = req.email.map(|v| {
+        changed.push("email");
+        v.filter(|s| !s.trim().is_empty())
+    });
+    if changed.is_empty() {
+        return Err(ApiError::BadRequest {
+            code: "no_fields",
+            message: "at least one of name, email must be supplied".into(),
+        });
+    }
+    let updated = state.store.update_user(user_id, name, email).await?;
+    audit::record(
+        state.store.as_ref(),
+        principal.actor_user_id,
+        audit::USER_UPDATE,
+        format!("user:{user_id};fields:{}", changed.join(",")),
+    )
+    .await?;
+    Ok(Json(UserDto::from(updated)))
+}
+
+// ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
 
@@ -913,6 +995,17 @@ pub fn admin_router(state: Arc<AdminState>) -> Router {
             Router::new().route(
                 "/admin/users/{id}/role",
                 axum::routing::put(set_user_role),
+            ),
+            "users",
+            "admin",
+        ))
+        .merge(with_permission(
+            // Operator edit of a user's profile (name / email),
+            // issue #14. Same `(users, admin)` gate as the role
+            // endpoint — both are operator-only writes to a user row.
+            Router::new().route(
+                "/admin/users/{id}",
+                axum::routing::put(update_user),
             ),
             "users",
             "admin",
@@ -1205,6 +1298,24 @@ mod tests {
                 StoreError::NotFound { entity: "user", id: id.to_string() }
             })?;
             row.role = role;
+            Ok(row.clone())
+        }
+        async fn update_user(
+            &self,
+            id: Uuid,
+            name: Option<Option<String>>,
+            email: Option<Option<String>>,
+        ) -> Result<User, StoreError> {
+            let mut users = self.users.lock().unwrap();
+            let row = users.iter_mut().find(|u| u.id == id).ok_or_else(|| {
+                StoreError::NotFound { entity: "user", id: id.to_string() }
+            })?;
+            if let Some(v) = name {
+                row.name = v;
+            }
+            if let Some(v) = email {
+                row.email = v;
+            }
             Ok(row.clone())
         }
     }
@@ -1945,6 +2056,118 @@ mod tests {
             )
             .await
             .unwrap()
+    }
+
+    async fn put_update(
+        router: &Router,
+        target: Uuid,
+        json_body: &str,
+    ) -> axum::response::Response {
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/admin/users/{target}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(json_body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn admin_can_update_user_name_and_email_and_audit_lands() {
+        // issue #14: PUT /admin/users/{id} edits name/email, returns
+        // the updated row, and writes a `user.update` audit row
+        // naming the changed fields.
+        let store = Arc::new(MemStore::default());
+        let actor = Uuid::new_v4();
+        store.seed_user(actor, "actor");
+        let target = Uuid::new_v4();
+        store.users.lock().unwrap().push(User {
+            id: target,
+            github_id: 2,
+            login: "target".into(),
+            name: None,
+            email: None,
+            role: dp_domain::Role::Reader,
+            deleted_at: None,
+        });
+        let app = build_app(store.clone(), Principal { actor_user_id: actor });
+
+        let resp = put_update(
+            &app,
+            target,
+            r#"{"name":"Ada Lovelace","email":"ada@example.com"}"#,
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), 4096).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["name"], "Ada Lovelace");
+        assert_eq!(v["email"], "ada@example.com");
+
+        let row = store.audit_rows();
+        let row = row
+            .iter()
+            .find(|r| r.action == audit::USER_UPDATE)
+            .expect("audit row present");
+        assert_eq!(row.actor_user_id, actor);
+        assert!(row.target.contains(&target.to_string()));
+        assert!(row.target.contains("name"));
+        assert!(row.target.contains("email"));
+    }
+
+    #[tokio::test]
+    async fn update_user_omitted_field_is_left_unchanged() {
+        // Absent key → leave unchanged; only `name` in the body must
+        // not wipe the existing email.
+        let store = Arc::new(MemStore::default());
+        let actor = Uuid::new_v4();
+        store.seed_user(actor, "actor");
+        let target = Uuid::new_v4();
+        store.users.lock().unwrap().push(User {
+            id: target,
+            github_id: 2,
+            login: "target".into(),
+            name: Some("Old".into()),
+            email: Some("keep@example.com".into()),
+            role: dp_domain::Role::Reader,
+            deleted_at: None,
+        });
+        let app = build_app(store.clone(), Principal { actor_user_id: actor });
+
+        let resp = put_update(&app, target, r#"{"name":"New"}"#).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let updated = store
+            .users
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|u| u.id == target)
+            .cloned()
+            .unwrap();
+        assert_eq!(updated.name.as_deref(), Some("New"));
+        assert_eq!(updated.email.as_deref(), Some("keep@example.com"));
+    }
+
+    #[tokio::test]
+    async fn update_user_empty_body_is_400() {
+        // No editable fields → 400 no_fields (don't emit a no-op
+        // audit row).
+        let store = Arc::new(MemStore::default());
+        let actor = Uuid::new_v4();
+        store.seed_user(actor, "actor");
+        let app = build_app(store.clone(), Principal { actor_user_id: actor });
+
+        let resp = put_update(&app, actor, r#"{}"#).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(resp.into_body(), 4096).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["code"], "no_fields");
+        assert!(store.audit_rows().is_empty());
     }
 
     #[tokio::test]

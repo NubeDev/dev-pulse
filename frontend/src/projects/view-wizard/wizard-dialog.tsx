@@ -20,6 +20,7 @@ import {
   ArrowRightIcon,
   CheckIcon,
 } from "lucide-react";
+import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { DateInput } from "@/components/ui/date-input";
@@ -36,7 +37,11 @@ import { Label } from "@/components/ui/label";
 
 import { iconForName } from "../icon-for-name.js";
 
-import type { ProjectViewWriteBody, TagDto } from "../../api/client.js";
+import type {
+  ProjectViewDto,
+  ProjectViewWriteBody,
+  TagDto,
+} from "../../api/client.js";
 
 import {
   VIEW_TEMPLATES,
@@ -63,22 +68,32 @@ export interface NewViewWizardProps {
   };
   busy?: boolean;
   onCancel: () => void;
-  /** Called once for the `single` and `custom` templates.
+  /** Create one view server-side and resolve with the created
+   *  DTO. Used by the `single` and `custom` templates, which the
+   *  wizard awaits (with retry) so a failure surfaces instead of
+   *  vanishing.
    *
    *  `dateDisplay` is the machine-local tab badge preference — it
    *  isn't part of the write body, so the parent persists it
-   *  against each freshly-created view id once the POST resolves. */
-  onSubmit: (
+   *  against each freshly-created view id once the POST resolves.
+   *
+   *  `navigateToView` lets the caller suppress the per-view URL
+   *  redirect. `single`/`custom` pass `true` and navigate
+   *  immediately; the batch path doesn't route through here at
+   *  all. */
+  onCreateView: (
     body: ProjectViewWriteBody,
     dateDisplay: DateDisplayMode,
-  ) => void;
+    navigateToView: boolean,
+  ) => Promise<ProjectViewDto>;
   /** Called once for the `batch` template, with every seed at once.
    *
-   *  The wizard used to loop `onSubmit` per seed, which made each
-   *  POST an independent fire-and-forget mutation — a single 409 or
-   *  dropped request silently left a half-built gate strip. Handing
-   *  the whole set over lets the parent create-and-verify them as
-   *  one unit. */
+   *  The wizard used to loop the single-create per seed, which made
+   *  each POST an independent fire-and-forget mutation — a single
+   *  409 or dropped request silently left a half-built gate strip
+   *  (issue #17). Handing the whole set over lets the parent
+   *  create-and-verify them as one unit: it reconciles against the
+   *  server until every view exists, then navigates once. */
   onSubmitBatch: (
     bodies: ProjectViewWriteBody[],
     dateDisplay: DateDisplayMode,
@@ -92,7 +107,7 @@ export function NewViewWizard({
   current,
   busy,
   onCancel,
-  onSubmit,
+  onCreateView,
   onSubmitBatch,
 }: NewViewWizardProps): JSX.Element {
   const [step, setStep] = useState<Step>("template");
@@ -101,6 +116,10 @@ export function NewViewWizard({
   const [startDate, setStartDate] = useState("");
   const [dueDate, setDueDate] = useState("");
   const [dateDisplay, setDateDisplay] = useState<DateDisplayMode>("week");
+  // In-flight guard for the create sequence. Disables the submit
+  // button and blocks a second submit while a batch is landing one
+  // POST at a time.
+  const [creating, setCreating] = useState(false);
 
   // Reset every time the dialog re-opens so stale state from a
   // previous run doesn't leak.
@@ -112,6 +131,7 @@ export function NewViewWizard({
     setStartDate("");
     setDueDate("");
     setDateDisplay("week");
+    setCreating(false);
   }, [open]);
 
   const pickTemplate = (t: ViewTemplate): void => {
@@ -135,7 +155,7 @@ export function NewViewWizard({
   const trimmed = name.trim();
 
   const canSubmitDetails = ((): boolean => {
-    if (!template || busy) return false;
+    if (!template || busy || creating) return false;
     switch (template.kind) {
       case "batch":
         return (template.batch?.length ?? 0) > 0;
@@ -145,9 +165,37 @@ export function NewViewWizard({
     }
   })();
 
-  const submit = (): void => {
-    if (!template || !canSubmitDetails) return;
+  /** Create a single view with a few retries + short backoff.
+   *  Rethrows the last error if every attempt fails so the caller
+   *  can stop the sequence and surface the failure. */
+  const createWithRetry = async (
+    body: ProjectViewWriteBody,
+    navigateToView: boolean,
+  ): Promise<ProjectViewDto> => {
+    const MAX_ATTEMPTS = 3;
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      try {
+        return await onCreateView(body, dateDisplay, navigateToView);
+      } catch (err) {
+        lastError = err;
+        if (attempt < MAX_ATTEMPTS) {
+          // Linear backoff: 250ms, 500ms.
+          await new Promise((r) => setTimeout(r, 250 * attempt));
+        }
+      }
+    }
+    throw lastError;
+  };
 
+  const submit = (): void => {
+    if (!template || !canSubmitDetails || creating) return;
+
+    // Batch (e.g. G1…G8): hand the whole set to the parent, which
+    // reconciles against the server until every view exists and
+    // navigates once at the end. Unlike single/custom this doesn't
+    // route through `onCreateView`, so there's no per-view redirect
+    // to suppress.
     if (template.kind === "batch" && template.batch) {
       onSubmitBatch(
         template.batch.map((seed) => ({
@@ -165,34 +213,57 @@ export function NewViewWizard({
     }
 
     if (template.kind === "single" && template.seed) {
-      onSubmit(
-        {
-          name: trimmed || template.seed.name,
-          group_by: template.seed.groupBy,
-          filter_clauses: template.seed.filterClauses,
-          sort: current.sort,
-          start_date: startDate || null,
-          due_date: dueDate || null,
-        },
-        dateDisplay,
-      );
-      onCancel();
+      const seed = template.seed;
+      void (async () => {
+        setCreating(true);
+        try {
+          await createWithRetry(
+            {
+              name: trimmed || seed.name,
+              group_by: seed.groupBy,
+              filter_clauses: seed.filterClauses,
+              sort: current.sort,
+              start_date: startDate || null,
+              due_date: dueDate || null,
+            },
+            true,
+          );
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          toast.error(`Couldn't create view: ${msg}`);
+          setCreating(false);
+          return;
+        }
+        setCreating(false);
+        onCancel();
+      })();
       return;
     }
 
     // custom
-    onSubmit(
-      {
-        name: trimmed,
-        group_by: current.groupBy,
-        filter_clauses: current.filterClauses,
-        sort: current.sort,
-        start_date: startDate || null,
-        due_date: dueDate || null,
-      },
-      dateDisplay,
-    );
-    onCancel();
+    void (async () => {
+      setCreating(true);
+      try {
+        await createWithRetry(
+          {
+            name: trimmed,
+            group_by: current.groupBy,
+            filter_clauses: current.filterClauses,
+            sort: current.sort,
+            start_date: startDate || null,
+            due_date: dueDate || null,
+          },
+          true,
+        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        toast.error(`Couldn't create view: ${msg}`);
+        setCreating(false);
+        return;
+      }
+      setCreating(false);
+      onCancel();
+    })();
   };
 
   return (
@@ -258,10 +329,14 @@ export function NewViewWizard({
             ) : (
               <Button
                 onClick={submit}
-                disabled={!canSubmitDetails || !template}
+                disabled={!canSubmitDetails || !template || creating}
                 data-testid="project-view-wizard-submit"
               >
-                {template ? submitButtonLabel(template) : "Create"}
+                {creating
+                  ? "Creating…"
+                  : template
+                    ? submitButtonLabel(template)
+                    : "Create"}
               </Button>
             )}
           </div>

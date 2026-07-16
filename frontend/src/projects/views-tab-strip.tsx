@@ -66,10 +66,17 @@ export interface ViewsTabStripProps {
    *  is loading — the dialog will fetch as a fallback. */
   existingTags: readonly TagDto[] | null;
   onSelectView: (viewId: string | null) => void;
+  /** Create one view server-side. Awaitable so the wizard can
+   *  sequence a batch (G1…G8) one POST at a time instead of racing
+   *  eight concurrent requests. `navigateToView` lets the caller
+   *  suppress the per-view URL redirect for batch creation (the
+   *  wizard navigates once at the end). Resolves with the created
+   *  view. */
   onCreateView: (
     body: ProjectViewWriteBody,
     dateDisplay: DateDisplayMode,
-  ) => void;
+    navigateToView: boolean,
+  ) => Promise<ProjectViewDto>;
   /** Create many views as one verified unit (the G1–G8 gate
    *  progression). Separate from `onCreateView` because the batch
    *  reconciles against the server until every view exists. */
@@ -338,7 +345,7 @@ export function ViewsTabStrip({
         current={current}
         busy={busy}
         onCancel={() => setDialog({ kind: "closed" })}
-        onSubmit={(body, dateDisplay) => onCreateView(body, dateDisplay)}
+        onCreateView={onCreateView}
         onSubmitBatch={(bodies, dateDisplay) =>
           onCreateViewBatch(bodies, dateDisplay)
         }
