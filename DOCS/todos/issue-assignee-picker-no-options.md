@@ -1,6 +1,23 @@
 # TODO — Issue assignee picker shows NO options
 
-## Open
+## Resolved
+
+- [x] **Fixed:** added `u.role` to the `SELECT` in
+  `list_users_for_org_impl`
+  ([crates/dp-store-pg/src/store/orgs.rs:180](../../crates/dp-store-pg/src/store/orgs.rs#L180)),
+  mirroring `list_users_impl`. The org-scoped query now returns 200
+  with a populated `role`, so the assignee / project-lead pickers
+  populate. Regression test: `list_users_for_org_includes_role` in
+  [crates/dp-store-pg/tests/integration.rs](../../crates/dp-store-pg/tests/integration.rs)
+  (runs under `cargo test -p dp-store-pg -- --ignored`). The picker's
+  frontend already surfaces a fetch failure ("Failed to load
+  members.") so the silent-empty state is doubly covered.
+
+  Secondary note (repo collaborators who aren't full GitHub org
+  members are still excluded, since the query inner-joins
+  `dp_memberships`) remains an open product decision — see below.
+
+## Original diagnosis
 
 - [ ] **`GET /users?org_id=…` 500s, so the assignee picker silently
   renders zero options.** Reproduced live against

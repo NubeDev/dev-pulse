@@ -363,6 +363,28 @@ pub trait Store: Send + Sync {
         ))
     }
 
+    /// Update the operator-editable profile fields (`name`, `email`)
+    /// on an existing non-deleted user. `None` leaves that field
+    /// unchanged; `Some(None)` clears it to NULL; `Some(Some(v))`
+    /// sets it. `login`/`github_id`/`role` are intentionally not
+    /// editable here — `login`/`github_id` are GitHub-owned identity
+    /// and `role` has its own audited endpoint (`set_user_role`).
+    /// Returns the post-update row.
+    ///
+    /// Default impl returns `StoreError::Backend` so test fakes that
+    /// don't need the surface keep compiling; production behavior
+    /// lives on `PgStore`.
+    async fn update_user(
+        &self,
+        _id: Uuid,
+        _name: Option<Option<String>>,
+        _email: Option<Option<String>>,
+    ) -> Result<User, StoreError> {
+        Err(StoreError::Backend(
+            "update_user not implemented by this backend".into(),
+        ))
+    }
+
     /// Soft-delete + pseudonymise (TODO §0.5). Rewrites
     /// `login`/`email`/`name` to `deleted-user-<hash>` form, sets
     /// `deleted_at`, leaves the row id stable so referential

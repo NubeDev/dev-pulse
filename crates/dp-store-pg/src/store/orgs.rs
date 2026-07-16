@@ -177,7 +177,7 @@ impl PgStore {
 
     pub(super) async fn list_users_for_org_impl(&self, org_id: Uuid) -> Result<Vec<User>, StoreError> {
         let rows = sqlx::query(
-            "SELECT u.id, u.github_id, u.login, u.email, u.name, u.deleted_at \
+            "SELECT u.id, u.github_id, u.login, u.email, u.name, u.role, u.deleted_at \
              FROM dp_users u \
              JOIN dp_memberships m ON m.user_id = u.id \
              WHERE m.org_id = $1 AND u.deleted_at IS NULL \
