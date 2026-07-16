@@ -50,6 +50,26 @@ export const UpdateUserRequestSchema = z.object({
 });
 export type UpdateUserRequest = z.infer<typeof UpdateUserRequestSchema>;
 
+// Body of PUT /admin/users/{id}/password (issue #14) — operator sets
+// a user's local password without knowing the current one. The server
+// applies the same strength policy as signup and answers 204.
+export const SetUserPasswordRequestSchema = z.object({
+  password: z.string(),
+});
+export type SetUserPasswordRequest = z.infer<
+  typeof SetUserPasswordRequestSchema
+>;
+
+// Body of POST /me/password (issue #14) — self-serve change. The
+// current password is verified server-side before anything is written.
+export const ChangeMyPasswordRequestSchema = z.object({
+  current_password: z.string(),
+  new_password: z.string(),
+});
+export type ChangeMyPasswordRequest = z.infer<
+  typeof ChangeMyPasswordRequestSchema
+>;
+
 // Wire shape of GET /admin/users/{id}/identities (same as
 // GET /me/identities — see dp_rest::me_identities).
 export const AdminUserIdentityDtoSchema = z.object({

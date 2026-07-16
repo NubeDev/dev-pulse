@@ -18,6 +18,8 @@ import {
   SetHomeOrgRequestSchema,
   SetUserRoleRequestSchema,
   UpdateUserRequestSchema,
+  SetUserPasswordRequestSchema,
+  ChangeMyPasswordRequestSchema,
   AdminUserIdentitiesResponseSchema,
   type OrgDto,
   type TeamDto,
@@ -26,6 +28,8 @@ import {
   type SetHomeOrgRequest,
   type SetUserRoleRequest,
   type UpdateUserRequest,
+  type SetUserPasswordRequest,
+  type ChangeMyPasswordRequest,
   type AdminUserIdentitiesResponse,
 } from "./schemas/directory.js";
 import {
@@ -423,6 +427,32 @@ export class DevPulseApi {
       `/admin/users/${encodeURIComponent(userId)}`,
       UpdateUserRequestSchema.parse(patch),
       UserDtoSchema,
+    );
+  }
+
+  // Operator-set a user's password without knowing the current one
+  // (issue #14). The server answers 204 and never echoes the password
+  // back. Throws DpRestError with code `weak_password` (400) when the
+  // password fails the same strength policy signup applies, or
+  // `user_not_found` (404) for a GitHub-only user with no local
+  // account.
+  async setUserPassword(userId: string, password: string): Promise<void> {
+    const body: SetUserPasswordRequest = { password };
+    return this.sendNoContent(
+      "PUT",
+      `/admin/users/${encodeURIComponent(userId)}/password`,
+      SetUserPasswordRequestSchema.parse(body),
+    );
+  }
+
+  // Change your own password (issue #14). The current password is
+  // verified server-side; a wrong one throws DpRestError with code
+  // `wrong_password` (403).
+  async changeMyPassword(req: ChangeMyPasswordRequest): Promise<void> {
+    return this.sendNoContent(
+      "POST",
+      "/me/password",
+      ChangeMyPasswordRequestSchema.parse(req),
     );
   }
 

@@ -44,6 +44,7 @@ pub mod issues;
 pub mod issues_read;
 pub mod issues_write;
 pub mod me_identities;
+pub mod me_password;
 pub mod openapi;
 pub mod manufacturing;
 pub mod parties;
@@ -65,9 +66,10 @@ pub mod state;
 pub mod tags;
 
 pub use admin::{
-    admin_router, anonymise_user, export_user, import_repo, list_runs, AdminState, ExportEvent,
-    FetchRunDto, FetchRunErrorSampleDto, ImportRepoRequest, ImportRepoResponse, MembershipDto,
-    RefreshQuery, RefreshResponse, RunsQuery, UserExport, EXPORT_PAGE_SIZE, RUNS_DEFAULT_LIMIT,
+    admin_router, anonymise_user, export_user, import_repo, list_runs, set_user_password,
+    AdminState, ExportEvent, FetchRunDto, FetchRunErrorSampleDto, ImportRepoRequest,
+    ImportRepoResponse, MembershipDto, RefreshQuery, RefreshResponse, RunsQuery,
+    SetUserPasswordRequest, UserExport, EXPORT_PAGE_SIZE, RUNS_DEFAULT_LIMIT,
     RUNS_MAX_LIMIT,
 };
 pub use app_permissions::{
@@ -191,6 +193,7 @@ pub use state::AppState;
 pub use me_identities::{
     list_me_identities, me_identities_router, MeIdentitiesResponse, MeIdentityDto,
 };
+pub use me_password::{change_my_password, me_password_router, ChangeMyPasswordRequest};
 pub use tags::{
     create_tag, get_tag, link_targets, list_my_tags, list_project_tags, list_tags, tags_router,
     unlink_targets,

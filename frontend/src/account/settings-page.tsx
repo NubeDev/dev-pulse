@@ -35,6 +35,9 @@ import type { SettingDto, TestGithubPatResponse } from "@/api/client";
 
 const QUERY_KEY = ["me", "settings"] as const;
 
+// Mirrors `starter_auth_users::signup::validate::DEFAULT_PASSWORD_MIN_LEN`.
+const PASSWORD_MIN_LEN = 12;
+
 export function SettingsPage(): JSX.Element {
   const query = useQuery({
     queryKey: QUERY_KEY,
@@ -68,7 +71,141 @@ export function SettingsPage(): JSX.Element {
           ))}
         </div>
       )}
+
+      <PasswordCard />
     </div>
+  );
+}
+
+/**
+ * Change your own password (issue #14). Separate from the K/V
+ * settings above: it has its own endpoint (`POST /me/password`), and
+ * unlike a setting the value is write-only — there is no `has_value`
+ * to read back, because the server stores only an argon2 hash.
+ *
+ * An account that signs in with GitHub has no local password; the
+ * server answers `403 password_not_set` there, which the card
+ * surfaces verbatim rather than trying to predict.
+ */
+function PasswordCard(): JSX.Element {
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [done, setDone] = useState(false);
+
+  const mut = useMutation({
+    mutationFn: () =>
+      api.changeMyPassword({ current_password: current, new_password: next }),
+    onSuccess: () => {
+      // Never leave the typed secrets sitting in component state.
+      setCurrent("");
+      setNext("");
+      setConfirm("");
+      setDone(true);
+    },
+  });
+
+  const mismatch = confirm.length > 0 && next !== confirm;
+  // Mirrors the server minimum; the server also enforces a
+  // common-password blocklist and the email-local-part rule, and
+  // remains the authority on all three.
+  const submittable =
+    current.length > 0 && next.length >= PASSWORD_MIN_LEN && next === confirm;
+
+  return (
+    <Card data-testid="password-card">
+      <CardHeader>
+        <div className="flex items-center gap-2">
+          <IconKey className="size-4 text-muted-foreground" />
+          <CardTitle className="text-base">Password</CardTitle>
+        </div>
+        <CardDescription>
+          Change the password you use to sign in. Your current password is
+          required. If you sign in with GitHub, you have no local password —
+          ask an operator to set one.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="grid gap-1.5">
+          <Label htmlFor="pw-current">Current password</Label>
+          <Input
+            id="pw-current"
+            data-testid="pw-current"
+            type="password"
+            autoComplete="current-password"
+            value={current}
+            onChange={(e) => {
+              setCurrent(e.target.value);
+              setDone(false);
+            }}
+          />
+        </div>
+        <div className="grid gap-1.5">
+          <Label htmlFor="pw-new">New password</Label>
+          <Input
+            id="pw-new"
+            data-testid="pw-new"
+            type="password"
+            autoComplete="new-password"
+            value={next}
+            onChange={(e) => {
+              setNext(e.target.value);
+              setDone(false);
+            }}
+            placeholder={`At least ${PASSWORD_MIN_LEN} characters`}
+          />
+        </div>
+        <div className="grid gap-1.5">
+          <Label htmlFor="pw-confirm">Confirm new password</Label>
+          <Input
+            id="pw-confirm"
+            data-testid="pw-confirm"
+            type="password"
+            autoComplete="new-password"
+            value={confirm}
+            onChange={(e) => {
+              setConfirm(e.target.value);
+              setDone(false);
+            }}
+          />
+        </div>
+
+        {mismatch ? (
+          <p data-testid="pw-mismatch" className="text-xs text-destructive">
+            Passwords do not match.
+          </p>
+        ) : null}
+
+        {mut.isError ? (
+          <Alert variant="destructive" data-testid="pw-error">
+            <AlertDescription>
+              {mut.error instanceof Error
+                ? mut.error.message
+                : String(mut.error)}
+            </AlertDescription>
+          </Alert>
+        ) : null}
+
+        {done ? (
+          <Alert data-testid="pw-ok">
+            <AlertDescription>
+              <strong>Password changed.</strong> Your existing sessions stay
+              signed in.
+            </AlertDescription>
+          </Alert>
+        ) : null}
+
+        <div className="flex justify-end">
+          <Button
+            data-testid="pw-save"
+            disabled={!submittable || mut.isPending}
+            onClick={() => mut.mutate()}
+          >
+            {mut.isPending ? "Changing…" : "Change password"}
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 

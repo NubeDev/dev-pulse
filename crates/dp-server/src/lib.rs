@@ -84,6 +84,7 @@ use dp_fetcher::webhook::{self, WebhookMetrics, WebhookSecretSource, WebhookStat
 use dp_rest::{
     admin_router, app_permissions_router, board_links_router, directory_router, inbox_router,
     issue_dates_router, issues_read_router, issues_write_router, me_identities_router,
+    me_password_router,
     pins_router, project_exec_summary_blob_router, project_exec_summary_router,
     project_issues_router, project_milestones_router, project_repos_router,
     project_views_router,
@@ -346,6 +347,11 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
     // (§3.0 / §10) reads from the same row family the OAuth
     // callback writes to. Cheap `Arc` clone — no fan-out cost.
     let identity_store = oauth.identity_store.clone();
+    // Same borrow-before-move for the local-password store: both
+    // `POST /me/password` and `PUT /admin/users/{id}/password`
+    // (issue #14) write through the very row family the OAuth
+    // callback and `create-admin` provision. Cheap `Arc` clone.
+    let user_store = oauth.user_store.clone();
 
     // Default in-process blob store for the project Executive
     // Summary upload + proxy routes. Production binaries swap to
@@ -360,6 +366,7 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
             .with_github_app(github_app.clone())
             .with_scheduler(scheduler.clone())
             .with_identity_store(identity_store)
+            .with_user_store(user_store.clone())
             .with_blob_store(blob_store);
         if let Some(w) = issue_writer {
             s = s.with_issue_writer(w);
@@ -381,7 +388,9 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
         }
         s
     });
-    let admin_state = Arc::new(AdminState::new(scheduler.clone(), store.clone()));
+    let admin_state = Arc::new(
+        AdminState::new(scheduler.clone(), store.clone()).with_users(user_store),
+    );
 
     let reports = reports_router(rest_state.clone());
     let directory = directory_router(rest_state.clone());
@@ -449,6 +458,11 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
     // surface is locked behind its own authz pair (narrower than
     // `users.read`).
     let me_identities = me_identities_router(rest_state.clone());
+    // Self-serve password change (issue #14). Rides the same
+    // `(identities, read)` lane as `/me/identities` — see
+    // `dp_rest::me_password` for why the RBAC gate is deliberately
+    // permissive there (the current-password check is the boundary).
+    let me_password = me_password_router(rest_state.clone());
     // Per-user K/V settings (Account → Settings page). Gated on
     // `(settings, read|write)`. Pinned key catalogue lives in
     // `dp_rest::settings::KEYS` so new settings ship without a
@@ -491,6 +505,7 @@ pub fn build(cfg: BuildConfig) -> Result<Router, BuildError> {
         .merge(issue_dates)
         .merge(inbox)
         .merge(me_identities)
+        .merge(me_password)
         .merge(settings)
         .merge(github_app_routes)
         .merge(parties)

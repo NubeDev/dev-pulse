@@ -16,6 +16,7 @@ use std::sync::Arc;
 use dp_domain::store::Store;
 use dp_fetcher::reconciler::Scheduler;
 use starter_auth_oauth::IdentityStore;
+use starter_auth_users::store::UserStore;
 use starter_spi::blob::BlobStore;
 
 use crate::app_permissions::GitHubAppConfig;
@@ -95,6 +96,18 @@ pub struct AppState {
     /// misconfigured deployment fails loudly instead of silently
     /// returning an empty list.
     pub identity_store: Option<Arc<dyn IdentityStore>>,
+    /// Local-password store handle (`starter_auth_users`), read by
+    /// `POST /me/password` ([`crate::me_password`], issue #14).
+    ///
+    /// Note this is a *different database* from [`Self::store`]:
+    /// passwords live in the auth sqlite file while `dp_users` lives
+    /// in Postgres. Both are keyed by the same UUID, so
+    /// `principal.actor_user_id` addresses the auth row directly.
+    ///
+    /// `None` in test builds and any composition root that has not
+    /// wired a `UserStore`; the handler degrades to a 503 rather than
+    /// silently claiming success, mirroring [`Self::identity_store`].
+    pub user_store: Option<Arc<dyn UserStore>>,
     /// Blob storage backend for the project Executive Summary
     /// image / document upload + proxy routes
     /// ([`crate::project_exec_summary`]). `None` in test builds and
@@ -131,6 +144,7 @@ impl AppState {
             projectv2_mirror: Arc::new(UnconfiguredProjectV2Mirror),
             org_projects_picker: Arc::new(UnconfiguredOrgProjectsPicker),
             identity_store: None,
+            user_store: None,
             blob_store: None,
             public_base_url: None,
             manufacturing_qr_secret: None,
@@ -227,6 +241,13 @@ impl AppState {
         identity_store: Arc<dyn IdentityStore>,
     ) -> Self {
         self.identity_store = Some(identity_store);
+        self
+    }
+
+    /// Wire the local-password store, enabling `POST /me/password`
+    /// ([`Self::user_store`]).
+    pub fn with_user_store(mut self, user_store: Arc<dyn UserStore>) -> Self {
+        self.user_store = Some(user_store);
         self
     }
 }

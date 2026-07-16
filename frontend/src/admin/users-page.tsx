@@ -79,6 +79,7 @@ import {
   mockListUserIdentities,
   mockSetUserRole,
   mockUpdateUser,
+  mockSetUserPassword,
   mockUserExport,
 } from "./mocks.js";
 
@@ -88,6 +89,13 @@ interface Feedback {
 }
 
 type RoleFilter = "all" | UserRole;
+
+// Mirrors `starter_auth_users::signup::validate::DEFAULT_PASSWORD_MIN_LEN`.
+// Deployments can raise it via `SIGNUP_PASSWORD_MIN_LEN`, in which case
+// the server rejects a password this side let through — the error
+// surfaces in the dialog's feedback banner, so the two staying in sync
+// is a nicety, not a correctness requirement.
+const PASSWORD_MIN_LEN = 12;
 
 export function AdminUsersPage(): JSX.Element {
   const auth = useAuth();
@@ -104,6 +112,12 @@ export function AdminUsersPage(): JSX.Element {
   const [editTarget, setEditTarget] = useState<UserDto | null>(null);
   const [editName, setEditName] = useState("");
   const [editEmail, setEditEmail] = useState("");
+  // Password-set dialog (issue #14). `pwTarget` doubles as the open
+  // flag, matching `editTarget` above.
+  const [pwTarget, setPwTarget] = useState<UserDto | null>(null);
+  const [pwValue, setPwValue] = useState("");
+  const [pwConfirm, setPwConfirm] = useState("");
+  const [pwReveal, setPwReveal] = useState(false);
 
   const usersQuery = useQuery({
     queryKey: ["users"],
@@ -208,6 +222,54 @@ export function AdminUsersPage(): JSX.Element {
       });
     },
   });
+
+  const passwordMut = useMutation({
+    mutationFn: async ({
+      user,
+      password,
+    }: {
+      user: UserDto;
+      password: string;
+    }) => {
+      if (USE_MOCK) {
+        await new Promise((r) => setTimeout(r, 30));
+        return mockSetUserPassword(user.id, password);
+      }
+      return api.setUserPassword(user.id, password);
+    },
+    onSuccess: (_void, { user }) => {
+      // Nothing to fold back into the cache — no user row field
+      // changes, and the password deliberately never round-trips.
+      closePasswordDialog();
+      setFeedback({
+        kind: "ok",
+        message: `Password set for ${user.login}. Share it over a trusted channel — it is not recoverable from here.`,
+      });
+    },
+    onError: (err) => {
+      setFeedback({
+        kind: "err",
+        message: err instanceof Error ? err.message : String(err),
+      });
+    },
+  });
+
+  // Clear the typed password on every close, success or cancel — it
+  // should not survive in component state after the dialog goes away.
+  function closePasswordDialog() {
+    setPwTarget(null);
+    setPwValue("");
+    setPwConfirm("");
+    setPwReveal(false);
+  }
+
+  // Mirror the server's minimum so the obvious rejection costs no
+  // round-trip. The server remains the authority — it also checks the
+  // common-password blocklist and the email-local-part rule, which we
+  // deliberately do not duplicate here.
+  const pwMismatch = pwConfirm.length > 0 && pwValue !== pwConfirm;
+  const pwSubmittable =
+    pwValue.length >= PASSWORD_MIN_LEN && pwValue === pwConfirm;
 
   const exportMut = useMutation({
     mutationFn: async (user: UserDto) => {
@@ -453,6 +515,20 @@ export function AdminUsersPage(): JSX.Element {
                           <Button
                             size="sm"
                             variant="outline"
+                            data-testid={`admin-users-password-${u.id}`}
+                            onClick={() => {
+                              setFeedback(null);
+                              setPwValue("");
+                              setPwConfirm("");
+                              setPwReveal(false);
+                              setPwTarget(u);
+                            }}
+                          >
+                            Set password
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
                             data-testid={`admin-users-export-${u.id}`}
                             disabled={exportMut.isPending}
                             onClick={() => exportMut.mutate(u)}
@@ -578,6 +654,100 @@ export function AdminUsersPage(): JSX.Element {
                 }}
               >
                 {updateMut.isPending ? "Saving…" : "Save"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog
+          open={pwTarget !== null}
+          onOpenChange={(open) => {
+            if (!open && !passwordMut.isPending) closePasswordDialog();
+          }}
+        >
+          <DialogContent data-testid="set-password-dialog">
+            <DialogHeader>
+              <DialogTitle>
+                Set password{pwTarget ? ` · ${pwTarget.login}` : ""}
+              </DialogTitle>
+              <DialogDescription>
+                Sets a local password without needing the current one.{" "}
+                <code className="font-mono text-xs">
+                  PUT /admin/users/:id/password
+                </code>{" "}
+                is gated on{" "}
+                <code className="font-mono text-xs">users:admin</code>. The
+                password is not stored anywhere you can read it back — copy it
+                before saving and hand it over on a trusted channel.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="grid gap-3 py-1">
+              <div className="grid gap-1.5">
+                <Label htmlFor="set-password-value">New password</Label>
+                <Input
+                  id="set-password-value"
+                  data-testid="set-password-value"
+                  type={pwReveal ? "text" : "password"}
+                  autoComplete="new-password"
+                  value={pwValue}
+                  onChange={(e) => setPwValue(e.target.value)}
+                  placeholder="At least 12 characters"
+                />
+              </div>
+              <div className="grid gap-1.5">
+                <Label htmlFor="set-password-confirm">Confirm password</Label>
+                <Input
+                  id="set-password-confirm"
+                  data-testid="set-password-confirm"
+                  type={pwReveal ? "text" : "password"}
+                  autoComplete="new-password"
+                  value={pwConfirm}
+                  onChange={(e) => setPwConfirm(e.target.value)}
+                  placeholder="Re-enter to confirm"
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  id="set-password-reveal"
+                  data-testid="set-password-reveal"
+                  type="checkbox"
+                  className="h-3.5 w-3.5"
+                  checked={pwReveal}
+                  onChange={(e) => setPwReveal(e.target.checked)}
+                />
+                <Label
+                  htmlFor="set-password-reveal"
+                  className="text-xs font-normal text-muted-foreground"
+                >
+                  Show password
+                </Label>
+              </div>
+              {pwMismatch ? (
+                <p
+                  data-testid="set-password-mismatch"
+                  className="text-xs text-destructive"
+                >
+                  Passwords do not match.
+                </p>
+              ) : null}
+            </div>
+            <DialogFooter>
+              <Button
+                variant="outline"
+                disabled={passwordMut.isPending}
+                onClick={closePasswordDialog}
+              >
+                Cancel
+              </Button>
+              <Button
+                data-testid="set-password-save"
+                disabled={!pwSubmittable || passwordMut.isPending}
+                onClick={() => {
+                  if (!pwTarget || !pwSubmittable) return;
+                  passwordMut.mutate({ user: pwTarget, password: pwValue });
+                }}
+              >
+                {passwordMut.isPending ? "Setting…" : "Set password"}
               </Button>
             </DialogFooter>
           </DialogContent>

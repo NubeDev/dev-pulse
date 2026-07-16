@@ -38,6 +38,7 @@ use dp_domain::store::{EventActorRow, RepoListFilter, Store, StoreError};
 use dp_fetcher::client::{ClientError, Fetched};
 use dp_fetcher::reconciler::{Scheduler, Scope};
 use serde::{Deserialize, Serialize};
+use starter_auth_users::store::UserStore;
 use std::convert::Infallible;
 use tokio_stream::wrappers::ReceiverStream;
 use utoipa::ToSchema;
@@ -56,12 +57,38 @@ pub struct AdminState {
     /// Persistence handle — every admin handler reads or writes
     /// through it, and the audit log lives here too.
     pub store: Arc<dyn Store>,
+    /// Local-password store (`starter_auth_users`), for
+    /// [`set_user_password`].
+    ///
+    /// This is a **different database** from [`Self::store`]: passwords
+    /// live in the auth sqlite file, `dp_users` lives in Postgres. The
+    /// two are keyed by the same UUID — `run_create_admin` and
+    /// `reconcile_local_admin_dp_users` both bind the auth-store id as
+    /// `dp_users.id`, so a `dp_users.id` from the UI addresses the auth
+    /// row directly with no mapping table.
+    ///
+    /// `None` disables the password route (405-free: it simply isn't
+    /// mounted), which keeps deployments with no local-password store
+    /// and the existing test fixtures building unchanged.
+    pub users: Option<Arc<dyn UserStore>>,
 }
 
 impl AdminState {
-    /// Convenience constructor.
+    /// Convenience constructor. Leaves the password route unmounted —
+    /// see [`Self::with_users`].
     pub fn new(scheduler: Arc<Scheduler>, store: Arc<dyn Store>) -> Self {
-        Self { scheduler, store }
+        Self {
+            scheduler,
+            store,
+            users: None,
+        }
+    }
+
+    /// Attach the local-password store, mounting
+    /// `PUT /admin/users/{id}/password`.
+    pub fn with_users(mut self, users: Arc<dyn UserStore>) -> Self {
+        self.users = Some(users);
+        self
     }
 }
 
@@ -946,6 +973,91 @@ pub async fn update_user(
 }
 
 // ---------------------------------------------------------------------------
+// PUT /admin/users/:id/password
+// ---------------------------------------------------------------------------
+
+/// Body for `PUT /admin/users/{id}/password`.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+pub struct SetUserPasswordRequest {
+    /// The new password. Subject to the same strength policy as
+    /// signup — minimum length, not the email local-part, not in the
+    /// common-password blocklist.
+    pub password: String,
+}
+
+/// `PUT /admin/users/{id}/password` — operator sets a user's local
+/// password without knowing the current one (issue #14).
+///
+/// This is the operator's reset lever: it is the only path by which a
+/// user who has forgotten an unresettable password gets back in, and
+/// the only way a GitHub-OAuth-only user acquires a local password.
+/// Gated on the same `(users, admin)` pair as the role and profile
+/// endpoints.
+///
+/// The `{id}` is a `dp_users.id`, which is byte-identical to the
+/// `starter_auth_users` id (see [`AdminState::users`]) — a user
+/// present in `dp_users` but absent from the auth store (a real
+/// GitHub user who has never had a local account) yields `404`.
+///
+/// Audit: writes [`audit::USER_PASSWORD_SET`] with target
+/// `user:<id>`. The password itself is never logged, never echoed in
+/// the response, and never stored outside the argon2 hash.
+#[utoipa::path(
+    put,
+    path = "/admin/users/{id}/password",
+    params(("id" = Uuid, Path, description = "User whose password to set")),
+    request_body = SetUserPasswordRequest,
+    responses(
+        (status = 204, description = "Password set"),
+        (status = 400, description = "Password failed strength validation"),
+        (status = 404, description = "No such user in the local password store"),
+    ),
+    tag = "admin",
+)]
+pub async fn set_user_password(
+    State(state): State<Arc<AdminState>>,
+    Extension(principal): Extension<Principal>,
+    Path(user_id): Path<Uuid>,
+    Json(req): Json<SetUserPasswordRequest>,
+) -> Result<StatusCode, ApiError> {
+    let users = state.users.as_ref().ok_or_else(|| ApiError::BadRequest {
+        code: "no_password_store",
+        message: "local password store is not configured".into(),
+    })?;
+
+    starter_auth_users::admin::set_password(users.as_ref(), &user_id.to_string(), &req.password)
+        .await
+        .map_err(|e| match e {
+            starter_auth_users::admin::AdminError::Validation(msg) => ApiError::BadRequest {
+                code: "weak_password",
+                message: msg,
+            },
+            // `set_password` reports a missing row as a store error
+            // carrying "user not found" — map it to a real 404 rather
+            // than a 500, since "this user has no local account" is an
+            // ordinary outcome for a GitHub-only user.
+            starter_auth_users::admin::AdminError::Store(msg) if msg.contains("user not found") => {
+                ApiError::NotFound {
+                    code: "user_not_found",
+                    message: format!("no local password account for user {user_id}"),
+                }
+            }
+            other => ApiError::Store(StoreError::Backend(Box::new(std::io::Error::other(
+                format!("set password: {other}"),
+            )))),
+        })?;
+
+    audit::record(
+        state.store.as_ref(),
+        principal.actor_user_id,
+        audit::USER_PASSWORD_SET,
+        format!("user:{user_id}"),
+    )
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
 
@@ -959,7 +1071,25 @@ pub fn admin_router(state: Arc<AdminState>) -> Router {
     // (read|refresh|anonymise|export) registered in
     // `dp_server::auth::policy::register_dev_pulse_resources`.
     use starter_authz::with_permission;
+    // Only mounted when a local-password store is configured; without
+    // one the handler has nothing to write to.
+    let password = if state.users.is_some() {
+        Some(with_permission(
+            // Same `(users, admin)` lane as the role and profile
+            // routes — an operator password reset is the same class
+            // of operator-only write to a user row.
+            Router::new().route(
+                "/admin/users/{id}/password",
+                axum::routing::put(set_user_password),
+            ),
+            "users",
+            "admin",
+        ))
+    } else {
+        None
+    };
     Router::new()
+        .merge(password.unwrap_or_default())
         .merge(with_permission(
             Router::new().route("/admin/refresh", post(refresh)),
             "admin",

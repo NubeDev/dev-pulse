@@ -14,6 +14,8 @@
 //! | [`HOME_ORG_SET`]     | `POST /home-org`                                    |
 //! | [`ADMIN_REFRESH`]    | `POST /admin/refresh`                               |
 //! | [`USER_ANONYMISE`]   | `POST /admin/users/:id/anonymise`                   |
+//! | [`USER_PASSWORD_SET`]     | `PUT /admin/users/{id}/password`               |
+//! | [`USER_PASSWORD_CHANGED`] | `POST /me/password`                           |
 //! | [`USER_EXPORT`]      | `GET /admin/users/:id/export`                       |
 //! | [`RUNS_LIST`]        | `GET /admin/runs`                                   |
 //! | [`AUTH_SIGNED_IN`]   | successful OAuth callback (session minted)          |
@@ -60,6 +62,16 @@ pub const USER_ROLE_SET: &str = "user.role_set";
 /// the columns actually changed so a single query can answer
 /// "what profile edits has this user's row seen?".
 pub const USER_UPDATE: &str = "user.update";
+/// `user.password_set` — `PUT /admin/users/{id}/password` (issue #14).
+/// An operator setting a password they will then hand to someone is a
+/// credential handover; the trail records that it happened and to
+/// whom. Target carries `user:<id>` only — never the password, and
+/// never a hint about it.
+pub const USER_PASSWORD_SET: &str = "user.password_set";
+/// `user.password_changed` — `POST /me/password` (issue #14). The
+/// self-serve counterpart: the actor and the target are the same
+/// user, and the current password was verified before the write.
+pub const USER_PASSWORD_CHANGED: &str = "user.password_changed";
 /// `user.identities_read` — `GET /admin/users/:id/identities`.
 /// Read auditing is deliberate here: the operator inspecting a
 /// user's identity set is a signal worth keeping in the trail

@@ -110,6 +110,19 @@ export function mockUpdateUser(
   return { ...row };
 }
 
+// Operator password set (issue #14). There is nothing to store — the
+// real endpoint writes an argon2 hash to the auth database, which the
+// mock has no equivalent of — so this asserts the user exists and
+// mirrors the server's length rule, letting the dialog's error path be
+// driven without a backend.
+export function mockSetUserPassword(userId: string, password: string): void {
+  const row = MOCK_USERS.find((u) => u.id === userId);
+  if (!row) throw new Error(`unknown mock user: ${userId}`);
+  if (password.length < 12) {
+    throw new Error("password must be at least 12 characters");
+  }
+}
+
 export function mockListUserIdentities(
   userId: string,
 ): AdminUserIdentitiesResponse {

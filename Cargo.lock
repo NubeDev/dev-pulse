@@ -821,6 +821,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "starter-auth-oauth",
+ "starter-auth-users",
  "starter-authz",
  "starter-spi",
  "thiserror 1.0.69",

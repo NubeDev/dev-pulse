@@ -302,6 +302,49 @@
         }
       }
     },
+    "/admin/users/{id}/password": {
+      "put": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "`PUT /admin/users/{id}/password` — operator sets a user's local\npassword without knowing the current one (issue #14).",
+        "description": "This is the operator's reset lever: it is the only path by which a\nuser who has forgotten an unresettable password gets back in, and\nthe only way a GitHub-OAuth-only user acquires a local password.\nGated on the same `(users, admin)` pair as the role and profile\nendpoints.\n\nThe `{id}` is a `dp_users.id`, which is byte-identical to the\n`starter_auth_users` id (see [`AdminState::users`]) — a user\npresent in `dp_users` but absent from the auth store (a real\nGitHub user who has never had a local account) yields `404`.\n\nAudit: writes [`audit::USER_PASSWORD_SET`] with target\n`user:<id>`. The password itself is never logged, never echoed in\nthe response, and never stored outside the argon2 hash.",
+        "operationId": "set_user_password",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "User whose password to set",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetUserPasswordRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Password set"
+          },
+          "400": {
+            "description": "Password failed strength validation"
+          },
+          "404": {
+            "description": "No such user in the local password store"
+          }
+        }
+      }
+    },
     "/admin/users/{id}/role": {
       "put": {
         "tags": [
@@ -1449,6 +1492,40 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/me/password": {
+      "post": {
+        "tags": [
+          "me"
+        ],
+        "summary": "`POST /me/password` — change your own password.",
+        "description": "Audit: writes [`audit::USER_PASSWORD_CHANGED`] with target\n`user:<id>` (actor and target are the same user). The passwords\nthemselves are never logged.",
+        "operationId": "change_my_password",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangeMyPasswordRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Password changed"
+          },
+          "400": {
+            "description": "New password failed strength validation"
+          },
+          "403": {
+            "description": "Current password incorrect, or no local password set"
+          },
+          "503": {
+            "description": "Local password store not wired in this deployment"
           }
         }
       }
@@ -7051,6 +7128,24 @@
             "format": "int64",
             "description": "Number of `dp_user_issue_state` rows touched (inserted +\nupdated). For `mark_all_seen` this is the upsert count from\nthe underlying `mark_issues_seen` call and is reported as the\nlength of the request batch (the store does not surface the\nrow count for that path today).",
             "minimum": 0
+          }
+        }
+      },
+      "ChangeMyPasswordRequest": {
+        "type": "object",
+        "description": "Body for `POST /me/password`.",
+        "required": [
+          "current_password",
+          "new_password"
+        ],
+        "properties": {
+          "current_password": {
+            "type": "string",
+            "description": "The caller's current password. Verified before anything is\nwritten."
+          },
+          "new_password": {
+            "type": "string",
+            "description": "The replacement. Subject to the same strength policy as\nsignup."
           }
         }
       },
@@ -12767,6 +12862,19 @@
                 "description": "New status (defaults to existing value when absent — for a\nfresh row this means [`InboxStatusDto::Inbox`])."
               }
             ]
+          }
+        }
+      },
+      "SetUserPasswordRequest": {
+        "type": "object",
+        "description": "Body for `PUT /admin/users/{id}/password`.",
+        "required": [
+          "password"
+        ],
+        "properties": {
+          "password": {
+            "type": "string",
+            "description": "The new password. Subject to the same strength policy as\nsignup — minimum length, not the email local-part, not in the\ncommon-password blocklist."
           }
         }
       },
