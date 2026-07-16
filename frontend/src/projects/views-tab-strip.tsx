@@ -70,6 +70,13 @@ export interface ViewsTabStripProps {
     body: ProjectViewWriteBody,
     dateDisplay: DateDisplayMode,
   ) => void;
+  /** Create many views as one verified unit (the G1–G8 gate
+   *  progression). Separate from `onCreateView` because the batch
+   *  reconciles against the server until every view exists. */
+  onCreateViewBatch: (
+    bodies: ProjectViewWriteBody[],
+    dateDisplay: DateDisplayMode,
+  ) => void;
   onUpdateView: (viewId: string, body: ProjectViewWriteBody) => void;
   onDeleteView: (viewId: string) => void;
   onReorderViews: (orderedIds: string[]) => void;
@@ -95,6 +102,7 @@ export function ViewsTabStrip({
   existingTags,
   onSelectView,
   onCreateView,
+  onCreateViewBatch,
   onUpdateView,
   onDeleteView,
   onReorderViews,
@@ -330,13 +338,10 @@ export function ViewsTabStrip({
         current={current}
         busy={busy}
         onCancel={() => setDialog({ kind: "closed" })}
-        onSubmit={(body, dateDisplay) => {
-          onCreateView(body, dateDisplay);
-          // The wizard fires many onSubmits back-to-back for the
-          // `batch` template (e.g. G1..G8); for `single`,
-          // `custom`, and `categorised` it fires exactly once and
-          // then cancels itself.
-        }}
+        onSubmit={(body, dateDisplay) => onCreateView(body, dateDisplay)}
+        onSubmitBatch={(bodies, dateDisplay) =>
+          onCreateViewBatch(bodies, dateDisplay)
+        }
       />
 
       <EditViewDialog

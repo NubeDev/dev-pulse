@@ -1,0 +1,27 @@
+{
+  "name": "@dev-pulse/doc-site",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "dev-pulse end-user documentation site (Nextra) — renders content/public",
+  "scripts": {
+    "dev": "next dev --port 3010",
+    "build": "next build",
+    "start": "next start --port 3010",
+    "postbuild": "pagefind --site out --output-path out/_pagefind && touch out/.nojekyll"
+  },
+  "dependencies": {
+    "next": "15.3.5",
+    "nextra": "4.2.17",
+    "nextra-theme-docs": "4.2.17",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.0",
+    "@types/react": "^19.2.17",
+    "pagefind": "^1.5.2",
+    "typescript": "^5.9.3"
+  },
+  "packageManager": "pnpm@10.33.0"
+}

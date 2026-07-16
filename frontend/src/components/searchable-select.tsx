@@ -31,6 +31,10 @@ export interface SearchableSelectProps {
   contentMaxHeight?: string;
   /** Placeholder for the embedded search input. */
   searchPlaceholder?: string;
+  /** Shown when `options` is empty. Lets a caller distinguish "the
+   *  list is genuinely empty" from "the list failed to load" —
+   *  without it both render as the same bland default. */
+  emptyLabel?: string;
 }
 
 export function SearchableSelect({
@@ -43,6 +47,7 @@ export function SearchableSelect({
   id,
   contentMaxHeight = "18rem",
   searchPlaceholder = "Search…",
+  emptyLabel,
   ...rest
 }: SearchableSelectProps): JSX.Element {
   const [open, setOpen] = useState(false);
@@ -133,7 +138,7 @@ export function SearchableSelect({
           >
             {options.length === 0 ? (
               <p className="px-2 py-3 text-xs text-muted-foreground">
-                No options available.
+                {emptyLabel ?? "No options available."}
               </p>
             ) : visibleOptions.length === 0 ? (
               <p className="px-2 py-3 text-xs text-muted-foreground">

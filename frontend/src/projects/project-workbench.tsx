@@ -31,6 +31,7 @@ import {
   PlusIcon,
   SettingsIcon,
 } from "lucide-react";
+import { toast } from "sonner";
 
 import type { IssueBucket, IssueListItem, ProjectDto } from "../api/client.js";
 
@@ -78,6 +79,7 @@ import {
 } from "./project-filter-chips.js";
 import {
   useCreateProjectView,
+  useCreateProjectViewBatch,
   useDeleteProjectView,
   useProjectGroupByOptions,
   useProjectIssues,
@@ -216,11 +218,13 @@ export function ProjectWorkbench({
   const remove = useRemoveIssueFromProject(project.id);
 
   const createView = useCreateProjectView(project.id);
+  const createViewBatch = useCreateProjectViewBatch(project.id);
   const updateView = useUpdateProjectView(project.id);
   const deleteView = useDeleteProjectView(project.id);
   const reorderViews = useReorderProjectViews(project.id);
   const viewMutationsBusy =
     createView.isPending ||
+    createViewBatch.isPending ||
     updateView.isPending ||
     deleteView.isPending ||
     reorderViews.isPending;
@@ -340,6 +344,40 @@ export function ProjectWorkbench({
         // the "week" default, so the common case writes nothing.
         writeDateDisplayMode(v.id, dateDisplay);
         patchUrl({ view: v.id, group: null, filter: null, sort: null });
+      },
+    });
+  };
+
+  /** Create-many (the G1–G8 gate progression). Unlike the single
+   *  create, this reconciles: it keeps re-listing and re-POSTing
+   *  until every requested view exists, so a partial strip can't be
+   *  left behind. The URL pivots onto the first view of the batch
+   *  once the whole set has settled. */
+  const handleCreateViewBatch = (
+    bodies: Parameters<typeof createViewBatch.mutate>[0],
+    dateDisplay: DateDisplayMode,
+  ): void => {
+    createViewBatch.mutate(bodies, {
+      onSuccess: ({ views, missing }) => {
+        for (const v of views) writeDateDisplayMode(v.id, dateDisplay);
+
+        const firstName = bodies[0]?.name;
+        const first =
+          firstName === undefined
+            ? undefined
+            : views.find((v) => v.name === firstName);
+        if (first) {
+          patchUrl({ view: first.id, group: null, filter: null, sort: null });
+        }
+
+        if (missing.length > 0) {
+          toast.error(
+            `Could not create ${missing.length} of ${bodies.length} views: ${missing.join(", ")}`,
+          );
+        }
+      },
+      onError: (e) => {
+        toast.error(`Could not create views: ${e.message}`);
       },
     });
   };
@@ -477,6 +515,7 @@ export function ProjectWorkbench({
           existingTags={tagsQuery.data ?? null}
           onSelectView={selectView}
           onCreateView={handleCreateView}
+          onCreateViewBatch={handleCreateViewBatch}
           onUpdateView={handleUpdateView}
           onDeleteView={handleDeleteView}
           onReorderViews={(ids) => reorderViews.mutate(ids)}

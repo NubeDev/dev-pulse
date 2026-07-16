@@ -8,6 +8,7 @@ import { ThemeProvider } from "@kit/theme";
 
 import "./globals.css";
 import { App } from "./app.jsx";
+import { Toaster } from "@/components/ui/sonner";
 
 /**
  * One QueryClient per browser session. The report pages added in stage
@@ -39,6 +40,12 @@ createRoot(root).render(
     <ThemeProvider defaultTheme="system">
       <QueryClientProvider client={queryClient}>
         <App />
+        {/* Sonner's render target. Without this mounted, every
+            `toast()` call in the app is a silent no-op — errors the
+            user needs to see (a view batch that couldn't finish, a
+            failed schedule edit) would vanish. Inside ThemeProvider
+            because the Toaster reads the active theme. */}
+        <Toaster richColors closeButton />
       </QueryClientProvider>
     </ThemeProvider>
   </StrictMode>,

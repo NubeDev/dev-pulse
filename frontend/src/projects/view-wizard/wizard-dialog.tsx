@@ -63,16 +63,24 @@ export interface NewViewWizardProps {
   };
   busy?: boolean;
   onCancel: () => void;
-  /** Called once per view to create. The wizard sequences the
-   *  calls itself (the parent's mutation hook is the same one
-   *  the rest of the strip uses). `single` and `custom`
-   *  templates produce exactly one call; `batch` produces N.
+  /** Called once for the `single` and `custom` templates.
    *
    *  `dateDisplay` is the machine-local tab badge preference — it
    *  isn't part of the write body, so the parent persists it
    *  against each freshly-created view id once the POST resolves. */
   onSubmit: (
     body: ProjectViewWriteBody,
+    dateDisplay: DateDisplayMode,
+  ) => void;
+  /** Called once for the `batch` template, with every seed at once.
+   *
+   *  The wizard used to loop `onSubmit` per seed, which made each
+   *  POST an independent fire-and-forget mutation — a single 409 or
+   *  dropped request silently left a half-built gate strip. Handing
+   *  the whole set over lets the parent create-and-verify them as
+   *  one unit. */
+  onSubmitBatch: (
+    bodies: ProjectViewWriteBody[],
     dateDisplay: DateDisplayMode,
   ) => void;
 }
@@ -85,6 +93,7 @@ export function NewViewWizard({
   busy,
   onCancel,
   onSubmit,
+  onSubmitBatch,
 }: NewViewWizardProps): JSX.Element {
   const [step, setStep] = useState<Step>("template");
   const [template, setTemplate] = useState<ViewTemplate | null>(null);
@@ -140,19 +149,17 @@ export function NewViewWizard({
     if (!template || !canSubmitDetails) return;
 
     if (template.kind === "batch" && template.batch) {
-      for (const seed of template.batch) {
-        onSubmit(
-          {
-            name: seed.name,
-            group_by: seed.groupBy,
-            filter_clauses: seed.filterClauses,
-            sort: current.sort,
-            start_date: startDate || null,
-            due_date: dueDate || null,
-          },
-          dateDisplay,
-        );
-      }
+      onSubmitBatch(
+        template.batch.map((seed) => ({
+          name: seed.name,
+          group_by: seed.groupBy,
+          filter_clauses: seed.filterClauses,
+          sort: current.sort,
+          start_date: startDate || null,
+          due_date: dueDate || null,
+        })),
+        dateDisplay,
+      );
       onCancel();
       return;
     }

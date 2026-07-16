@@ -333,6 +333,85 @@ export function useCreateProjectView(projectId: string) {
   });
 }
 
+/** Hard ceiling on reconcile passes. A pass creates at most the
+ *  handful of views still missing, so a healthy batch converges in
+ *  one; the budget exists so a persistently-failing server (or a
+ *  name the backend keeps rejecting) can never spin forever. */
+const BATCH_MAX_PASSES = 50;
+
+export interface BatchCreateResult {
+  /** Views matching the requested names that exist server-side once
+   *  the loop settled — pre-existing or freshly created. */
+  views: ProjectViewDto[];
+  /** Requested names still absent after the budget ran out. Empty
+   *  on success. */
+  missing: string[];
+  passes: number;
+}
+
+/** `POST /projects/{id}/views` × N — create a batch (e.g. the G1–G8
+ *  gate progression) and verify every one landed.
+ *
+ * Fire-and-forget was the old bug: 8 unawaited POSTs meant any that
+ * 409'd on a duplicate name or hit a network blip vanished silently,
+ * leaving a half-built gate strip. So each pass instead:
+ *
+ *   1. LISTs the server's views (authoritative — not the cache),
+ *   2. creates only the requested names that are absent,
+ *   3. loops until the list confirms all of them, or the budget dies.
+ *
+ * Creates run sequentially: the names collide on a unique index, so
+ * firing them together turns a retry into a thundering herd of 409s.
+ * A create that fails is not fatal — the next pass's LIST decides
+ * whether it truly needs redoing, which makes an "already there"
+ * 409 self-healing rather than an error. */
+export function useCreateProjectViewBatch(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation<BatchCreateResult, Error, ProjectViewWriteBody[]>({
+    mutationFn: async (bodies) => {
+      const wanted = new Map(bodies.map((b) => [b.name, b]));
+      let passes = 0;
+
+      for (let pass = 1; pass <= BATCH_MAX_PASSES; pass++) {
+        passes = pass;
+        const existing = await api.listProjectViews(projectId);
+        const have = new Set(existing.map((v) => v.name));
+        const todo = [...wanted.keys()].filter((n) => !have.has(n));
+
+        if (todo.length === 0) {
+          return {
+            views: existing.filter((v) => wanted.has(v.name)),
+            missing: [],
+            passes,
+          };
+        }
+
+        for (const name of todo) {
+          try {
+            await api.createProjectView(projectId, wanted.get(name)!);
+          } catch {
+            // Swallow: the next pass's LIST is the arbiter of whether
+            // this name still needs creating.
+          }
+        }
+      }
+
+      // Budget exhausted — report what's still missing so the caller
+      // can surface it rather than pretend the batch succeeded.
+      const final = await api.listProjectViews(projectId);
+      const have = new Set(final.map((v) => v.name));
+      return {
+        views: final.filter((v) => wanted.has(v.name)),
+        missing: [...wanted.keys()].filter((n) => !have.has(n)),
+        passes,
+      };
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: projectsKeys.views(projectId) });
+    },
+  });
+}
+
 /** `PATCH /projects/{id}/views/{view_id}` — edit a saved view in
  *  place (used by the dirty "Save changes" affordance). */
 export function useUpdateProjectView(projectId: string) {

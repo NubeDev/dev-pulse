@@ -1,0 +1,14 @@
+# dependencies
+node_modules
+
+# next.js
+.next
+out
+
+# generated
+next-env.d.ts
+public/_pagefind
+
+# misc
+*.tsbuildinfo
+.DS_Store

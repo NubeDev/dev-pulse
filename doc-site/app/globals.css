@@ -1,0 +1,6 @@
+/* Doc-site global overrides on top of the Nextra docs theme. */
+
+/* Give every page a bit more room than the theme default (90rem). */
+:root {
+  --nextra-content-width: 100rem;
+}

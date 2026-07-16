@@ -110,6 +110,13 @@ export function UserPicker({
         else onChange(next);
       }}
       searchPlaceholder="Search members…"
+      // A failed /users fetch used to fall through `?? []` and render
+      // as the generic "No options available." — indistinguishable
+      // from an org with no members, which is what made this bug so
+      // hard to place. Name the failure instead.
+      emptyLabel={
+        users.isError ? "Failed to load members." : "No members available."
+      }
     />
   );
 }
