@@ -1,0 +1,68 @@
+name: docs-deploy
+
+# Builds doc-site/ (Nextra static export) and deploys it to GitHub Pages as
+# a project site at https://nubedev.github.io/dev-pulse/.
+#
+# Only triggers on changes under doc-site/ (or the workflow itself) so
+# unrelated pushes to main don't redeploy the docs.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'doc-site/**'
+      - '.github/workflows/docs.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        working-directory: doc-site
+        run: pnpm install --ignore-workspace
+
+      - name: Build static export
+        working-directory: doc-site
+        env:
+          DOCS_BASE_PATH: /dev-pulse
+          DOCS_REPO_URL: https://github.com/NubeDev/dev-pulse
+        run: pnpm build
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: doc-site/out
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
