@@ -1,6 +1,16 @@
+# .dockerignore — build context for Dockerfile.coolify, whose context
+# is THIS repo (Coolify Base Directory = dev-pulse/, see
+# COOLIFY-SCOPE.md §2.1/§2.2). Also applies to any other build that
+# uses this directory as context.
+#
+# Not used by Dockerfile.fly / docker-compose.yml / docker-compose.fly-local.yml
+# — those build with context `..` (the parent dir) and read
+# ../.dockerignore instead.
+
 target
+**/target
 node_modules
-frontend/node_modules
+**/node_modules
 frontend/dist
 frontend/test-results
 frontend/playwright-report
@@ -12,4 +22,11 @@ frontend/.playwright
 certs
 config.local.toml
 .git
+**/.git
 runs
+doc-site
+.codeless
+**/.codeless
+**/.next
+**/.turbo
+**/.pnpm-store

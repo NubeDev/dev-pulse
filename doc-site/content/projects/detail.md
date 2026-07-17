@@ -11,6 +11,8 @@ This is where you actually manage a single project. The header carries the name,
 linked repos/boards, description, and tags. Below it sit five **KPI tiles**, then a row of
 **tabs**: **Workbench** (the default), **Exec Summary**, and **Schedule**.
 
+![A project detail page — header, KPI tiles, tabs, milestones strip, and the issue workbench](/img/projects/detail.png)
+
 ## The header
 
 - **Org link** (`@org-login`) — opens the org on GitHub.
@@ -23,6 +25,8 @@ linked repos/boards, description, and tags. Below it sit five **KPI tiles**, the
 ## The KPI tiles
 
 Five tiles computed from the data already on the page — no extra load time:
+
+![The five KPI tiles: Progress, Timeline, Issues, Lead, and Linked surfaces](/img/projects/kpi-tiles.png)
 
 ### Progress
 
@@ -58,6 +62,8 @@ Counts of linked **boards** and **repos**. Use the Settings menu to manage these
 
 ## Tabs
 
+![The Workbench, Exec Summary, and Schedule tabs](/img/projects/tabs.png)
+
 ### Workbench
 
 The default landing tab. Holds the **milestones strip** and the **issue workbench** —
@@ -66,13 +72,15 @@ where you group, filter, sort, and save views of the project's issues. Full cove
 
 ### Exec Summary
 
-A one-page executive summary of this project — the narrative view you'd hand to a
-stakeholder. (Covered in detail when that surface is documented.)
+A structured, eight-section product brief — objective, scope, requirements, hardware,
+commercial, documents, approval, and a change log — with a completion meter and a
+draft → in review → approved workflow. See [Exec Summary](/projects/exec-summary).
 
 ### Schedule
 
-A **Gantt** view of the project's saved views / milestones over time. Useful for spotting
-which work is stacked into the same window.
+A **Gantt** of the project's saved views over time, with inline date editing and draggable
+bars. Useful for spotting which work is stacked into the same window. See
+[Schedule](/projects/schedule).
 
 ## Editing details
 
@@ -143,4 +151,6 @@ without losing its history.
 
 - [Milestones](/projects/milestones)
 - [Issue workbench](/projects/workbench)
+- [Exec Summary](/projects/exec-summary)
+- [Schedule](/projects/schedule)
 - [Link boards &amp; repos](/projects/link-boards-repos)

@@ -36,7 +36,9 @@ COMPOSE    := $(ROOT)/crates/dp-store-pg/docker-compose.yml
 
 .PHONY: build start kill stop restart status logs config env seed-admin db migrate help \
         fly-deploy fly-logs fly-ssh fly-status fly-secrets-print \
-        fly-local fly-local-down fly-local-reset fly-local-logs fly-local-build
+        fly-local fly-local-down fly-local-reset fly-local-logs fly-local-build \
+        coolify-local coolify-local-down coolify-local-reset coolify-local-logs \
+        coolify-local-build coolify-submodule-update
 
 help:
 	@echo "Targets: build | start | kill | restart | status | logs | config"
@@ -262,3 +264,38 @@ $(ROOT)/certs/localhost.pem:
 	 echo "    && mv localhost+2.pem localhost.pem \\"; \
 	 echo "    && mv localhost+2-key.pem localhost-key.pem"; \
 	 exit 1
+
+# ---------------------------------------------------------------- coolify
+#
+# Coolify deploys via git-push/API against a single repo checkout —
+# there is no CLI deploy target here, only local image testing.
+# `starter` is vendored as a git submodule at ./starter so the build
+# context is THIS repo (see COOLIFY-SCOPE.md §2.1). Deploy runbook is
+# COOLIFY.md.
+
+COOLIFY_COMPOSE := docker compose \
+  -f $(ROOT)/docker-compose.coolify-local.yml \
+  --project-directory $(ROOT) \
+  --env-file $(ROOT)/.env
+
+coolify-submodule-update:
+	git submodule update --init --remote starter
+
+coolify-local: coolify-submodule-update
+	$(COOLIFY_COMPOSE) up -d --build
+	@echo
+	@echo "dev-pulse up at http://localhost:8080"
+	@echo "  logs:    make coolify-local-logs"
+	@echo "  reset:   make coolify-local-reset"
+
+coolify-local-build: coolify-submodule-update
+	$(COOLIFY_COMPOSE) build
+
+coolify-local-down:
+	$(COOLIFY_COMPOSE) down
+
+coolify-local-reset:
+	$(COOLIFY_COMPOSE) down -v
+
+coolify-local-logs:
+	$(COOLIFY_COMPOSE) logs -f

@@ -15,10 +15,14 @@ work with the issues on a project. It has three parts, top to bottom:
 
 The header shows a running tally: `Issues ({closed}/{total} closed)`.
 
+![The issue workbench — saved-view tabs, the toolbar, and the issue list](/img/projects/workbench.png)
+
 ## Saved views
 
 The **tabs** across the top are **saved views** — per-user, per-project bundles of a
 Group-by, a Filter, and a Sort. Think of them as containers, not just searches.
+
+![The saved-view tab strip, showing a G1–G8 gate progression with per-view counts and due dates](/img/projects/workbench-views.png)
 
 - **All** is the implicit default tab — it's the ad-hoc state with no saved view active.
 - Click any saved view to activate it. The URL gains `?view=<id>` and the toolbar takes on
@@ -56,6 +60,8 @@ unaffected.
 ## The toolbar
 
 A dashed-border row with three controls:
+
+![The workbench toolbar — Group by, Filter, and Sort](/img/projects/workbench-toolbar.png)
 
 ### Group by
 
@@ -95,6 +101,8 @@ Three options:
 - **Title A→Z** — alphabetical.
 
 ## The issue list
+
+![An issue row — state badge, local badge, title, assignees, due pill, and Remove](/img/projects/issue-row.png)
 
 Each row shows:
 
@@ -151,5 +159,6 @@ sections to flip the whole set.
 
 ## Next
 
+- [Schedule](/projects/schedule) — the saved views on this page, plotted on a timeline.
 - [Project detail page](/projects/detail)
 - [Project portfolio](/projects/portfolio)

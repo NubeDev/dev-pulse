@@ -1,0 +1,43 @@
+# config.coolify.toml — template materialised at container start by
+# scripts/coolify-entrypoint.sh (envsubst). `${VAR}` placeholders
+# below come from the Coolify Environment Variables tab.
+#
+# Secret handles (`secret://NAME`) are resolved by the dev-pulse
+# binary itself — set the underlying env vars (GITHUB_PAT,
+# GITHUB_WEBHOOK_SECRET, OAUTH_GITHUB_CLIENT_SECRET) in Coolify,
+# marked as runtime secrets.
+#
+# Identical to config.fly.toml except for this header — the two
+# runtimes want the same app config shape (COOLIFY-SCOPE.md §2.4).
+
+[server]
+listen            = "${DP_BIND_ADDR}"
+base_url          = "${DP_PUBLIC_BASE_URL}"
+default_return_to = "${DP_DEFAULT_RETURN}"
+
+[postgres]
+url = "${DATABASE_URL}"
+
+[auth_sqlite]
+url = "${DP_AUTH_SQLITE_URL}"
+
+[webhook]
+secret_ref = "secret://github/webhook_secret"
+
+[auth.github]
+client_id         = "${DP_GITHUB_OAUTH_CLIENT_ID}"
+client_secret_ref = "secret://oauth/github_client_secret"
+allow_orgs        = ${DP_GITHUB_ALLOW_ORGS}
+org_refresh_interval_secs = 3600
+
+[scheduler]
+tick_interval_secs = 600
+enable             = ${DP_SCHEDULER_ENABLE}
+
+[github]
+token_ref = "secret://github/pat"
+max_requests_per_run = 800
+
+[github.app]
+request_issues_write = true
+pat_mode             = true
