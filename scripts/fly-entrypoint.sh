@@ -87,7 +87,18 @@ case "$cmd" in
 
     echo "[entrypoint] running migrations"
     cd /app
-    /usr/local/bin/dev-pulse migrate --config "$RUNTIME"
+    # A failed migration must not crash-loop the machine. `set -e` would
+    # abort boot here, and because Fly restarts on exit the app then never
+    # serves at all — one bad migration takes the whole site down and
+    # blocks even SSH access to diagnose it. Migrations run in a
+    # transaction, so a failure rolls back and leaves the schema at the
+    # last good version; serving on that older schema degrades whatever
+    # feature needed the new columns, but keeps everything else up.
+    if ! /usr/local/bin/dev-pulse migrate --config "$RUNTIME"; then
+      echo "[entrypoint] WARNING: migrations FAILED — starting anyway on the" >&2
+      echo "[entrypoint] last-good schema. Features needing the new schema" >&2
+      echo "[entrypoint] will misbehave until this is fixed." >&2
+    fi
 
     echo "[entrypoint] starting Caddy on :8080"
     caddy run --config /etc/caddy/Caddyfile --adapter caddyfile &
