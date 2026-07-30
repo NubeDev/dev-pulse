@@ -34,6 +34,11 @@ export const IssueDtoSchema = z.object({
   unread: z.boolean().optional(),
   tags: z.array(IssueTagDtoSchema).optional(),
   is_local: z.boolean().optional(),
+  // Project attachment, joined server-side by the list handlers so
+  // triage rows can render a project badge. Absent on point-lookup
+  // responses that don't carry the join.
+  project_id: uuid.nullable().optional(),
+  project_name: z.string().nullable().optional(),
 });
 export type IssueDto = z.infer<typeof IssueDtoSchema>;
 
@@ -118,6 +123,10 @@ export const IssueListItemSchema = z.object({
   bucket_keys: z.array(z.string().nullable()).optional(),
   tags: z.array(IssueTagDtoSchema).optional(),
   is_local: z.boolean().optional(),
+  // Project attachment joined by the list handlers, so a row can
+  // show which project it belongs to.
+  project_id: uuid.nullable().optional(),
+  project_name: z.string().nullable().optional(),
 });
 export type IssueListItem = z.infer<typeof IssueListItemSchema>;
 
@@ -164,6 +173,14 @@ export interface ListIssuesQuery {
   assignee?: string;
   assignees?: string[];
   labels?: string[];
+  /** Match ANY of these assignee logins (OR). */
+  assignees_any?: string[];
+  /** Match ANY of these labels (OR). */
+  labels_any?: string[];
+  /** Match ANY of these project ids (OR). */
+  project_ids?: string[];
+  /** Restrict to issues attached to no project. */
+  no_project?: boolean;
   author?: string;
   state_reason?: string;
   updated_since?: string;
@@ -223,6 +240,10 @@ export function buildIssueListQs(q: ListIssuesQuery): string {
   if (q.assignee) params.set("assignee", q.assignee);
   if (q.assignees?.length) params.set("assignees", q.assignees.join(","));
   if (q.labels?.length) params.set("labels", q.labels.join(","));
+  if (q.assignees_any?.length) params.set("assignees_any", q.assignees_any.join(","));
+  if (q.labels_any?.length) params.set("labels_any", q.labels_any.join(","));
+  if (q.project_ids?.length) params.set("project_ids", q.project_ids.join(","));
+  if (q.no_project) params.set("no_project", "true");
   if (q.author) params.set("author", q.author);
   if (q.state_reason) params.set("state_reason", q.state_reason);
   if (q.updated_since) params.set("updated_since", q.updated_since);

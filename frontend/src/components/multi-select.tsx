@@ -1,6 +1,8 @@
 /**
- * `MultiSelect` — generic checkbox popover used by the leaderboard
- * filters for org / user / activity-type multi-selection.
+ * `MultiSelect` — generic checkbox popover for multi-selection.
+ * Used by the leaderboard / repo-activity report filters (org,
+ * user, activity type) and by the triage filter bar (user,
+ * project, repo, label).
  *
  * Built on Radix `Popover` (not `DropdownMenu`) so the menu stays
  * open between clicks without fighting the menu-item "select closes

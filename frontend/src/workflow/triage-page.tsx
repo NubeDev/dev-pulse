@@ -40,7 +40,7 @@
  * visually obvious — that's the whole point of the Linear layout.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   IconAlertTriangle,
   IconBookmark,
@@ -85,8 +85,13 @@ import {
   workflowSelectedLabels,
   workflowSelectedRepoId,
   workflowTriageRoute,
+  workflowMultiFilter,
+  withMultiFilter,
+  workflowStateFilter,
   type TriageView,
 } from "../routes.js";
+import { TriageFilterBar } from "./triage-filter-bar.js";
+import type { TriageFilters } from "./triage-filter-bar.js";
 
 import { IssueEditCard } from "./issues-page.jsx";
 import { BulkAddToProjectDialog } from "./bulk-add-to-project-dialog.js";
@@ -172,20 +177,33 @@ function filterFor(
   view: TriageView,
   repoId: string | null,
   labels: ReadonlyArray<string>,
+  filters: TriageFilters,
 ): ListIssuesQuery {
   const base: ListIssuesQuery = {
     limit: PAGE_SIZE,
     offset: 0,
-    state: "open",
+    // The filter bar's state select wins; `open` stays the default
+    // for an untouched triage queue.
+    state: filters.state,
   };
   if (repoId) base.repo_id = repoId;
+  // Legacy AND lane — the chip strip below the toolbar still uses
+  // `?labels=` for click-to-narrow. The filter bar's own label
+  // picker is the OR lane (`labels_any`), so the two compose:
+  // chips narrow further within a broader bar selection.
   if (labels.length > 0) base.labels = [...labels];
+  if (filters.users.length > 0) base.assignees_any = [...filters.users];
+  if (filters.labels.length > 0) base.labels_any = [...filters.labels];
+  if (filters.projects.length > 0) base.project_ids = [...filters.projects];
+  if (filters.repos.length > 0) base.repo_ids = [...filters.repos];
   if (view === "untriaged") {
     base.untriaged = true;
     return base;
   }
   if (view === "all") {
-    base.state = "all";
+    // `all` means "every state" only when the user hasn't picked a
+    // specific one in the filter bar.
+    if (filters.state === "open") base.state = "all";
     return base;
   }
   // `mine`, `snoozed`, `due_week`, `overdue`, and `tag:<id>` all
@@ -206,8 +224,9 @@ function useTriageRows(
   view: TriageView,
   repoId: string | null,
   labels: ReadonlyArray<string>,
+  filters: TriageFilters,
 ) {
-  const q = filterFor(view, repoId, labels);
+  const q = filterFor(view, repoId, labels, filters);
   const queue = useMyQueue(q);
   const list = useIssueList(q);
   if (view === "all") return list;
@@ -235,7 +254,42 @@ export function TriagePage(): JSX.Element {
   const selectedLabels = workflowSelectedLabels(route);
   const selectedIssueId = workflowSelectedIssue(route);
 
-  const rowsQ = useTriageRows(view, repoId, selectedLabels);
+  const filters: TriageFilters = useMemo(
+    () => ({
+      users: workflowMultiFilter(route, "users"),
+      projects: workflowMultiFilter(route, "projects"),
+      repos: workflowMultiFilter(route, "repos"),
+      labels: workflowMultiFilter(route, "flabels"),
+      state: workflowStateFilter(route),
+    }),
+    [route],
+  );
+
+  const setFilter = useCallback(
+    <K extends keyof TriageFilters>(key: K, value: TriageFilters[K]) => {
+      const paramKey =
+        key === "labels" ? "flabels" : (key as string);
+      if (key === "state") {
+        // Single-valued: `open` is the default, so it leaves no
+        // param behind.
+        const v = value as TriageFilters["state"];
+        navigate(withMultiFilter(route, "state", v === "open" ? [] : [v]));
+        return;
+      }
+      navigate(withMultiFilter(route, paramKey, value as string[]));
+    },
+    [route],
+  );
+
+  const clearFilters = useCallback(() => {
+    let next = route;
+    for (const k of ["users", "projects", "repos", "flabels", "state"]) {
+      next = withMultiFilter(next, k, []);
+    }
+    navigate(next);
+  }, [route]);
+
+  const rowsQ = useTriageRows(view, repoId, selectedLabels, filters);
   const allRows: IssueListItem[] = rowsQ.data?.rows ?? [];
 
   // Per-row date fetch — bounded by `PAGE_SIZE`, react-query
@@ -957,6 +1011,13 @@ export function TriagePage(): JSX.Element {
           </div>
         )}
 
+        <TriageFilterBar
+          filters={filters}
+          onChange={setFilter}
+          onClear={clearFilters}
+          rows={allRows}
+        />
+
         {selectedLabels.length > 0 && (
           <div
             className="flex flex-wrap items-center gap-1.5 border-b border-border bg-muted/30 px-4 py-2"
@@ -1080,6 +1141,21 @@ export function TriagePage(): JSX.Element {
                     onLabelClick={toggleLabel}
                     max={3}
                   />
+                )}
+                {row.project_name && (
+                  <button
+                    type="button"
+                    className="shrink-0 rounded border border-border bg-muted/50 px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      // Click-to-narrow, mirroring the label chips.
+                      if (row.project_id) setFilter("projects", [row.project_id]);
+                    }}
+                    title={`Filter to project: ${row.project_name}`}
+                    data-testid="triage-row-project"
+                  >
+                    {row.project_name}
+                  </button>
                 )}
                 {row.repo_slug && (
                   <a

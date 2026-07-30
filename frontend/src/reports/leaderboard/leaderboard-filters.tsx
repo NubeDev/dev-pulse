@@ -20,7 +20,7 @@ import {
   type WindowState,
 } from "../window-picker.jsx";
 
-import { MultiSelect } from "./multi-select.jsx";
+import { MultiSelect } from "../../components/multi-select.jsx";
 
 export interface LeaderboardFiltersProps {
   orgs: ReadonlyArray<OrgDto>;

@@ -1,5 +1,5 @@
 export * from "./types.js";
-export { MultiSelect } from "./multi-select.jsx";
+export { MultiSelect } from "../../components/multi-select.jsx";
 export { LeaderboardFilters } from "./leaderboard-filters.jsx";
 export { LeaderboardKpis } from "./leaderboard-kpis.jsx";
 export { ContributorBarChart } from "./contributor-bar-chart.jsx";

@@ -14,7 +14,7 @@ import { Label } from "@/components/ui/label";
 import type { OrgDto, RepoSummaryDto } from "../../api/client.js";
 
 import { ACTIVITY_KINDS } from "../activity-types.js";
-import { MultiSelect } from "../leaderboard/multi-select.jsx";
+import { MultiSelect } from "../../components/multi-select.jsx";
 import {
   FILTER_GRID_CLASS,
   WindowPicker,

@@ -289,6 +289,53 @@ export function workflowSelectedLabels(route: string): string[] {
     .filter((s) => s.length > 0);
 }
 
+/** Read a comma-separated multi-select filter off the route
+ *  (`?users=alice,bob`). Shared by the triage filter bar's user /
+ *  project / repo pickers so every filter round-trips through
+ *  copy-paste like the label filter already does.
+ *
+ *  OR-semantics: a row matches when it carries **any** of the
+ *  listed values (contrast `workflowSelectedLabels`, which is the
+ *  older AND lane). */
+export function workflowMultiFilter(route: string, key: string): string[] {
+  const q = route.indexOf("?");
+  if (q < 0) return [];
+  const raw = new URLSearchParams(route.slice(q + 1)).get(key);
+  if (!raw) return [];
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
+/** Replace one multi-select filter on the current route, preserving
+ *  every other param (view selection, issue focus, other filters).
+ *  An empty `values` array drops the key entirely so a cleared
+ *  filter leaves no residue in the URL. */
+export function withMultiFilter(
+  route: string,
+  key: string,
+  values: ReadonlyArray<string>,
+): string {
+  const q = route.indexOf("?");
+  const base = q < 0 ? route : route.slice(0, q);
+  const params = new URLSearchParams(q < 0 ? "" : route.slice(q + 1));
+  if (values.length > 0) params.set(key, values.join(","));
+  else params.delete(key);
+  const qs = params.toString();
+  return qs ? `${base}?${qs}` : base;
+}
+
+/** Active state filter on the triage route (`?state=open`).
+ *  Defaults to `"open"` — the triage inbox is an open-work queue,
+ *  so that stays the behaviour when the param is absent. */
+export function workflowStateFilter(route: string): "open" | "closed" | "all" {
+  const q = route.indexOf("?");
+  if (q < 0) return "open";
+  const raw = new URLSearchParams(route.slice(q + 1)).get("state");
+  return raw === "closed" || raw === "all" ? raw : "open";
+}
+
 /** Build the `#/workflow/issues` route with optional repo / issue
  *  selection. Both round-trip through copy-paste so the workflow
  *  surface is fully shareable. */
