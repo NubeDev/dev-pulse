@@ -1614,6 +1614,8 @@ mod tests {
             github_node_id: None,
             updated_at: Utc::now(),
             is_local: false,
+            project_id: None,
+            project_name: None,
         };
         store.issues.lock().unwrap().push(i.clone());
         i

@@ -144,6 +144,14 @@ pub struct IssueDto {
     /// picker and the row chips, no per-link metadata.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<IssueTagDto>,
+    /// Project this issue is attached to, when the handler joined
+    /// through `dp_project_issues`. Lets the triage list render a
+    /// project badge instead of showing every row as project-less.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<Uuid>,
+    /// Display name for [`Self::project_id`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_name: Option<String>,
 }
 
 /// Slim per-issue tag chip projection embedded in [`IssueDto::tags`].
@@ -191,6 +199,8 @@ impl From<Issue> for IssueDto {
             unread: false,
             bucket_keys: None,
             tags: Vec::new(),
+            project_id: i.project_id,
+            project_name: i.project_name,
         }
     }
 }
@@ -441,6 +451,25 @@ pub struct ListIssuesQuery {
     #[serde(default)]
     pub untriaged: bool,
 
+    // ---- triage filter bar (multi-select, OR within a field) ---
+    //
+    // These are the OR counterparts to `assignees` / `labels`
+    // above: a multi-select picker means "any of these", not "all
+    // of these". Each still ANDs with the other filter fields.
+
+    /// Match issues assigned to ANY of these logins (comma-separated).
+    #[serde(default, deserialize_with = "csv_strings")]
+    pub assignees_any: Vec<String>,
+    /// Match issues carrying ANY of these labels (comma-separated).
+    #[serde(default, deserialize_with = "csv_strings")]
+    pub labels_any: Vec<String>,
+    /// Match issues attached to ANY of these projects (comma-separated).
+    #[serde(default, deserialize_with = "csv_uuids")]
+    pub project_ids: Vec<Uuid>,
+    /// Restrict to issues attached to no project at all.
+    #[serde(default)]
+    pub no_project: bool,
+
     /// Keyset cursor for `/me/queue` — wire form
     /// `"<rfc3339_updated_at>,<uuid>"`. The server emits the next
     /// page strictly older than this `(updated_at, id)` pair. The
@@ -554,6 +583,10 @@ fn filter_from_query(q: &ListIssuesQuery) -> IssueListFilter {
         state_reason: q.state_reason.clone().filter(|s| !s.is_empty()),
         updated_since: q.updated_since,
         untriaged_only: q.untriaged,
+        assignees_any: q.assignees_any.clone(),
+        labels_any: q.labels_any.clone(),
+        project_ids: q.project_ids.clone(),
+        no_project: q.no_project,
         keyset_after: q
             .after
             .as_deref()

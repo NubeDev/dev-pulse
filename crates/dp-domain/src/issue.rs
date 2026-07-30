@@ -92,6 +92,22 @@ pub struct Issue {
     /// hide the repo badge for these rows.
     #[serde(default)]
     pub is_local: bool,
+    /// Project this issue is attached to, if any — joined through
+    /// `dp_project_issues`. `None` when the issue sits in no
+    /// project, and also on the point-lookup paths whose SELECT
+    /// list doesn't carry the join (they leave it unpopulated
+    /// rather than asserting "no project").
+    ///
+    /// `dp_project_issues` currently holds `UNIQUE (issue_id)`, so
+    /// an issue belongs to at most one project and this is a single
+    /// value rather than a list.
+    #[serde(default)]
+    pub project_id: Option<Uuid>,
+    /// Display name of [`Self::project_id`], joined from
+    /// `dp_projects.name` so list rows can render a project badge
+    /// without an N+1 lookup per row.
+    #[serde(default)]
+    pub project_name: Option<String>,
 }
 
 /// Aggregated summary for the `GET /repos` list pane. Carries the

@@ -852,6 +852,10 @@ pub trait Store: Send + Sync {
             github_node_id: upsert.github_node_id.clone(),
             updated_at: upsert.updated_at,
             is_local: false,
+            // A freshly-ingested GitHub issue carries no project
+            // attachment; the link is made separately.
+            project_id: None,
+            project_name: None,
         };
         Ok((issue, IssueUpsertOutcome::Skipped))
     }
@@ -3466,10 +3470,36 @@ pub struct IssueListFilter {
     pub org_ids: Vec<Uuid>,
     /// Match issues having **all** of these assignees (JSONB
     /// containment AND). Empty ⇒ no constraint.
+    ///
+    /// This is the legacy AND lane, kept for existing callers.
+    /// The triage filter bar sends [`Self::assignees_any`] instead.
     pub assignees: Vec<String>,
+    /// Match issues having **any** of these assignees (JSONB
+    /// overlap, OR). Empty ⇒ no constraint. Combines with the rest
+    /// of the filter by AND, so "assigned to Alice or Bob, in
+    /// project X" is one call.
+    ///
+    /// Separate from [`Self::assignees`] because a multi-select
+    /// picker means "any of these people" — requiring an issue to
+    /// carry *every* selected login matches almost nothing.
+    pub assignees_any: Vec<String>,
     /// Match issues having **all** of these labels (JSONB
     /// containment AND). Empty ⇒ no constraint.
     pub labels: Vec<String>,
+    /// Match issues having **any** of these labels (JSONB overlap,
+    /// OR). Empty ⇒ no constraint. Same rationale as
+    /// [`Self::assignees_any`].
+    pub labels_any: Vec<String>,
+    /// Match issues attached to **any** of these projects, via
+    /// `dp_project_issues`. Empty ⇒ no constraint.
+    ///
+    /// An issue may be attached to several projects, so this is an
+    /// EXISTS over the link table rather than a column compare.
+    pub project_ids: Vec<Uuid>,
+    /// When true, match only issues attached to **no** project.
+    /// Mutually useful with [`Self::project_ids`] being empty —
+    /// this is the "No project" bucket of the triage filter.
+    pub no_project: bool,
     /// Match issues whose `author` column equals this value. Rows
     /// where `author IS NULL` (un-backfilled) never match — same
     /// behaviour as any other scalar filter.

@@ -1188,6 +1188,8 @@ mod tests {
             github_node_id: Some("I_kwTEST".into()),
             updated_at: Utc::now(),
             is_local: false,
+            project_id: None,
+            project_name: None,
         };
         {
             let mut g = store.inner.lock().unwrap();

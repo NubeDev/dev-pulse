@@ -278,6 +278,12 @@ pub(super) fn row_to_issue(r: &sqlx::postgres::PgRow) -> Result<Issue, StoreErro
         // they simply default to non-local, which is correct for
         // every row created before the feature shipped.
         is_local: r.try_get("is_local").unwrap_or(false),
+        // Only the list/count path joins `dp_project_issues`; the
+        // point-lookup SELECTs don't carry these columns, so a
+        // missing column falls back to `None` (unknown) exactly the
+        // same way a genuinely unattached issue does.
+        project_id: r.try_get("project_id").unwrap_or(None),
+        project_name: r.try_get("project_name").unwrap_or(None),
     })
 }
 

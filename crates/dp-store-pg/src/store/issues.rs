@@ -25,25 +25,37 @@ impl PgStore {
         let state_text = filter.state.map(|s| s.as_str().to_string());
         let labels_json = labels_or_assignees_json(&filter.labels);
         let assignees_json = labels_or_assignees_json(&filter.assignees);
+        // `?|` (JSONB "any of these top-level keys/elements") is the OR
+        // counterpart to `@>` and rides the same GIN indexes on
+        // `labels` / `assignees` from migration 0011. It wants
+        // `text[]`, not jsonb — hence the plain slice binds below.
         let rows = sqlx::query(
-            "SELECT id, org_id, repo_id, github_id, number, title, body, state,
-                    labels, assignees, milestone, version,
-                    github_node_id, updated_at, is_local
-             FROM dp_issues
-             WHERE ($1::uuid IS NULL OR repo_id = $1)
-               AND ($2::uuid IS NULL OR org_id  = $2)
-               AND ($3::text IS NULL OR state   = $3)
-               AND ($4::text IS NULL OR assignees @> to_jsonb(ARRAY[$4::text]))
-               AND ($5::text IS NULL OR title ILIKE '%' || $5 || '%')
-               AND (cardinality($8::uuid[]) = 0 OR repo_id = ANY($8::uuid[]))
-               AND (cardinality($9::uuid[]) = 0 OR org_id  = ANY($9::uuid[]))
-               AND ($10::jsonb IS NULL OR assignees @> $10::jsonb)
-               AND ($11::jsonb IS NULL OR labels    @> $11::jsonb)
-               AND ($12::text  IS NULL OR author = $12)
-               AND ($13::text  IS NULL OR state_reason = $13)
-               AND ($14::timestamptz IS NULL OR updated_at >= $14)
-               AND (NOT $15::bool OR (assignees = '[]'::jsonb AND labels = '[]'::jsonb))
-             ORDER BY updated_at DESC
+            "SELECT i.id, i.org_id, i.repo_id, i.github_id, i.number, i.title,
+                    i.body, i.state, i.labels, i.assignees, i.milestone,
+                    i.version, i.github_node_id, i.updated_at, i.is_local,
+                    pi.project_id AS project_id,
+                    p.name        AS project_name
+             FROM dp_issues i
+             LEFT JOIN dp_project_issues pi ON pi.issue_id = i.id
+             LEFT JOIN dp_projects p        ON p.id = pi.project_id
+             WHERE ($1::uuid IS NULL OR i.repo_id = $1)
+               AND ($2::uuid IS NULL OR i.org_id  = $2)
+               AND ($3::text IS NULL OR i.state   = $3)
+               AND ($4::text IS NULL OR i.assignees @> to_jsonb(ARRAY[$4::text]))
+               AND ($5::text IS NULL OR i.title ILIKE '%' || $5 || '%')
+               AND (cardinality($8::uuid[]) = 0 OR i.repo_id = ANY($8::uuid[]))
+               AND (cardinality($9::uuid[]) = 0 OR i.org_id  = ANY($9::uuid[]))
+               AND ($10::jsonb IS NULL OR i.assignees @> $10::jsonb)
+               AND ($11::jsonb IS NULL OR i.labels    @> $11::jsonb)
+               AND ($12::text  IS NULL OR i.author = $12)
+               AND ($13::text  IS NULL OR i.state_reason = $13)
+               AND ($14::timestamptz IS NULL OR i.updated_at >= $14)
+               AND (NOT $15::bool OR (i.assignees = '[]'::jsonb AND i.labels = '[]'::jsonb))
+               AND (cardinality($16::text[]) = 0 OR i.assignees ?| $16::text[])
+               AND (cardinality($17::text[]) = 0 OR i.labels    ?| $17::text[])
+               AND (cardinality($18::uuid[]) = 0 OR pi.project_id = ANY($18::uuid[]))
+               AND (NOT $19::bool OR pi.project_id IS NULL)
+             ORDER BY i.updated_at DESC
              LIMIT $6 OFFSET $7",
         )
         .bind(filter.repo_id)
@@ -61,6 +73,10 @@ impl PgStore {
         .bind(filter.state_reason.as_deref())
         .bind(filter.updated_since)
         .bind(filter.untriaged_only)
+        .bind(&filter.assignees_any)
+        .bind(&filter.labels_any)
+        .bind(&filter.project_ids)
+        .bind(filter.no_project)
         .fetch_all(self.pool.sqlx())
         .await
         .map_err(map_sqlx)?;
@@ -72,22 +88,30 @@ impl PgStore {
         let state_text = filter.state.map(|s| s.as_str().to_string());
         let labels_json = labels_or_assignees_json(&filter.labels);
         let assignees_json = labels_or_assignees_json(&filter.assignees);
+        // Mirrors `list_issues_impl`'s WHERE exactly — including the
+        // project join — or the total would disagree with the rows the
+        // list returns and the pager would show phantom pages.
         let (count,): (i64,) = sqlx::query_as(
             "SELECT COUNT(*)::bigint
-             FROM dp_issues
-             WHERE ($1::uuid IS NULL OR repo_id = $1)
-               AND ($2::uuid IS NULL OR org_id  = $2)
-               AND ($3::text IS NULL OR state   = $3)
-               AND ($4::text IS NULL OR assignees @> to_jsonb(ARRAY[$4::text]))
-               AND ($5::text IS NULL OR title ILIKE '%' || $5 || '%')
-               AND (cardinality($6::uuid[]) = 0 OR repo_id = ANY($6::uuid[]))
-               AND (cardinality($7::uuid[]) = 0 OR org_id  = ANY($7::uuid[]))
-               AND ($8::jsonb  IS NULL OR assignees @> $8::jsonb)
-               AND ($9::jsonb  IS NULL OR labels    @> $9::jsonb)
-               AND ($10::text  IS NULL OR author = $10)
-               AND ($11::text  IS NULL OR state_reason = $11)
-               AND ($12::timestamptz IS NULL OR updated_at >= $12)
-               AND (NOT $13::bool OR (assignees = '[]'::jsonb AND labels = '[]'::jsonb))",
+             FROM dp_issues i
+             LEFT JOIN dp_project_issues pi ON pi.issue_id = i.id
+             WHERE ($1::uuid IS NULL OR i.repo_id = $1)
+               AND ($2::uuid IS NULL OR i.org_id  = $2)
+               AND ($3::text IS NULL OR i.state   = $3)
+               AND ($4::text IS NULL OR i.assignees @> to_jsonb(ARRAY[$4::text]))
+               AND ($5::text IS NULL OR i.title ILIKE '%' || $5 || '%')
+               AND (cardinality($6::uuid[]) = 0 OR i.repo_id = ANY($6::uuid[]))
+               AND (cardinality($7::uuid[]) = 0 OR i.org_id  = ANY($7::uuid[]))
+               AND ($8::jsonb  IS NULL OR i.assignees @> $8::jsonb)
+               AND ($9::jsonb  IS NULL OR i.labels    @> $9::jsonb)
+               AND ($10::text  IS NULL OR i.author = $10)
+               AND ($11::text  IS NULL OR i.state_reason = $11)
+               AND ($12::timestamptz IS NULL OR i.updated_at >= $12)
+               AND (NOT $13::bool OR (i.assignees = '[]'::jsonb AND i.labels = '[]'::jsonb))
+               AND (cardinality($14::text[]) = 0 OR i.assignees ?| $14::text[])
+               AND (cardinality($15::text[]) = 0 OR i.labels    ?| $15::text[])
+               AND (cardinality($16::uuid[]) = 0 OR pi.project_id = ANY($16::uuid[]))
+               AND (NOT $17::bool OR pi.project_id IS NULL)",
         )
         .bind(filter.repo_id)
         .bind(filter.org_id)
@@ -102,6 +126,10 @@ impl PgStore {
         .bind(filter.state_reason.as_deref())
         .bind(filter.updated_since)
         .bind(filter.untriaged_only)
+        .bind(&filter.assignees_any)
+        .bind(&filter.labels_any)
+        .bind(&filter.project_ids)
+        .bind(filter.no_project)
         .fetch_one(self.pool.sqlx())
         .await
         .map_err(map_sqlx)?;
