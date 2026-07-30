@@ -102,6 +102,17 @@ ALTER TABLE dp_project_views
 --     two users' strips both start at 0 and would collide immediately
 --     under a project-wide UNIQUE). Existing relative order is preserved
 --     via the same ORDER BY the list query used.
+--     The old per-owner UNIQUE index (0056: project_id, owner_user_id,
+--     position) MUST be dropped BEFORE the re-pack, not after. Renumbering
+--     project-wide moves each owner's rows onto values that another of
+--     *that same owner's* rows still holds mid-statement: with two owners
+--     holding positions 0..7 each, owner B's block becomes 8..15, and
+--     owner A's row moving 3->3 is fine but B's 3->11 passes through
+--     values B already occupies. Postgres checks the unique index per
+--     row-update, so the permutation trips the stale constraint and the
+--     whole migration aborts.
+DROP INDEX IF EXISTS dp_project_views_project_idx;
+
 WITH ranked AS (
   SELECT id,
          row_number() OVER (
@@ -116,6 +127,5 @@ UPDATE dp_project_views v
  WHERE v.id = r.id
    AND v.position IS DISTINCT FROM r.new_pos;
 
-DROP INDEX IF EXISTS dp_project_views_project_idx;
 CREATE UNIQUE INDEX dp_project_views_project_idx
     ON dp_project_views (project_id, position);
