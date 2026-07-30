@@ -2394,38 +2394,35 @@ pub trait Store: Send + Sync {
     /// List the caller's saved views for a project, ordered by
     /// `position ASC` (then `created_at ASC` as a stable tiebreak
     /// for the unlikely case two rows share a position after a
-    /// partial reorder). Returns the caller's own views (private
-    /// or project-scoped) UNION every `visibility='project'` row
-    /// on this project — shared views are visible to any reader.
-    /// Mutations remain owner-scoped.
+    /// partial reorder). Returns **every** view on the project —
+    /// views are project-scoped, not per-user (migration 0061), so
+    /// any caller who can read the project sees the same tab strip.
     ///
     /// Default impl returns an empty vec.
     async fn list_project_views(
         &self,
         _project_id: Uuid,
-        _owner_user_id: Uuid,
     ) -> Result<Vec<crate::project_view::ProjectView>, StoreError> {
         Ok(Vec::new())
     }
 
-    /// Fetch a single saved view by id. Returns `None` when the
-    /// row is missing. Returns `Some` when the caller owns it OR
-    /// the row is shared (`visibility='project'`) — the REST layer
-    /// enforces owner-only mutations. Default impl returns `None`.
+    /// Fetch a single saved view by id. Returns `None` only when the
+    /// row is missing — views are project-scoped, so there is no
+    /// per-user visibility filter. Default impl returns `None`.
     async fn get_project_view(
         &self,
         _id: Uuid,
-        _owner_user_id: Uuid,
     ) -> Result<Option<crate::project_view::ProjectView>, StoreError> {
         Ok(None)
     }
 
     /// Insert a new saved view. The store assigns `id`, stamps
-    /// `created_at` / `updated_at`, and appends `position = N`
-    /// where N is the count of pre-existing views for
-    /// `(project_id, owner_user_id)`. The `UNIQUE (project_id,
-    /// owner_user_id, name)` constraint surfaces a duplicate name
-    /// as [`StoreError::Conflict`].
+    /// `created_at` / `updated_at`, and appends the row at the end of
+    /// the project's shared strip (`MAX(position) + 1` over the whole
+    /// project). `owner_user_id` is recorded as a created-by stamp
+    /// only — it does not scope visibility. The `UNIQUE (project_id,
+    /// name)` constraint surfaces a duplicate name as
+    /// [`StoreError::Conflict`].
     ///
     /// Default impl rejects so fakes that haven't opted in fail
     /// loudly rather than silently dropping the write.
@@ -2446,13 +2443,13 @@ pub trait Store: Send + Sync {
     /// [`Store::reorder_project_views`] (kept off the PATCH so
     /// rename and reorder don't race).
     ///
-    /// Returns [`StoreError::NotFound`] when the row is missing
-    /// or owned by another user; [`StoreError::Conflict`] when a
-    /// rename collides with another view's name.
+    /// Views are project-scoped: any caller with project access may
+    /// edit any view on it. Returns [`StoreError::NotFound`] when the
+    /// row is missing; [`StoreError::Conflict`] when a rename collides
+    /// with another view's name on the same project.
     async fn update_project_view(
         &self,
         _id: Uuid,
-        _owner_user_id: Uuid,
         _upsert: &crate::project_view::ProjectViewUpsert,
     ) -> Result<crate::project_view::ProjectView, StoreError> {
         Err(StoreError::Invalid(
@@ -2461,30 +2458,26 @@ pub trait Store: Send + Sync {
     }
 
     /// Delete a saved view. Returns `Ok(())` on success;
-    /// [`StoreError::NotFound`] when the row is missing or not
-    /// owned by the caller. Positions of sibling views are **not**
-    /// rewritten on delete — the tab strip tolerates gaps and the
-    /// next reorder normalises them.
-    async fn delete_project_view(
-        &self,
-        _id: Uuid,
-        _owner_user_id: Uuid,
-    ) -> Result<(), StoreError> {
+    /// [`StoreError::NotFound`] when the row is missing. Views are
+    /// project-scoped, so any caller with project access may delete
+    /// one. Positions of sibling views are **not** rewritten on
+    /// delete — the tab strip tolerates gaps and the next reorder
+    /// normalises them.
+    async fn delete_project_view(&self, _id: Uuid) -> Result<(), StoreError> {
         Err(StoreError::Invalid(
             "project views not supported by this store".into(),
         ))
     }
 
-    /// Rewrite positions for the caller's views on a project. The
-    /// `ordered_ids` slice must equal the caller's existing view
-    /// ids on this project (no adds, no removes) — set mismatch
-    /// returns [`StoreError::Invalid`]. On success the rows are
-    /// stamped `position = 0..N-1` in one transaction and the
-    /// updated list is returned in the new order.
+    /// Rewrite positions for a project's shared tab strip. The
+    /// `ordered_ids` slice must equal **every** view id on this
+    /// project (no adds, no removes) — set mismatch returns
+    /// [`StoreError::Invalid`]. On success the rows are stamped
+    /// `position = 0..N-1` in one transaction and the updated list is
+    /// returned in the new order.
     async fn reorder_project_views(
         &self,
         _project_id: Uuid,
-        _owner_user_id: Uuid,
         _ordered_ids: &[Uuid],
     ) -> Result<Vec<crate::project_view::ProjectView>, StoreError> {
         Err(StoreError::Invalid(

@@ -607,11 +607,11 @@ impl PgStore {
     pub(super) async fn list_project_views_impl(
         &self,
         project_id: Uuid,
-        owner_user_id: Uuid,
     ) -> Result<Vec<ProjectView>, StoreError> {
-        // Caller's own views (private or project-scoped) UNION every
-        // `visibility='project'` row on this project — shared views
-        // are visible to any reader. Mutations stay owner-scoped.
+        // Views are project-scoped (migration 0061): every view on the
+        // project is visible to every caller who can read the project.
+        // `owner_user_id` is retained on the row as a created-by stamp
+        // only — it is not an access-control key.
         let rows = sqlx::query(
             r#"SELECT id, project_id, owner_user_id, name, group_by,
                       filter_json, sort, position, visibility,
@@ -619,11 +619,9 @@ impl PgStore {
                       created_at, updated_at
                  FROM dp_project_views
                 WHERE project_id = $1
-                  AND (owner_user_id = $2 OR visibility = 'project')
              ORDER BY position ASC, created_at ASC"#,
         )
         .bind(project_id)
-        .bind(owner_user_id)
         .fetch_all(self.pool.sqlx())
         .await
         .map_err(map_sqlx)?;
@@ -633,22 +631,18 @@ impl PgStore {
     pub(super) async fn get_project_view_impl(
         &self,
         id: Uuid,
-        owner_user_id: Uuid,
     ) -> Result<Option<ProjectView>, StoreError> {
-        // Returns the row if the caller owns it OR it's shared
-        // (`visibility='project'`). Owner-only enforcement for
-        // mutations happens in the REST layer.
+        // Project-scoped: any caller who can read the project can read
+        // any of its views (migration 0061).
         let row_opt = sqlx::query(
             r#"SELECT id, project_id, owner_user_id, name, group_by,
                       filter_json, sort, position, visibility,
                       start_date, due_date, categories,
                       created_at, updated_at
                  FROM dp_project_views
-                WHERE id = $1
-                  AND (owner_user_id = $2 OR visibility = 'project')"#,
+                WHERE id = $1"#,
         )
         .bind(id)
-        .bind(owner_user_id)
         .fetch_optional(self.pool.sqlx())
         .await
         .map_err(map_sqlx)?;
@@ -667,22 +661,22 @@ impl PgStore {
         let categories_json = serde_json::to_value(&upsert.categories)
             .map_err(|e| StoreError::Invalid(format!("categories encode: {e}")))?;
         let mut tx = self.pool.sqlx().begin().await.map_err(map_sqlx)?;
-        // Append-at-end position. Per-(project, owner) so two users'
-        // tab strips never collide on position.
+        // Append-at-end position, per-project — the tab strip is shared
+        // by every user on the project (migration 0061), so positions
+        // are unique across the whole project rather than per owner.
         //
         // MAX(position)+1 — NOT COUNT(*). After a delete the positions
         // are non-contiguous (a gap), and COUNT(*) would re-issue a
         // position that a surviving row still holds, colliding under the
-        // UNIQUE (project_id, owner_user_id, position) index added in
-        // migration 0056. MAX+1 is always free regardless of gaps. The
-        // empty-set case yields COALESCE(NULL, -1)+1 = 0.
+        // UNIQUE (project_id, position) index. MAX+1 is always free
+        // regardless of gaps. The empty-set case yields
+        // COALESCE(NULL, -1)+1 = 0.
         let (next_pos,): (i64,) = sqlx::query_as(
             r#"SELECT COALESCE(MAX(position), -1)::bigint + 1
                  FROM dp_project_views
-                WHERE project_id = $1 AND owner_user_id = $2"#,
+                WHERE project_id = $1"#,
         )
         .bind(project_id)
-        .bind(owner_user_id)
         .fetch_one(&mut *tx)
         .await
         .map_err(map_sqlx)?;
@@ -720,10 +714,12 @@ impl PgStore {
         project_view_from_row(&row)
     }
 
+    /// Update a saved view. Project-scoped since migration 0061 — any
+    /// caller with project access may edit any view on it, so there is
+    /// no owner predicate here.
     pub(super) async fn update_project_view_impl(
         &self,
         id: Uuid,
-        owner_user_id: Uuid,
         upsert: &ProjectViewUpsert,
     ) -> Result<ProjectView, StoreError> {
         let filter_json = serde_json::to_value(&upsert.filter_clauses)
@@ -732,23 +728,22 @@ impl PgStore {
             .map_err(|e| StoreError::Invalid(format!("categories encode: {e}")))?;
         let row_opt = sqlx::query(
             r#"UPDATE dp_project_views
-                  SET name = $3,
-                      group_by = $4,
-                      filter_json = $5,
-                      sort = $6,
-                      visibility = $7,
-                      start_date = $8,
-                      due_date = $9,
-                      categories = $10,
+                  SET name = $2,
+                      group_by = $3,
+                      filter_json = $4,
+                      sort = $5,
+                      visibility = $6,
+                      start_date = $7,
+                      due_date = $8,
+                      categories = $9,
                       updated_at = now()
-                WHERE id = $1 AND owner_user_id = $2
+                WHERE id = $1
                 RETURNING id, project_id, owner_user_id, name, group_by,
                           filter_json, sort, position, visibility,
                           start_date, due_date, categories,
                           created_at, updated_at"#,
         )
         .bind(id)
-        .bind(owner_user_id)
         .bind(&upsert.name)
         .bind(&upsert.group_by)
         .bind(&filter_json)
@@ -770,17 +765,17 @@ impl PgStore {
         }
     }
 
+    /// Delete a saved view. Project-scoped since migration 0061 — no
+    /// owner predicate.
     pub(super) async fn delete_project_view_impl(
         &self,
         id: Uuid,
-        owner_user_id: Uuid,
     ) -> Result<(), StoreError> {
         let res = sqlx::query(
             r#"DELETE FROM dp_project_views
-                WHERE id = $1 AND owner_user_id = $2"#,
+                WHERE id = $1"#,
         )
         .bind(id)
-        .bind(owner_user_id)
         .execute(self.pool.sqlx())
         .await
         .map_err(map_sqlx)?;
@@ -790,22 +785,23 @@ impl PgStore {
         Ok(())
     }
 
+    /// Rewrite the project's shared tab-strip order. Project-scoped
+    /// since migration 0061: `ordered_ids` must cover every view on the
+    /// project, not just one user's.
     pub(super) async fn reorder_project_views_impl(
         &self,
         project_id: Uuid,
-        owner_user_id: Uuid,
         ordered_ids: &[Uuid],
     ) -> Result<Vec<ProjectView>, StoreError> {
         let mut tx = self.pool.sqlx().begin().await.map_err(map_sqlx)?;
-        // Lock the caller's views so a concurrent reorder / create
+        // Lock the project's views so a concurrent reorder / create
         // can't shift the set out from under us.
         let existing: Vec<(Uuid,)> = sqlx::query_as(
             r#"SELECT id FROM dp_project_views
-                WHERE project_id = $1 AND owner_user_id = $2
+                WHERE project_id = $1
                 FOR UPDATE"#,
         )
         .bind(project_id)
-        .bind(owner_user_id)
         .fetch_all(&mut *tx)
         .await
         .map_err(map_sqlx)?;
@@ -819,16 +815,16 @@ impl PgStore {
             ));
         }
         // Two-phase rewrite to dodge the UNIQUE on (project_id,
-        // owner_user_id, position) — none exists today but if it's
-        // added the swap-via-negatives keeps us safe.
+        // position): park every row on a temporary negative slot first,
+        // then stamp the final 0..N-1 values, so an intermediate state
+        // never collides with a row that hasn't moved yet.
         for (idx, vid) in ordered_ids.iter().enumerate() {
             sqlx::query(
                 r#"UPDATE dp_project_views
-                      SET position = $3, updated_at = now()
-                    WHERE id = $1 AND owner_user_id = $2"#,
+                      SET position = $2, updated_at = now()
+                    WHERE id = $1"#,
             )
             .bind(vid)
-            .bind(owner_user_id)
             .bind(-(idx as i32) - 1)
             .execute(&mut *tx)
             .await
@@ -837,11 +833,10 @@ impl PgStore {
         for (idx, vid) in ordered_ids.iter().enumerate() {
             sqlx::query(
                 r#"UPDATE dp_project_views
-                      SET position = $3
-                    WHERE id = $1 AND owner_user_id = $2"#,
+                      SET position = $2
+                    WHERE id = $1"#,
             )
             .bind(vid)
-            .bind(owner_user_id)
             .bind(idx as i32)
             .execute(&mut *tx)
             .await
@@ -853,11 +848,10 @@ impl PgStore {
                       start_date, due_date, categories,
                       created_at, updated_at
                  FROM dp_project_views
-                WHERE project_id = $1 AND owner_user_id = $2
+                WHERE project_id = $1
              ORDER BY position ASC"#,
         )
         .bind(project_id)
-        .bind(owner_user_id)
         .fetch_all(&mut *tx)
         .await
         .map_err(map_sqlx)?;

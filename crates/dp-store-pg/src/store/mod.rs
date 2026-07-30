@@ -991,17 +991,15 @@ impl Store for PgStore {
     async fn list_project_views(
         &self,
         project_id: Uuid,
-        owner_user_id: Uuid,
     ) -> Result<Vec<ProjectView>, StoreError> {
-        self.list_project_views_impl(project_id, owner_user_id).await
+        self.list_project_views_impl(project_id).await
     }
 
     async fn get_project_view(
         &self,
         id: Uuid,
-        owner_user_id: Uuid,
     ) -> Result<Option<ProjectView>, StoreError> {
-        self.get_project_view_impl(id, owner_user_id).await
+        self.get_project_view_impl(id).await
     }
 
     async fn create_project_view(
@@ -1016,27 +1014,21 @@ impl Store for PgStore {
     async fn update_project_view(
         &self,
         id: Uuid,
-        owner_user_id: Uuid,
         upsert: &ProjectViewUpsert,
     ) -> Result<ProjectView, StoreError> {
-        self.update_project_view_impl(id, owner_user_id, upsert).await
+        self.update_project_view_impl(id, upsert).await
     }
 
-    async fn delete_project_view(
-        &self,
-        id: Uuid,
-        owner_user_id: Uuid,
-    ) -> Result<(), StoreError> {
-        self.delete_project_view_impl(id, owner_user_id).await
+    async fn delete_project_view(&self, id: Uuid) -> Result<(), StoreError> {
+        self.delete_project_view_impl(id).await
     }
 
     async fn reorder_project_views(
         &self,
         project_id: Uuid,
-        owner_user_id: Uuid,
         ordered_ids: &[Uuid],
     ) -> Result<Vec<ProjectView>, StoreError> {
-        self.reorder_project_views_impl(project_id, owner_user_id, ordered_ids).await
+        self.reorder_project_views_impl(project_id, ordered_ids).await
     }
 
     // ---- per-view (per-tab) issue membership ----------------------

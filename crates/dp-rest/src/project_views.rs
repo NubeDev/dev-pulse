@@ -3,19 +3,20 @@
 //! toolbar.
 //!
 //! Routes (all gated on `(projects, read|write)` — same lanes as
-//! the §7.1 project CRUD spine; reads return the caller's own views
-//! UNION every `visibility='project'` row on the project, while
-//! writes — create/patch/delete/reorder — stay owner-scoped so only
-//! the gate's owner can mutate a shared view):
+//! the §7.1 project CRUD spine). Views are **project-scoped**, not
+//! per-user (migration 0061): every view on a project is visible to,
+//! and editable by, every caller with project access. The row's
+//! `owner_user_id` survives as a created-by stamp only — it is not an
+//! access-control key, and there is no owner-only mutation guard:
 //!
 //! | route                                            | what it does                              |
 //! |--------------------------------------------------|-------------------------------------------|
-//! | `GET    /projects/{id}/views`                    | `Vec<ProjectViewDto>` for the caller       |
+//! | `GET    /projects/{id}/views`                    | `Vec<ProjectViewDto>` — all project views  |
 //! | `POST   /projects/{id}/views`                    | create a view, append at end of strip      |
-//! | `GET    /projects/{id}/views/{view_id}`          | fetch one (owner-scoped)                   |
+//! | `GET    /projects/{id}/views/{view_id}`          | fetch one                                  |
 //! | `PATCH  /projects/{id}/views/{view_id}`          | rename, change `(group, filter, sort)`     |
 //! | `DELETE /projects/{id}/views/{view_id}`          | 204; gaps in `position` are tolerated      |
-//! | `POST   /projects/{id}/views/reorder`            | atomic rewrite of the caller's positions   |
+//! | `POST   /projects/{id}/views/reorder`            | atomic rewrite of the strip's positions    |
 //!
 //! The `filter_clauses` wire shape mirrors
 //! `dp_domain::project_view::ProjectViewFilterClause` — the
@@ -59,7 +60,8 @@ pub struct ProjectViewDto {
     pub id: Uuid,
     /// Parent project.
     pub project_id: Uuid,
-    /// Owner — v1 always the caller.
+    /// Created-by stamp. Views are project-scoped, so this records
+    /// who first saved the view — it does not gate visibility.
     pub owner_user_id: Uuid,
     /// Tab label.
     pub name: String,
@@ -69,9 +71,10 @@ pub struct ProjectViewDto {
     pub filter_clauses: Vec<serde_json::Value>,
     /// Sort order. `updated_desc` | `updated_asc` | `title_asc`.
     pub sort: String,
-    /// Per-owner position within the project's tab strip.
+    /// Position within the project's shared tab strip.
     pub position: i32,
-    /// `"private"` (v1) or `"project"` (reserved).
+    /// `"project"` (default — shared) or `"private"`. Retained for
+    /// forward compatibility; does not affect visibility today.
     pub visibility: String,
     /// Optional start date for the view's timeline.
     /// Serialised as `YYYY-MM-DD` (or omitted/null when unset).
@@ -158,9 +161,12 @@ pub struct ProjectViewCreateBody {
     /// `[a-z0-9_-]{1,50}`. Validated by `validate_categories`.
     #[serde(default)]
     pub categories: Vec<String>,
-    /// Sharing scope. `"private"` (default — owner-only) or
-    /// `"project"` (visible to every caller with `projects:read`
-    /// on this project). Validated by `validate_visibility`.
+    /// Sharing scope. Defaults to `"project"` — views belong to the
+    /// project and are visible to (and editable by) every caller with
+    /// `projects:read` on it. `"private"` is still accepted by the
+    /// validator but no longer changes who can see the view; it is
+    /// retained only so the column can express a per-user scratch view
+    /// in future. Validated by `validate_visibility`.
     #[serde(default = "default_visibility")]
     pub visibility: String,
 }
@@ -170,7 +176,7 @@ fn default_sort() -> String {
 }
 
 fn default_visibility() -> String {
-    "private".to_string()
+    "project".to_string()
 }
 
 /// `PATCH /projects/{id}/views/{view_id}` body. v1 mutates all
@@ -446,12 +452,12 @@ async fn ensure_project(state: &AppState, project_id: Uuid) -> Result<(), ApiErr
 pub async fn list_project_views(
     State(state): State<AppState>,
     Path(project_id): Path<Uuid>,
-    Extension(principal): Extension<Principal>,
+    Extension(_principal): Extension<Principal>,
 ) -> Result<Json<Vec<ProjectViewDto>>, ApiError> {
     ensure_project(&state, project_id).await?;
     let rows = state
         .store
-        .list_project_views(project_id, principal.actor_user_id)
+        .list_project_views(project_id)
         .await?;
 
     // PROJECT-VIEW.md §5.4 amendment — tab counts must match what
@@ -555,12 +561,12 @@ pub async fn create_project_view(
 pub async fn get_project_view(
     State(state): State<AppState>,
     Path((project_id, view_id)): Path<(Uuid, Uuid)>,
-    Extension(principal): Extension<Principal>,
+    Extension(_principal): Extension<Principal>,
 ) -> Result<Json<ProjectViewDto>, ApiError> {
     ensure_project(&state, project_id).await?;
     let view = state
         .store
-        .get_project_view(view_id, principal.actor_user_id)
+        .get_project_view(view_id)
         .await?
         .ok_or_else(|| ApiError::NotFound {
             code: "view_not_found",
@@ -606,7 +612,7 @@ pub async fn update_project_view(
     // enforce the path-project association.
     let existing = state
         .store
-        .get_project_view(view_id, principal.actor_user_id)
+        .get_project_view(view_id)
         .await?
         .ok_or_else(|| ApiError::NotFound {
             code: "view_not_found",
@@ -618,18 +624,10 @@ pub async fn update_project_view(
             message: format!("no view with id {view_id}"),
         });
     }
-    // Only the owner may mutate, even on shared (`visibility=project`)
-    // views — readers can consume but not edit someone else's gate.
-    if existing.owner_user_id != principal.actor_user_id {
-        return Err(ApiError::NotFound {
-            code: "view_not_found",
-            message: format!("no view with id {view_id}"),
-        });
-    }
     let upsert = body_to_upsert(body)?;
     let view = state
         .store
-        .update_project_view(view_id, principal.actor_user_id, &upsert)
+        .update_project_view(view_id, &upsert)
         .await
         .map_err(|e| match e {
             StoreError::Conflict(_) => ApiError::Conflict {
@@ -671,7 +669,7 @@ pub async fn delete_project_view(
     ensure_project(&state, project_id).await?;
     let existing = state
         .store
-        .get_project_view(view_id, principal.actor_user_id)
+        .get_project_view(view_id)
         .await?
         .ok_or_else(|| ApiError::NotFound {
             code: "view_not_found",
@@ -683,16 +681,9 @@ pub async fn delete_project_view(
             message: format!("no view with id {view_id}"),
         });
     }
-    // Only the owner may delete, even on shared views.
-    if existing.owner_user_id != principal.actor_user_id {
-        return Err(ApiError::NotFound {
-            code: "view_not_found",
-            message: format!("no view with id {view_id}"),
-        });
-    }
     state
         .store
-        .delete_project_view(view_id, principal.actor_user_id)
+        .delete_project_view(view_id)
         .await?;
     audit::record(
         state.store.as_ref(),
@@ -727,7 +718,7 @@ pub async fn reorder_project_views(
     ensure_project(&state, project_id).await?;
     let rows = state
         .store
-        .reorder_project_views(project_id, principal.actor_user_id, &body.ordered_ids)
+        .reorder_project_views(project_id, &body.ordered_ids)
         .await
         .map_err(|e| match e {
             StoreError::Invalid(msg) => ApiError::BadRequest {
@@ -836,18 +827,13 @@ mod tests {
         async fn list_project_views(
             &self,
             project_id: Uuid,
-            owner_user_id: Uuid,
         ) -> Result<Vec<ProjectView>, StoreError> {
             let mut rows: Vec<ProjectView> = self
                 .views
                 .lock()
                 .unwrap()
                 .iter()
-                .filter(|v| {
-                    v.project_id == project_id
-                        && (v.owner_user_id == owner_user_id
-                            || v.visibility == ProjectViewVisibility::Project)
-                })
+                .filter(|v| v.project_id == project_id)
                 .cloned()
                 .collect();
             rows.sort_by_key(|v| (v.position, v.created_at));
@@ -857,18 +843,13 @@ mod tests {
         async fn get_project_view(
             &self,
             id: Uuid,
-            owner_user_id: Uuid,
         ) -> Result<Option<ProjectView>, StoreError> {
             Ok(self
                 .views
                 .lock()
                 .unwrap()
                 .iter()
-                .find(|v| {
-                    v.id == id
-                        && (v.owner_user_id == owner_user_id
-                            || v.visibility == ProjectViewVisibility::Project)
-                })
+                .find(|v| v.id == id)
                 .cloned())
         }
 
@@ -879,16 +860,15 @@ mod tests {
             upsert: &ProjectViewUpsert,
         ) -> Result<ProjectView, StoreError> {
             let mut views = self.views.lock().unwrap();
-            if views.iter().any(|v| {
-                v.project_id == project_id
-                    && v.owner_user_id == owner_user_id
-                    && v.name == upsert.name
-            }) {
+            if views
+                .iter()
+                .any(|v| v.project_id == project_id && v.name == upsert.name)
+            {
                 return Err(StoreError::Conflict("name taken".into()));
             }
             let position = views
                 .iter()
-                .filter(|v| v.project_id == project_id && v.owner_user_id == owner_user_id)
+                .filter(|v| v.project_id == project_id)
                 .count() as i32;
             let now = Utc::now();
             let v = ProjectView {
@@ -918,18 +898,20 @@ mod tests {
         async fn update_project_view(
             &self,
             id: Uuid,
-            owner_user_id: Uuid,
             upsert: &ProjectViewUpsert,
         ) -> Result<ProjectView, StoreError> {
             let mut views = self.views.lock().unwrap();
-            if views.iter().any(|v| {
-                v.id != id && v.owner_user_id == owner_user_id && v.name == upsert.name
-            }) {
-                return Err(StoreError::Conflict("name taken".into()));
+            let project_id = views.iter().find(|v| v.id == id).map(|v| v.project_id);
+            if let Some(project_id) = project_id {
+                if views.iter().any(|v| {
+                    v.id != id && v.project_id == project_id && v.name == upsert.name
+                }) {
+                    return Err(StoreError::Conflict("name taken".into()));
+                }
             }
             let pos = views
                 .iter()
-                .position(|v| v.id == id && v.owner_user_id == owner_user_id)
+                .position(|v| v.id == id)
                 .ok_or_else(|| StoreError::NotFound {
                     entity: "project_view",
                     id: id.to_string(),
@@ -947,15 +929,11 @@ mod tests {
             Ok(v.clone())
         }
 
-        async fn delete_project_view(
-            &self,
-            id: Uuid,
-            owner_user_id: Uuid,
-        ) -> Result<(), StoreError> {
+        async fn delete_project_view(&self, id: Uuid) -> Result<(), StoreError> {
             let mut views = self.views.lock().unwrap();
             let pos = views
                 .iter()
-                .position(|v| v.id == id && v.owner_user_id == owner_user_id)
+                .position(|v| v.id == id)
                 .ok_or_else(|| StoreError::NotFound {
                     entity: "project_view",
                     id: id.to_string(),
@@ -967,13 +945,12 @@ mod tests {
         async fn reorder_project_views(
             &self,
             project_id: Uuid,
-            owner_user_id: Uuid,
             ordered_ids: &[Uuid],
         ) -> Result<Vec<ProjectView>, StoreError> {
             let mut views = self.views.lock().unwrap();
             let existing: std::collections::HashSet<Uuid> = views
                 .iter()
-                .filter(|v| v.project_id == project_id && v.owner_user_id == owner_user_id)
+                .filter(|v| v.project_id == project_id)
                 .map(|v| v.id)
                 .collect();
             let req: std::collections::HashSet<Uuid> = ordered_ids.iter().copied().collect();
@@ -981,17 +958,14 @@ mod tests {
                 return Err(StoreError::Invalid("set mismatch".into()));
             }
             for (idx, vid) in ordered_ids.iter().enumerate() {
-                if let Some(v) = views
-                    .iter_mut()
-                    .find(|v| v.id == *vid && v.owner_user_id == owner_user_id)
-                {
+                if let Some(v) = views.iter_mut().find(|v| v.id == *vid) {
                     v.position = idx as i32;
                     v.updated_at = Utc::now();
                 }
             }
             let mut out: Vec<ProjectView> = views
                 .iter()
-                .filter(|v| v.project_id == project_id && v.owner_user_id == owner_user_id)
+                .filter(|v| v.project_id == project_id)
                 .cloned()
                 .collect();
             out.sort_by_key(|v| v.position);
