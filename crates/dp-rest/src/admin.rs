@@ -6,6 +6,16 @@
 //! | `GET /admin/runs?limit=&offset=`       | paginated `dp_fetch_runs` projection                       |
 //! | `POST /admin/users/:id/anonymise`      | GDPR §0.5 pseudonymisation cascade                         |
 //! | `GET /admin/users/:id/export`          | GDPR §9 user export, JSON-streamed in event pages          |
+//! | `PUT /admin/users/:id`                 | operator edit of a user's profile (name / email)           |
+//! | `PUT /admin/users/:id/role`            | operator role change                                       |
+//! | `PUT /admin/users/:id/password`        | operator password reset; only mounted with a `UserStore`   |
+//!
+//! There is deliberately **no `GET /admin/users`**. The per-id routes
+//! above are addressed with a `dp_users.id` the caller already holds,
+//! and `GET /users` ([`crate::directory::list_users`]) already returns
+//! every field of `dp_users` an operator screen needs. A second listing
+//! behind the `admin` lane would duplicate that surface without
+//! exposing anything extra.
 //!
 //! Every handler is mounted **behind** `with_principal` at the
 //! composition layer (`dp-server`) and writes one `audit_log` row
